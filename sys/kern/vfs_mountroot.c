@@ -266,7 +266,7 @@ vfs_mountroot_devfs(struct thread *td, struct mount **mpp)
 		if (vfsp == NULL)
 			return (ENOENT);
 
-		mp = vfs_mount_alloc(NULLVP, vfsp, "/dev", td->td_ucred);
+		mp = vfs_mount_alloc(NULL, vfsp, "/dev", td->td_ucred);
 
 		error = VFS_MOUNT(mp);
 		KASSERT(error == 0, ("VFS_MOUNT(devfs) failed %d", error));
@@ -1019,6 +1019,7 @@ vfs_mountroot_wait_if_neccessary(const char *fs, const char *dev)
 	 * behaviour by setting vfs.root_mount_always_wait=1.
 	 */
 	if (strcmp(fs, "zfs") == 0 || strstr(fs, "nfs") != NULL ||
+	    strcmp(fs, "p9fs") == 0 ||
 	    dev[0] == '\0' || root_mount_always_wait != 0) {
 		vfs_mountroot_wait();
 		return (0);

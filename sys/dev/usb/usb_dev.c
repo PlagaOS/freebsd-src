@@ -80,8 +80,7 @@
 #include <sys/filio.h>
 #include <sys/ttycom.h>
 #include <sys/syscallsubr.h>
-
-#include <machine/stdarg.h>
+#include <sys/stdarg.h>
 #endif			/* USB_GLOBAL_INCLUDE_FILE */
 
 #if USB_HAVE_UGEN
@@ -1228,16 +1227,18 @@ usb_filter_read(struct knote *kn, long hint)
 	return (m ? 1 : 0);
 }
 
-static struct filterops usb_filtops_write = {
+static const struct filterops usb_filtops_write = {
 	.f_isfd = 1,
 	.f_detach = usb_filter_detach,
 	.f_event = usb_filter_write,
+	.f_copy = knote_triv_copy,
 };
 
-static struct filterops usb_filtops_read = {
+static const struct filterops usb_filtops_read = {
 	.f_isfd = 1,
 	.f_detach = usb_filter_detach,
 	.f_event = usb_filter_read,
+	.f_copy = knote_triv_copy,
 };
 
 /* ARGSUSED */

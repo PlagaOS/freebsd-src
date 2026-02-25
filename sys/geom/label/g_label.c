@@ -101,10 +101,10 @@ const struct g_label_desc *g_labels[] = {
 	&g_label_iso9660,
 	&g_label_msdosfs,
 	&g_label_ext2fs,
-	&g_label_reiserfs,
 	&g_label_ntfs,
 	&g_label_disk_ident,
 	&g_label_flashmap,
+	&g_label_swaplinux,
 #endif
 	&g_label_generic,
 	NULL
@@ -399,7 +399,7 @@ g_label_taste(struct g_class *mp, struct g_provider *pp, int flags __unused)
 	if (strcmp(pp->geom->class->name, mp->name) == 0)
 		return (NULL);
 
-	gp = g_new_geomf(mp, "label:taste");
+	gp = g_new_geom(mp, "label:taste");
 	gp->start = g_label_start_taste;
 	gp->access = g_label_access_taste;
 	gp->orphan = g_label_orphan_taste;

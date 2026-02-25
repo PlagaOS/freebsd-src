@@ -46,6 +46,7 @@
 #include <sys/priv.h>
 #include <sys/proc.h>
 #include <sys/smp.h>
+#include <sys/sysent.h>
 #include <sys/sysproto.h>
 #include <sys/uio.h>
 
@@ -187,35 +188,36 @@ sysarch(struct thread *td, struct sysarch_args *uap)
 	 * explicitly indicate whether or not the operation is safe to
 	 * perform in capability mode.
 	 */
-	if (IN_CAPABILITY_MODE(td)) {
-		switch (uap->op) {
-		case I386_GET_LDT:
-		case I386_SET_LDT:
-		case I386_GET_IOPERM:
-		case I386_GET_FSBASE:
-		case I386_SET_FSBASE:
-		case I386_GET_GSBASE:
-		case I386_SET_GSBASE:
-		case I386_GET_XFPUSTATE:
-		case I386_SET_PKRU:
-		case I386_CLEAR_PKRU:
-		case AMD64_GET_FSBASE:
-		case AMD64_SET_FSBASE:
-		case AMD64_GET_GSBASE:
-		case AMD64_SET_GSBASE:
-		case AMD64_GET_XFPUSTATE:
-		case AMD64_SET_PKRU:
-		case AMD64_CLEAR_PKRU:
-			break;
+	switch (uap->op) {
+	case I386_GET_LDT:
+	case I386_SET_LDT:
+	case I386_GET_IOPERM:
+	case I386_GET_FSBASE:
+	case I386_SET_FSBASE:
+	case I386_GET_GSBASE:
+	case I386_SET_GSBASE:
+	case I386_GET_XFPUSTATE:
+	case I386_SET_PKRU:
+	case I386_CLEAR_PKRU:
+	case AMD64_GET_FSBASE:
+	case AMD64_SET_FSBASE:
+	case AMD64_GET_GSBASE:
+	case AMD64_SET_GSBASE:
+	case AMD64_GET_XFPUSTATE:
+	case AMD64_SET_PKRU:
+	case AMD64_CLEAR_PKRU:
+	case AMD64_GET_TLSBASE:
+	case AMD64_SET_TLSBASE:
+	case AMD64_DISABLE_TLSBASE:
+		break;
 
-		case I386_SET_IOPERM:
-		default:
-#ifdef KTRACE
-			if (KTRPOINT(td, KTR_CAPFAIL))
-				ktrcapfail(CAPFAIL_SYSCALL, NULL, NULL);
-#endif
+	case I386_SET_IOPERM:
+	default:
+		if (CAP_TRACING(td))
+			ktrcapfail(CAPFAIL_SYSCALL, &uap->op);
+		if (IN_CAPABILITY_MODE(td))
 			return (ECAPMODE);
-		}
+		break;
 	}
 #endif
 
@@ -286,7 +288,7 @@ sysarch(struct thread *td, struct sysarch_args *uap)
 		break;
 	case I386_SET_FSBASE:
 		error = copyin(uap->parms, &i386base, sizeof(i386base));
-		if (!error) {
+		if (error == 0) {
 			set_pcb_flags(pcb, PCB_FULL_IRET);
 			pcb->pcb_fsbase = i386base;
 			td->td_frame->tf_fs = _ufssel;
@@ -300,7 +302,7 @@ sysarch(struct thread *td, struct sysarch_args *uap)
 		break;
 	case I386_SET_GSBASE:
 		error = copyin(uap->parms, &i386base, sizeof(i386base));
-		if (!error) {
+		if (error == 0) {
 			set_pcb_flags(pcb, PCB_FULL_IRET);
 			pcb->pcb_gsbase = i386base;
 			td->td_frame->tf_gs = _ugssel;
@@ -312,14 +314,27 @@ sysarch(struct thread *td, struct sysarch_args *uap)
 		error = copyout(&pcb->pcb_fsbase, uap->parms,
 		    sizeof(pcb->pcb_fsbase));
 		break;
-		
+	case AMD64_GET_TLSBASE:
+		if ((pcb->pcb_flags & PCB_TLSBASE) == 0) {
+			error = ESRCH;
+		} else {
+			error = copyout(&pcb->pcb_tlsbase, uap->parms,
+			    sizeof(pcb->pcb_tlsbase));
+		}
+		break;
+
 	case AMD64_SET_FSBASE:
+	case AMD64_SET_TLSBASE:
 		error = copyin(uap->parms, &a64base, sizeof(a64base));
-		if (!error) {
-			if (a64base < VM_MAXUSER_ADDRESS) {
+		if (error == 0) {
+			if (a64base < curproc->p_sysent->sv_maxuser) {
 				set_pcb_flags(pcb, PCB_FULL_IRET);
 				pcb->pcb_fsbase = a64base;
 				td->td_frame->tf_fs = _ufssel;
+				if (uap->op == AMD64_SET_TLSBASE) {
+					pcb->pcb_tlsbase = a64base;
+					set_pcb_flags(pcb, PCB_TLSBASE);
+				}
 			} else
 				error = EINVAL;
 		}
@@ -333,8 +348,8 @@ sysarch(struct thread *td, struct sysarch_args *uap)
 
 	case AMD64_SET_GSBASE:
 		error = copyin(uap->parms, &a64base, sizeof(a64base));
-		if (!error) {
-			if (a64base < VM_MAXUSER_ADDRESS) {
+		if (error == 0) {
+			if (a64base < curproc->p_sysent->sv_maxuser) {
 				set_pcb_flags(pcb, PCB_FULL_IRET);
 				pcb->pcb_gsbase = a64base;
 				td->td_frame->tf_gs = _ugssel;
@@ -379,6 +394,11 @@ sysarch(struct thread *td, struct sysarch_args *uap)
 		    (vm_offset_t)a64pkru.addr,
 		    (vm_offset_t)a64pkru.addr + a64pkru.len);
 		vm_map_unlock_read(map);
+		break;
+
+	case AMD64_DISABLE_TLSBASE:
+		clear_pcb_flags(pcb, PCB_TLSBASE);
+		update_pcb_bases(pcb);
 		break;
 
 	default:

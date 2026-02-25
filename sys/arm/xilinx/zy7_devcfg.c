@@ -40,6 +40,7 @@
 #include <sys/conf.h>
 #include <sys/kernel.h>
 #include <sys/module.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
@@ -49,7 +50,6 @@
 
 #include <machine/bus.h>
 #include <machine/resource.h>
-#include <machine/stdarg.h>
 
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
@@ -791,14 +791,16 @@ static int
 zy7_devcfg_detach(device_t dev)
 {
 	struct zy7_devcfg_softc *sc = device_get_softc(dev);
+	int error;
+
+	error = bus_generic_detach(dev);
+	if (error != 0)
+		return (error);
 
 	if (sc->sysctl_tree_top != NULL) {
 		sysctl_ctx_free(&sc->sysctl_tree);
 		sc->sysctl_tree_top = NULL;
 	}
-
-	if (device_is_attached(dev))
-		bus_generic_detach(dev);
 
 	/* Get rid of /dev/devcfg0. */
 	if (sc->sc_ctl_dev != NULL)

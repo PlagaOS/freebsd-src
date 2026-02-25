@@ -97,7 +97,7 @@ blk_write(struct dumperinfo *di, char *ptr, vm_paddr_t pa, size_t sz)
 		return (EINVAL);
 	}
 	if (ptr != NULL && pa != 0) {
-		printf("cant have both va and pa!\n");
+		printf("can't have both va and pa!\n");
 		return (EINVAL);
 	}
 	if ((((uintptr_t)pa) % PAGE_SIZE) != 0) {
@@ -186,7 +186,7 @@ cpu_minidumpsys(struct dumperinfo *di, const struct minidumpstate *state)
 	 * tables, so care must be taken to read each entry only once.
 	 */
 	pmapsize = 0;
-	for (va = VM_MIN_KERNEL_ADDRESS; va < kva_end; ) {
+	for (va = kva_layout.km_low; va < kva_end; ) {
 		/*
 		 * We always write a page, even if it is zero. Each
 		 * page written corresponds to 1GB of space
@@ -279,9 +279,9 @@ cpu_minidumpsys(struct dumperinfo *di, const struct minidumpstate *state)
 	mdhdr.msgbufsize = mbp->msg_size;
 	mdhdr.bitmapsize = round_page(BITSET_SIZE(vm_page_dump_pages));
 	mdhdr.pmapsize = pmapsize;
-	mdhdr.kernbase = VM_MIN_KERNEL_ADDRESS;
-	mdhdr.dmapbase = DMAP_MIN_ADDRESS;
-	mdhdr.dmapend = DMAP_MAX_ADDRESS;
+	mdhdr.kernbase = kva_layout.km_low;
+	mdhdr.dmapbase = kva_layout.dmap_low;
+	mdhdr.dmapend = kva_layout.dmap_high;
 	mdhdr.dumpavailsize = round_page(sizeof(dump_avail));
 
 	dump_init_header(di, &kdh, KERNELDUMPMAGIC, KERNELDUMP_AMD64_VERSION,
@@ -323,7 +323,7 @@ cpu_minidumpsys(struct dumperinfo *di, const struct minidumpstate *state)
 
 	/* Dump kernel page directory pages */
 	bzero(fakepd, sizeof(fakepd));
-	for (va = VM_MIN_KERNEL_ADDRESS; va < kva_end; va += NBPDP) {
+	for (va = kva_layout.km_low; va < kva_end; va += NBPDP) {
 		ii = pmap_pml4e_index(va);
 		pml4 = (uint64_t *)PHYS_TO_DMAP(KPML4phys) + ii;
 		pdp = (uint64_t *)PHYS_TO_DMAP(*pml4 & PG_FRAME);

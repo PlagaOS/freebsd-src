@@ -362,7 +362,7 @@ nmchan_init(kobj_t obj, void *devinfo, struct snd_dbuf *b, struct pcm_channel *c
 	sndbuf_setup(ch->buffer, (u_int8_t *)rman_get_virtual(sc->buf) + chnbuf, NM_BUFFSIZE);
 	if (bootverbose)
 		device_printf(sc->dev, "%s buf %p\n", (dir == PCMDIR_PLAY)?
-			      "play" : "rec", sndbuf_getbuf(ch->buffer));
+			      "play" : "rec", ch->buffer->buf);
 	ch->parent = sc;
 	ch->channel = c;
 	ch->dir = dir;
@@ -707,10 +707,11 @@ nm_pci_attach(device_t dev)
 		 rman_get_start(sc->irq),
 		 device_get_nameunit(device_get_parent(dev)));
 
-	if (pcm_register(dev, sc, 1, 1)) goto bad;
+	pcm_init(dev, sc);
 	pcm_addchan(dev, PCMDIR_REC, &nmchan_class, sc);
 	pcm_addchan(dev, PCMDIR_PLAY, &nmchan_class, sc);
-	pcm_setstatus(dev, status);
+	if (pcm_register(dev, status))
+		goto bad;
 
 	return 0;
 
@@ -807,7 +808,7 @@ static device_method_t nm_methods[] = {
 	DEVMETHOD(device_detach,	nm_pci_detach),
 	DEVMETHOD(device_suspend,	nm_pci_suspend),
 	DEVMETHOD(device_resume,	nm_pci_resume),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t nm_driver = {

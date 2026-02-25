@@ -124,7 +124,7 @@ static int thunder_pem_activate_resource(device_t, device_t, struct resource *);
 static int thunder_pem_adjust_resource(device_t, device_t,
     struct resource *, rman_res_t, rman_res_t);
 static struct resource * thunder_pem_alloc_resource(device_t, device_t, int,
-    int *, rman_res_t, rman_res_t, rman_res_t, u_int);
+    int, rman_res_t, rman_res_t, rman_res_t, u_int);
 static int thunder_pem_alloc_msi(device_t, device_t, int, int, int *);
 static int thunder_pem_release_msi(device_t, device_t, int, int *);
 static int thunder_pem_alloc_msix(device_t, device_t, int *);
@@ -254,16 +254,12 @@ thunder_pem_write_ivar(device_t dev, device_t child, int index,
 static int
 thunder_pem_activate_resource(device_t dev, device_t child, struct resource *r)
 {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	struct thunder_pem_softc *sc;
 
 	sc = device_get_softc(dev);
-#endif
 	switch (rman_get_type(r)) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (pci_domain_activate_bus(sc->id, child, r));
-#endif
 	case SYS_RES_MEMORY:
 	case SYS_RES_IOPORT:
 		return (bus_generic_rman_activate_resource(dev, child, r));
@@ -276,16 +272,12 @@ static int
 thunder_pem_deactivate_resource(device_t dev, device_t child,
     struct resource *r)
 {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	struct thunder_pem_softc *sc;
 
 	sc = device_get_softc(dev);
-#endif
 	switch (rman_get_type(r)) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (pci_domain_deactivate_bus(sc->id, child, r));
-#endif
 	case SYS_RES_MEMORY:
 	case SYS_RES_IOPORT:
 		return (bus_generic_rman_deactivate_resource(dev, child, r));
@@ -350,16 +342,12 @@ static int
 thunder_pem_adjust_resource(device_t dev, device_t child, struct resource *res,
     rman_res_t start, rman_res_t end)
 {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	struct thunder_pem_softc *sc;
 
 	sc = device_get_softc(dev);
-#endif
 	switch (rman_get_type(res)) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (pci_domain_adjust_bus(sc->id, child, res, start, end));
-#endif
 	case SYS_RES_MEMORY:
 	case SYS_RES_IOPORT:
 		return (bus_generic_rman_adjust_resource(dev, child, res, start,
@@ -663,7 +651,7 @@ thunder_pem_write_config(device_t dev, u_int bus, u_int slot,
 }
 
 static struct resource *
-thunder_pem_alloc_resource(device_t dev, device_t child, int type, int *rid,
+thunder_pem_alloc_resource(device_t dev, device_t child, int type, int rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct thunder_pem_softc *sc = device_get_softc(dev);
@@ -671,11 +659,9 @@ thunder_pem_alloc_resource(device_t dev, device_t child, int type, int *rid,
 	device_t parent_dev;
 
 	switch (type) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (pci_domain_alloc_bus(sc->id, child, rid, start,  end,
 		    count, flags));
-#endif
 	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
 		break;
@@ -708,7 +694,7 @@ thunder_pem_alloc_resource(device_t dev, device_t child, int type, int *rid,
 	if (res == NULL && bootverbose) {
 		device_printf(dev, "%s FAIL: type=%d, rid=%d, "
 		    "start=%016lx, end=%016lx, count=%016lx, flags=%x\n",
-		    __func__, type, *rid, start, end, count, flags);
+		    __func__, type, rid, start, end, count, flags);
 	}
 
 	return (res);
@@ -718,15 +704,11 @@ static int
 thunder_pem_release_resource(device_t dev, device_t child, struct resource *res)
 {
 	device_t parent_dev;
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	struct thunder_pem_softc *sc = device_get_softc(dev);
-#endif
 
 	switch (rman_get_type(res)) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (pci_domain_release_bus(sc->id, child, res));
-#endif
 	case SYS_RES_MEMORY:
 	case SYS_RES_IOPORT:
 		return (bus_generic_rman_release_resource(dev, child, res));
@@ -766,7 +748,7 @@ thunder_pem_probe(device_t dev)
 
 	if ((pci_vendor_id == THUNDER_PEM_VENDOR_ID) &&
 	    (pci_device_id == THUNDER_PEM_DEVICE_ID)) {
-		device_set_desc_copy(dev, THUNDER_PEM_DESC);
+		device_set_desc(dev, THUNDER_PEM_DESC);
 		return (0);
 	}
 
@@ -924,9 +906,9 @@ thunder_pem_attach(device_t dev)
 		goto fail_io;
 	}
 
-	device_add_child(dev, "pci", -1);
-
-	return (bus_generic_attach(dev));
+	device_add_child(dev, "pci", DEVICE_UNIT_ANY);
+	bus_attach_children(dev);
+	return (0);
 
 fail_io:
 	rman_fini(&sc->io_rman);

@@ -42,12 +42,9 @@
 static int elf64_exec(struct preloaded_file *amp);
 static int elf64_obj_exec(struct preloaded_file *amp);
 
-int bi_load(char *args, vm_offset_t *modulep, vm_offset_t *kernendp,
-    bool exit_bs);
-
 static struct file_format arm64_elf = {
-	elf64_loadfile,
-	elf64_exec
+	.l_load = elf64_loadfile,
+	.l_exec = elf64_exec
 };
 
 struct file_format *file_formats[] = {
@@ -72,14 +69,18 @@ elf64_exec(struct preloaded_file *fp)
 	ehdr = (Elf_Ehdr *)&(md->md_data);
 	entry = efi_translate(ehdr->e_entry);
 
+	/*
+	 * we have to cleanup here because net_cleanup() doesn't work after
+	 * we call ExitBootServices
+	 */
+	dev_cleanup();
+
 	efi_time_fini();
 	err = bi_load(fp->f_args, &modulep, &kernendp, true);
 	if (err != 0) {
 		efi_time_init();
 		return (err);
 	}
-
-	dev_cleanup();
 
 	/* Clean D-cache under kernel area and invalidate whole I-cache */
 	clean_addr = (vm_offset_t)efi_translate(fp->f_addr);

@@ -999,7 +999,7 @@ dc_setfilt_21143(struct dc_softc *sc)
 	else
 		DC_CLRBIT(sc, DC_NETCFG, DC_NETCFG_RX_ALLMULTI);
 
-	if_foreach_llmaddr(ifp, dc_hash_maddr_21143, sp);
+	if_foreach_llmaddr(ifp, dc_hash_maddr_21143, sc);
 
 	if (if_getflags(ifp) & IFF_BROADCAST) {
 		h = dc_mchash_le(sc, if_getbroadcastaddr(ifp));
@@ -2380,11 +2380,6 @@ dc_attach(device_t dev)
 		goto fail;
 
 	ifp = sc->dc_ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		device_printf(dev, "can not if_alloc()\n");
-		error = ENOSPC;
-		goto fail;
-	}
 	if_setsoftc(ifp, sc);
 	if_initname(ifp, device_get_name(dev), device_get_unit(dev));
 	if_setflags(ifp, IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
@@ -2544,8 +2539,6 @@ dc_detach(device_t dev)
 		callout_drain(&sc->dc_wdog_ch);
 		ether_ifdetach(ifp);
 	}
-	if (sc->dc_miibus)
-		device_delete_child(dev, sc->dc_miibus);
 	bus_generic_detach(dev);
 
 	if (sc->dc_intrhand)

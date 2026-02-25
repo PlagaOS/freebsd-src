@@ -41,14 +41,14 @@
 #ifndef _AMD64_INCLUDE_PARAM_H_
 #define	_AMD64_INCLUDE_PARAM_H_
 
-#include <machine/_align.h>
+#include <sys/_align.h>
+
+#define	STACKALIGNBYTES	(16 - 1)
+#define	REDZONE_SZ	128
 
 /*
  * Machine dependent constants for AMD64.
  */
-
-#define __HAVE_ACPI
-#define __PCI_REROUTE_INTERRUPT
 
 #ifndef MACHINE
 #define	MACHINE		"amd64"
@@ -78,7 +78,7 @@
  * ALIGNED_POINTER is a boolean macro that checks whether an address
  * is valid to fetch data elements of type t from on this architecture.
  * This does not reflect the optimal alignment, just the possibility
- * (within reasonable limits). 
+ * (within reasonable limits).
  */
 #define	ALIGNED_POINTER(p, t)	1
 
@@ -142,25 +142,26 @@
 /*
  * Mach derived conversion macros
  */
-#define	round_page(x)	((((unsigned long)(x)) + PAGE_MASK) & ~(PAGE_MASK))
-#define	trunc_page(x)	((unsigned long)(x) & ~(PAGE_MASK))
 #define trunc_2mpage(x)	((unsigned long)(x) & ~PDRMASK)
 #define round_2mpage(x)	((((unsigned long)(x)) + PDRMASK) & ~PDRMASK)
 #define trunc_1gpage(x)	((unsigned long)(x) & ~PDPMASK)
 
-#define	atop(x)		((unsigned long)(x) >> PAGE_SHIFT)
-#define	ptoa(x)		((unsigned long)(x) << PAGE_SHIFT)
-
 #define	amd64_btop(x)	((unsigned long)(x) >> PAGE_SHIFT)
 #define	amd64_ptob(x)	((unsigned long)(x) << PAGE_SHIFT)
 
-#define	pgtok(x)	((unsigned long)(x) * (PAGE_SIZE / 1024)) 
+#define	INKERNEL(va)	\
+    (((va) >= kva_layout.dmap_low && (va) < kva_layout.dmap_high) || \
+    ((va) >= kva_layout.km_low && (va) < kva_layout.km_high))
 
-#define	INKERNEL(va) (((va) >= DMAP_MIN_ADDRESS && (va) < DMAP_MAX_ADDRESS) \
-    || ((va) >= VM_MIN_KERNEL_ADDRESS && (va) < VM_MAX_KERNEL_ADDRESS))
-
-#ifdef SMP
-#define SC_TABLESIZE    1024                     /* Must be power of 2. */
+/*
+ * Must be power of 2.
+ *
+ * Perhaps should be autosized on boot based on found ncpus.
+ */
+#if MAXCPU > 256
+#define SC_TABLESIZE    2048
+#else
+#define SC_TABLESIZE    1024
 #endif
 
 #endif /* !_AMD64_INCLUDE_PARAM_H_ */

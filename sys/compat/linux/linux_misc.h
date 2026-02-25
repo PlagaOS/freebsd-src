@@ -57,6 +57,7 @@
 #define	LINUX_PR_GET_SECCOMP	21
 #define	LINUX_PR_SET_SECCOMP	22
 #define	LINUX_PR_CAPBSET_READ	23
+#define LINUX_PR_SET_CHILD_SUBREAPER 36
 #define	LINUX_PR_SET_NO_NEW_PRIVS	38
 #define	LINUX_PR_SET_PTRACER	1499557217
 
@@ -84,7 +85,9 @@
 					 * differ from AT_PLATFORM.
 					 */
 #define	LINUX_AT_RANDOM		25	/* address of random bytes */
-#define	LINUX_AT_HWCAP2		26	/* CPU capabilities, second part */
+#define	LINUX_AT_HWCAP2		26	/* CPU capabilities */
+#define	LINUX_AT_HWCAP3		29	/* CPU capabilities */
+#define	LINUX_AT_HWCAP4		30	/* CPU capabilities */
 #define	LINUX_AT_EXECFN		31	/* filename of program */
 #define	LINUX_AT_SYSINFO	32	/* vsyscall */
 #define	LINUX_AT_SYSINFO_EHDR	33	/* vdso header */
@@ -212,5 +215,16 @@ struct syscall_info {
 #define	LINUX_IOPRIO_WHO_PROCESS	1
 #define	LINUX_IOPRIO_WHO_PGRP		2
 #define	LINUX_IOPRIO_WHO_USER		3
+
+/* Linux kcmp types from <linux/kcmp.h>	*/
+#define	LINUX_KCMP_FILE			0
+#define	LINUX_KCMP_VM			1
+#define	LINUX_KCMP_FILES		2
+#define	LINUX_KCMP_FS			3
+#define	LINUX_KCMP_SIGHAND		4
+#define	LINUX_KCMP_IO			5
+#define	LINUX_KCMP_SYSVSEM		6
+#define	LINUX_KCMP_EPOLL_TFD		7
+#define	LINUX_KCMP_TYPES		8
 
 #endif	/* _LINUX_MISC_H_ */

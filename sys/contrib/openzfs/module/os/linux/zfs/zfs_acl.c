@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -471,7 +472,7 @@ zfs_acl_node_alloc(size_t bytes)
 
 	aclnode = kmem_zalloc(sizeof (zfs_acl_node_t), KM_SLEEP);
 	if (bytes) {
-		aclnode->z_acldata = kmem_alloc(bytes, KM_SLEEP);
+		aclnode->z_acldata = kmem_zalloc(bytes, KM_SLEEP);
 		aclnode->z_allocdata = aclnode->z_acldata;
 		aclnode->z_allocsize = bytes;
 		aclnode->z_size = bytes;
@@ -1446,7 +1447,8 @@ zfs_aclset_common(znode_t *zp, zfs_acl_t *aclp, cred_t *cr, dmu_tx_t *tx)
 				if (aclnode->z_ace_count == 0)
 					continue;
 				dmu_write(zfsvfs->z_os, aoid, off,
-				    aclnode->z_size, aclnode->z_acldata, tx);
+				    aclnode->z_size, aclnode->z_acldata, tx,
+				    DMU_READ_NO_PREFETCH);
 				off += aclnode->z_size;
 			}
 		} else {
@@ -1899,7 +1901,7 @@ zfs_acl_ids_create(znode_t *dzp, int flag, vattr_t *vap, cred_t *cr,
 		if (!(flag & IS_ROOT_NODE) &&
 		    (dzp->z_pflags & ZFS_INHERIT_ACE) &&
 		    !(dzp->z_pflags & ZFS_XATTR)) {
-			VERIFY(0 == zfs_acl_node_read(dzp, B_TRUE,
+			VERIFY0(zfs_acl_node_read(dzp, B_TRUE,
 			    &paclp, B_FALSE));
 			acl_ids->z_aclp = zfs_acl_inherit(zfsvfs,
 			    vap->va_mode, paclp, acl_ids->z_mode, &need_chmod);
@@ -2187,7 +2189,7 @@ top:
 	}
 
 	zfs_sa_upgrade_txholds(tx, zp);
-	error = dmu_tx_assign(tx, TXG_NOWAIT);
+	error = dmu_tx_assign(tx, DMU_TX_NOWAIT);
 	if (error) {
 		mutex_exit(&zp->z_acl_lock);
 		mutex_exit(&zp->z_lock);
@@ -2203,8 +2205,8 @@ top:
 	}
 
 	error = zfs_aclset_common(zp, aclp, cr, tx);
-	ASSERT(error == 0);
-	ASSERT(zp->z_acl_cached == NULL);
+	ASSERT0(error);
+	ASSERT0P(zp->z_acl_cached);
 	zp->z_acl_cached = aclp;
 
 	if (fuid_dirtied)
@@ -2523,7 +2525,7 @@ zfs_zaccess_common(znode_t *zp, uint32_t v4_mode, uint32_t *working_mode,
 	 * Also note: DOS R/O is ignored for directories.
 	 */
 	if ((v4_mode & WRITE_MASK_DATA) &&
-	    S_ISDIR(ZTOI(zp)->i_mode) &&
+	    !S_ISDIR(ZTOI(zp)->i_mode) &&
 	    (zp->z_pflags & ZFS_READONLY)) {
 		return (SET_ERROR(EPERM));
 	}

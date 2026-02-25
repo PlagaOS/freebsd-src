@@ -49,7 +49,6 @@
 .Fn execlp "const char *file" "const char *arg" ... NULL
 .Ft int
 .Fn execle "const char *path" "const char *arg" ... NULL "char *const envp[]"
-.Fc
 .Ft int
 .Fn exect "const char *path" "char *const argv[]" "char *const envp[]"
 .Ft int
@@ -344,7 +343,7 @@ function first appeared in
 The
 .Fn execvpe
 function first appeared in
-.Fx 15.0 .
+.Fx 14.1 .
 .Sh BUGS
 The type of the
 .Fa argv

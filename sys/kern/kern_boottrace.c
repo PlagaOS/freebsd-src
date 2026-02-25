@@ -33,11 +33,10 @@
 #include <sys/proc.h>
 #include <sys/resourcevar.h>
 #include <sys/sbuf.h>
+#include <sys/stdarg.h>
 #include <sys/syscallsubr.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
-
-#include <machine/stdarg.h>
 
 #define	dprintf(fmt, ...)						\
 	do {								\
@@ -561,9 +560,6 @@ boottrace_resize(u_int newsize)
 	}
 	rt.table = realloc(rt.table, newsize * sizeof(struct bt_event),
 	    M_BOOTTRACE, M_WAITOK | M_ZERO);
-	if (rt.table == NULL)
-		return (ENOMEM);
-
 	rt.size = newsize;
 	boottrace_reset("boottrace_resize");
 	return (0);
@@ -583,7 +579,7 @@ sysctl_boottrace_reset(SYSCTL_HANDLER_ARGS)
 }
 
 static void
-boottrace_init(void)
+boottrace_init(void *dummy __unused)
 {
 
 	if (!boottrace_enabled)
@@ -613,4 +609,4 @@ boottrace_init(void)
 	st.table = malloc(st.size * sizeof(struct bt_event), M_BOOTTRACE,
 	    M_WAITOK | M_ZERO);
 }
-SYSINIT(boottrace, SI_SUB_CPU, SI_ORDER_ANY, boottrace_init, 0);
+SYSINIT(boottrace, SI_SUB_CPU, SI_ORDER_ANY, boottrace_init, NULL);

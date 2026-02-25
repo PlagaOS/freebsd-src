@@ -28,7 +28,6 @@
  *
  */
 
-#include <sys/cdefs.h>
 #include "opt_capsicum.h"
 #include "opt_sctp.h"
 #include "opt_ktrace.h"
@@ -76,6 +75,8 @@
 #include <security/mac/mac_framework.h>
 
 #include <netinet/sctp.h>
+#include <netinet/sctp_pcb.h>
+#include <netinet/sctp_var.h>
 #include <netinet/sctp_os_bsd.h>
 #include <netinet/sctp_peeloff.h>
 
@@ -141,13 +142,14 @@ sys_sctp_peeloff(struct thread *td, struct sctp_peeloff_args *uap)
 {
 	struct file *headfp, *nfp = NULL;
 	struct socket *head, *so;
+	struct filecaps fcaps;
 	cap_rights_t rights;
 	u_int fflag;
 	int error, fd;
 
 	AUDIT_ARG_FD(uap->sd);
-	error = getsock(td, uap->sd, cap_rights_init_one(&rights, CAP_PEELOFF),
-	    &headfp);
+	error = getsock_cap(td, uap->sd,
+	    cap_rights_init_one(&rights, CAP_PEELOFF), &headfp, &fcaps);
 	if (error != 0)
 		goto done2;
 	fflag = atomic_load_int(&headfp->f_flag);
@@ -165,13 +167,13 @@ sys_sctp_peeloff(struct thread *td, struct sctp_peeloff_args *uap)
 	 * but that is ok.
 	 */
 
-	error = falloc(td, &nfp, &fd, 0);
+	error = falloc_caps(td, &nfp, &fd, 0, &fcaps);
 	if (error != 0)
 		goto done;
 	td->td_retval[0] = fd;
 
 	CURVNET_SET(head->so_vnet);
-	so = sopeeloff(head);
+	so = sopeeloff(head, &sctp_stream_protosw);
 	if (so == NULL) {
 		error = ENOMEM;
 		goto noconnection;

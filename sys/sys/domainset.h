@@ -54,6 +54,7 @@
 #define	DOMAINSET_OVERLAP(p, c)		__BIT_OVERLAP(DOMAINSET_SETSIZE, p, c)
 #define	DOMAINSET_CMP(p, c)		__BIT_CMP(DOMAINSET_SETSIZE, p, c)
 #define	DOMAINSET_OR(d, s)		__BIT_OR(DOMAINSET_SETSIZE, d, s)
+#define	DOMAINSET_ORNOT(d, s)		__BIT_ORNOT(DOMAINSET_SETSIZE, d, s)
 #define	DOMAINSET_AND(d, s)		__BIT_AND(DOMAINSET_SETSIZE, d, s)
 #define	DOMAINSET_ANDNOT(d, s)		__BIT_ANDNOT(DOMAINSET_SETSIZE, d, s)
 #define	DOMAINSET_CLR_ATOMIC(n, p)	__BIT_CLR_ATOMIC(DOMAINSET_SETSIZE, n, p)
@@ -112,6 +113,20 @@ void domainset_zero(void);
  * returned value will not match the key pointer.
  */
 struct domainset *domainset_create(const struct domainset *);
+
+/*
+ * Remove empty domains from a given domainset.
+ * Returns 'false' if the domainset consists entirely of empty domains.
+ */
+bool domainset_empty_vm(struct domainset *domain);
+
+/*
+ * Validate and populate a domainset structure according to the specified
+ * policy and mask.
+ */
+int domainset_populate(struct domainset *domain, const domainset_t *mask, int policy,
+    size_t mask_size);
+
 #ifdef _SYS_SYSCTL_H_
 int sysctl_handle_domainset(SYSCTL_HANDLER_ARGS);
 #endif

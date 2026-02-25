@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/* Copyright(c) 2007-2022 Intel Corporation */
+/* Copyright(c) 2007-2025 Intel Corporation */
 /* System headers */
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -517,7 +517,7 @@ qat_ocf_session_init(device_t dev,
 				  M_NOWAIT,
 				  0,
 				  ~1UL,
-				  1 << (bsrl(sessionCtxSize - 1) + 1),
+				  1 << (ilog2(sessionCtxSize - 1) + 1),
 				  0);
 	if (NULL == sessionCtx) {
 		device_printf(dev, "unable to allocate memory for session\n");
@@ -544,7 +544,7 @@ qat_ocf_session_init(device_t dev,
 fail:
 	/* Release resources if any */
 	if (sessionCtx)
-		contigfree(sessionCtx, sessionCtxSize, M_QAT_OCF);
+		free(sessionCtx, M_QAT_OCF);
 
 	return status;
 }
@@ -610,9 +610,7 @@ qat_ocf_remove_session(device_t dev,
 	}
 
 	explicit_bzero(qat_session->sessionCtx, qat_session->sessionCtxSize);
-	contigfree(qat_session->sessionCtx,
-		   qat_session->sessionCtxSize,
-		   M_QAT_OCF);
+	free(qat_session->sessionCtx, M_QAT_OCF);
 	qat_session->sessionCtx = NULL;
 	qat_session->sessionCtxSize = 0;
 
@@ -943,8 +941,8 @@ fail:
 static void
 qat_ocf_identify(driver_t *drv, device_t parent)
 {
-	if (device_find_child(parent, "qat_ocf", -1) == NULL &&
-	    BUS_ADD_CHILD(parent, 200, "qat_ocf", -1) == 0)
+	if (device_find_child(parent, "qat_ocf", DEVICE_UNIT_ANY) == NULL &&
+	    BUS_ADD_CHILD(parent, 200, "qat_ocf", DEVICE_UNIT_ANY) == 0)
 		device_printf(parent, "qat_ocf: could not attach!");
 }
 
@@ -1281,7 +1279,6 @@ static driver_t qat_ocf_driver = {
 	.methods = qat_ocf_methods,
 	.size = sizeof(struct qat_ocf_softc),
 };
-
 
 DRIVER_MODULE_ORDERED(qat,
 		      nexus,

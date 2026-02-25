@@ -2,12 +2,7 @@
 #
 #	@(#) Copyright (c) 2006, Simon J. Gerraty
 #
-#	This file is provided in the hope that it will
-#	be of use.  There is absolutely NO WARRANTY.
-#	Permission to copy, redistribute or otherwise
-#	use this file is hereby granted provided that 
-#	the above copyright notice and this notice are
-#	left intact. 
+#	SPDX-License-Identifier: BSD-2-Clause
 #      
 #	Please send copies of changes and bug-fixes to:
 #	sjg@crufty.net
@@ -110,7 +105,7 @@ _PROGS_ALL_SRCS+=	${s}
 .if !empty(_PROGS_COMMON_SRCS)
 _PROGS_COMMON_OBJS=	${_PROGS_COMMON_SRCS:M*.[dhly]}
 .if !empty(_PROGS_COMMON_SRCS:N*.[dhly])
-_PROGS_COMMON_OBJS+=	${_PROGS_COMMON_SRCS:N*.[dhly]:${OBJS_SRCS_FILTER:ts:}:S/$/.o/g}
+_PROGS_COMMON_OBJS+=	${_PROGS_COMMON_SRCS:N*.[dhly]:${OBJS_SRCS_FILTER:ts:}:S/$/.${OBJ_EXT}/g}
 .endif
 .endif
 
@@ -155,6 +150,7 @@ $p.$t: .PHONY .MAKE ${_PROGS_COMMON_OBJS}
 	    NO_SUBDIR=1 ${MAKE} -f ${MAKEFILE} _RECURSING_PROGS=t \
 	    ${_PROG_MK.${t}} PROG=$p ${x.$p} ${@:E})
 .endfor
+.ORDER: installdirs $p.install
 .endfor
 
 # Depend main pseudo targets on all PROG.pseudo targets too.

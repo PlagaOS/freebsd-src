@@ -42,11 +42,11 @@
 #include <sys/mutex.h>
 #include <sys/resource.h>
 #include <sys/rman.h>
+#include <sys/stdarg.h>
 #include <sys/uio.h>
 
 #include <machine/bus.h>
 #include <machine/resource.h>
-#include <machine/stdarg.h>
 
 #include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
@@ -598,12 +598,12 @@ zy7_qspi_attach(device_t dev)
 		return (err);
 	}
 
-	sc->child = device_add_child(dev, "spibus", -1);
+	sc->child = device_add_child(dev, "spibus", DEVICE_UNIT_ANY);
 
 	zy7_qspi_add_sysctls(dev);
 
 	/* Attach spibus driver as a child later when interrupts work. */
-	config_intrhook_oneshot((ich_func_t)bus_generic_attach, dev);
+	bus_delayed_attach_children(dev);
 
 	return (0);
 }
@@ -612,13 +612,11 @@ static int
 zy7_qspi_detach(device_t dev)
 {
 	struct zy7_qspi_softc *sc = device_get_softc(dev);
+	int error;
 
-	if (device_is_attached(dev))
-		bus_generic_detach(dev);
-
-	/* Delete child bus. */
-	if (sc->child)
-		device_delete_child(dev, sc->child);
+	error = bus_generic_detach(dev);
+	if (error != 0)
+		return (error);
 
 	/* Disable hardware. */
 	if (sc->mem_res != NULL) {

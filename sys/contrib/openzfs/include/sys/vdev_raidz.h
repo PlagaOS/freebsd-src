@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -57,15 +58,20 @@ void vdev_raidz_reconstruct(struct raidz_map *, const int *, int);
 void vdev_raidz_child_done(zio_t *);
 void vdev_raidz_io_done(zio_t *);
 void vdev_raidz_checksum_error(zio_t *, struct raidz_col *, abd_t *);
-struct raidz_row *vdev_raidz_row_alloc(int);
+struct raidz_row *vdev_raidz_row_alloc(int, zio_t *);
 void vdev_raidz_reflow_copy_scratch(spa_t *);
 void raidz_dtl_reassessed(vdev_t *);
+boolean_t vdev_sit_out_reads(vdev_t *, zio_flag_t);
+void vdev_raidz_sit_child(vdev_t *, uint64_t);
+void vdev_raidz_unsit_child(vdev_t *);
 
 extern const zio_vsd_ops_t vdev_raidz_vsd_ops;
 
 /*
  * vdev_raidz_math interface
  */
+/* Required, but not used, by ZFS_MODULE_PARAM_CALL */
+extern uint32_t zfs_vdev_raidz_impl;
 void vdev_raidz_math_init(void);
 void vdev_raidz_math_fini(void);
 const struct raidz_impl_ops *vdev_raidz_math_get_ops(void);
@@ -73,6 +79,7 @@ int vdev_raidz_math_generate(struct raidz_map *, struct raidz_row *);
 int vdev_raidz_math_reconstruct(struct raidz_map *, struct raidz_row *,
     const int *, const int *, const int);
 int vdev_raidz_impl_set(const char *);
+int vdev_raidz_impl_get(char *buffer, size_t size);
 
 typedef struct vdev_raidz_expand {
 	uint64_t vre_vdev_id;

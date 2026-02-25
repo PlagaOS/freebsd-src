@@ -93,6 +93,7 @@ struct udpstat {
 #ifdef _KERNEL
 #include <netinet/in_pcb.h>
 #include <sys/counter.h>
+#include <netinet/in_kdtrace.h>
 struct mbuf;
 
 typedef bool	udp_tun_func_t(struct mbuf *, int, struct inpcb *,
@@ -119,7 +120,7 @@ struct udpcb {
 	void 		*u_tun_ctx;	/* Tunneling callback context. */
 };
 
-#define	intoudpcb(ip)	__containerof((inp), struct udpcb, u_inpcb)
+#define	intoudpcb(ip)	__containerof((ip), struct udpcb, u_inpcb)
 #define	sotoudpcb(so)	(intoudpcb(sotoinpcb(so)))
 
 VNET_PCPUSTAT_DECLARE(struct udpstat, udpstat);
@@ -127,18 +128,26 @@ VNET_PCPUSTAT_DECLARE(struct udpstat, udpstat);
  * In-kernel consumers can use these accessor macros directly to update
  * stats.
  */
-#define	UDPSTAT_ADD(name, val)  \
-    VNET_PCPUSTAT_ADD(struct udpstat, udpstat, name, (val))
-#define	UDPSTAT_INC(name)	UDPSTAT_ADD(name, 1)
+#define UDPSTAT_ADD(name, val)                                           \
+	do {                                                             \
+		MIB_SDT_PROBE1(udp, count, name, (val));                 \
+		VNET_PCPUSTAT_ADD(struct udpstat, udpstat, name, (val)); \
+	} while (0)
+#define UDPSTAT_INC(name) UDPSTAT_ADD(name, 1)
 
 /*
  * Kernel module consumers must use this accessor macro.
  */
 void	kmod_udpstat_inc(int statnum);
-#define	KMOD_UDPSTAT_INC(name)	\
-    kmod_udpstat_inc(offsetof(struct udpstat, name) / sizeof(uint64_t))
+#define KMOD_UDPSTAT_INC(name)                                          \
+	do {                                                            \
+		MIB_SDT_PROBE1(udp, count, name, 1);                    \
+		kmod_udpstat_inc(                                       \
+		    offsetof(struct udpstat, name) / sizeof(uint64_t)); \
+	} while (0)
 
 SYSCTL_DECL(_net_inet_udp);
+SYSCTL_DECL(_net_inet_udplite);
 
 VNET_DECLARE(struct inpcbinfo, udbinfo);
 VNET_DECLARE(struct inpcbinfo, ulitecbinfo);
@@ -147,13 +156,15 @@ VNET_DECLARE(struct inpcbinfo, ulitecbinfo);
 
 extern u_long			udp_sendspace;
 extern u_long			udp_recvspace;
-VNET_DECLARE(int, udp_cksum);
+VNET_DECLARE(int, udp_bind_all_fibs);
 VNET_DECLARE(int, udp_blackhole);
 VNET_DECLARE(bool, udp_blackhole_local);
+VNET_DECLARE(int, udp_cksum);
 VNET_DECLARE(int, udp_log_in_vain);
-#define	V_udp_cksum		VNET(udp_cksum)
+#define	V_udp_bind_all_fibs	VNET(udp_bind_all_fibs)
 #define	V_udp_blackhole		VNET(udp_blackhole)
 #define	V_udp_blackhole_local	VNET(udp_blackhole_local)
+#define	V_udp_cksum		VNET(udp_cksum)
 #define	V_udp_log_in_vain	VNET(udp_log_in_vain)
 
 VNET_DECLARE(int, zero_checksum_port);

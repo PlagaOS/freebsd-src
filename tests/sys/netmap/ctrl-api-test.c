@@ -59,8 +59,6 @@
 #include <stddef.h>
 
 #ifdef __FreeBSD__
-#include "freebsd_test_suite/macros.h"
-
 static int
 eventfd(int x __unused, int y __unused)
 {
@@ -1596,6 +1594,7 @@ sync_kloop_csb_enable(struct TestContext *ctx)
 	return sync_kloop_start_stop(ctx);
 }
 
+#if 0
 static int
 sync_kloop_conflict(struct TestContext *ctx)
 {
@@ -1640,6 +1639,14 @@ sync_kloop_conflict(struct TestContext *ctx)
 	/* Wait for one of the two threads to fail to start the kloop, to
 	 * avoid a race condition where th1 starts the loop and stops,
 	 * and after that th2 starts the loop successfully. */
+	/*
+	 * XXX: This doesn't fully close the race.  th2 might fail to
+	 * start executing since th1 can enter the kernel and hog the
+	 * CPU on a single-CPU system until the semaphore timeout
+	 * awakens this thread and it calls sync_kloop_stop.  Once th1
+	 * exits the kernel, th2 can finally run and will then loop
+	 * forever in the ioctl handler.
+	 */
 	clock_gettime(CLOCK_REALTIME, &to);
 	to.tv_sec += 2;
 	ret = sem_timedwait(&sem, &to);
@@ -1674,6 +1681,7 @@ sync_kloop_conflict(struct TestContext *ctx)
 	               ? 0
 	               : -1;
 }
+#endif
 
 static int
 sync_kloop_eventfds_mismatch(struct TestContext *ctx)
@@ -2079,7 +2087,9 @@ static struct mytest tests[] = {
 	decltest(sync_kloop_eventfds_all_direct_rx),
 	decltest(sync_kloop_nocsb),
 	decltest(sync_kloop_csb_enable),
+#if 0
 	decltest(sync_kloop_conflict),
+#endif
 	decltest(sync_kloop_eventfds_mismatch),
 	decltest(null_port),
 	decltest(null_port_all_zero),
@@ -2186,11 +2196,6 @@ main(int argc, char **argv)
 	int list = 0;
 	int opt;
 	int i;
-
-#ifdef __FreeBSD__
-	PLAIN_REQUIRE_KERNEL_MODULE("if_tap", 0);
-	PLAIN_REQUIRE_KERNEL_MODULE("netmap", 0);
-#endif
 
 	memset(&ctx_, 0, sizeof(ctx_));
 

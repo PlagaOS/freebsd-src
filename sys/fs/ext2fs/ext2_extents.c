@@ -447,11 +447,7 @@ static int
 ext4_ext_check_header(struct inode *ip, struct ext4_extent_header *eh,
     int depth)
 {
-#ifdef KDTRACE_HOOKS
-	char *error_msg;
-#else
-	char *error_msg __unused;
-#endif
+	char *error_msg __sdt_used;
 
 	if (le16toh(eh->eh_magic) != EXT4_EXT_MAGIC) {
 		error_msg = "header: invalid magic";
@@ -711,7 +707,7 @@ ext4_ext_tree_init(struct inode *ip)
 
 	ip->i_flag |= IN_E4EXTENTS;
 
-	memset(ip->i_data, 0, EXT2_NDADDR + EXT2_NIADDR);
+	memset(ip->i_data, 0, sizeof(ip->i_data));
 	ehp = (struct ext4_extent_header *)ip->i_data;
 	ehp->eh_magic = htole16(EXT4_EXT_MAGIC);
 	ehp->eh_max = htole16(ext4_ext_space_root(ip));

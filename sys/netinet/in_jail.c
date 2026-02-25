@@ -26,7 +26,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_ddb.h"
 #include "opt_inet.h"
 #include "opt_inet6.h"
@@ -97,13 +96,7 @@ prison_qcmp_v4(const void *ip1, const void *ip2)
 bool
 prison_valid_v4(const void *ip)
 {
-	in_addr_t ia = ((const struct in_addr *)ip)->s_addr;
-
-	/*
-	 * We do not have to care about byte order for these
-	 * checks so we will do them in NBO.
-	 */
-	return (ia != INADDR_ANY && ia != INADDR_BROADCAST);
+	return (!in_broadcast(*(const struct in_addr *)ip));
 }
 
 /*

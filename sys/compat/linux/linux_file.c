@@ -32,11 +32,13 @@
 #include <sys/fcntl.h>
 #include <sys/file.h>
 #include <sys/filedesc.h>
+#include <sys/inotify.h>
 #include <sys/lock.h>
 #include <sys/mman.h>
 #include <sys/selinfo.h>
 #include <sys/pipe.h>
 #include <sys/proc.h>
+#include <sys/specialfd.h>
 #include <sys/stat.h>
 #include <sys/sx.h>
 #include <sys/syscallsubr.h>
@@ -104,7 +106,7 @@ linux_creat(struct thread *td, struct linux_creat_args *args)
 }
 #endif
 
-static int
+int
 linux_common_openflags(int l_flags)
 {
 	int bsd_flags;
@@ -396,12 +398,50 @@ struct l_dirent64 {
     roundup(offsetof(struct l_dirent64, d_name) + (namlen) + 1,		\
     sizeof(uint64_t))
 
+/*
+ * Do kern_getdirentries() and then skip over any invalid entries.
+ * (Repeat, if there are no valid entries.)
+ * Adjust bufp and lenp.
+ */
+static int
+linux_getdirentries(struct thread *td, int fd, caddr_t *bufp, int buflen,
+    off_t *basep, int *lenp)
+{
+	struct dirent *bdp;
+	caddr_t buf;
+	int error, len;
+
+	/* Loop around until a valid entry is found or at EOF. */
+	for (;;) {
+		error = kern_getdirentries(td, fd, *bufp, buflen,
+		    basep, NULL, UIO_SYSSPACE);
+		if (error != 0)
+			return (error);
+		len = td->td_retval[0];
+		if (len == 0) {
+			*lenp = 0;
+			return (0);
+		}
+		buf = *bufp;
+		while (len > 0) {
+			bdp = (struct dirent *)buf;
+			if (bdp->d_fileno != 0) {
+				*bufp = buf;
+				*lenp = len;
+				return (0);
+			}
+			buf += bdp->d_reclen;
+			len -= bdp->d_reclen;
+		}
+	}
+}
+
 #ifdef LINUX_LEGACY_SYSCALLS
 int
 linux_getdents(struct thread *td, struct linux_getdents_args *args)
 {
 	struct dirent *bdp;
-	caddr_t inp, buf;		/* BSD-format */
+	caddr_t inp, buf, bufsav;	/* BSD-format */
 	int len, reclen;		/* BSD-format */
 	caddr_t outp;			/* Linux-format */
 	int resid, linuxreclen;		/* Linux-format */
@@ -411,11 +451,11 @@ linux_getdents(struct thread *td, struct linux_getdents_args *args)
 	int buflen, error;
 	size_t retval;
 
-	buflen = min(args->count, MAXBSIZE);
-	buf = malloc(buflen, M_LINUX, M_WAITOK);
+	buflen = min(roundup2(args->count, DEV_BSIZE), MAXBSIZE);
+	bufsav = buf = malloc(buflen, M_LINUX, M_WAITOK);
 
-	error = kern_getdirentries(td, args->fd, buf, buflen,
-	    &base, NULL, UIO_SYSSPACE);
+	error = linux_getdirentries(td, args->fd, &buf, buflen,
+	    &base, &len);
 	if (error != 0) {
 		error = linux_getdents_error(td, args->fd, error);
 		goto out1;
@@ -423,7 +463,6 @@ linux_getdents(struct thread *td, struct linux_getdents_args *args)
 
 	lbuf = malloc(LINUX_RECLEN(LINUX_NAME_MAX), M_LINUX, M_WAITOK | M_ZERO);
 
-	len = td->td_retval[0];
 	inp = buf;
 	outp = (caddr_t)args->dent;
 	resid = args->count;
@@ -432,44 +471,47 @@ linux_getdents(struct thread *td, struct linux_getdents_args *args)
 	while (len > 0) {
 		bdp = (struct dirent *) inp;
 		reclen = bdp->d_reclen;
-		linuxreclen = LINUX_RECLEN(bdp->d_namlen);
-		/*
-		 * No more space in the user supplied dirent buffer.
-		 * Return EINVAL.
-		 */
-		if (resid < linuxreclen) {
-			error = EINVAL;
-			goto out;
-		}
+		/* Copy a valid entry out. */
+		if (bdp->d_fileno != 0) {
+			linuxreclen = LINUX_RECLEN(bdp->d_namlen);
+			/*
+			 * No more space in the user supplied dirent buffer.
+			 * Return EINVAL.
+			 */
+			if (resid < linuxreclen) {
+				error = EINVAL;
+				goto out;
+			}
 
-		linux_dirent = (struct l_dirent*)lbuf;
-		linux_dirent->d_ino = bdp->d_fileno;
-		linux_dirent->d_off = bdp->d_off;
-		linux_dirent->d_reclen = linuxreclen;
-		/*
-		 * Copy d_type to last byte of l_dirent buffer
-		 */
-		lbuf[linuxreclen - 1] = bdp->d_type;
-		strlcpy(linux_dirent->d_name, bdp->d_name,
-		    linuxreclen - offsetof(struct l_dirent, d_name)-1);
-		error = copyout(linux_dirent, outp, linuxreclen);
-		if (error != 0)
-			goto out;
+			linux_dirent = (struct l_dirent*)lbuf;
+			linux_dirent->d_ino = bdp->d_fileno;
+			linux_dirent->d_off = bdp->d_off;
+			linux_dirent->d_reclen = linuxreclen;
+			/*
+			 * Copy d_type to last byte of l_dirent buffer
+			 */
+			lbuf[linuxreclen - 1] = bdp->d_type;
+			strlcpy(linux_dirent->d_name, bdp->d_name,
+			    linuxreclen - offsetof(struct l_dirent, d_name)-1);
+			error = copyout(linux_dirent, outp, linuxreclen);
+			if (error != 0)
+				goto out;
+			retval += linuxreclen;
+			outp += linuxreclen;
+			resid -= linuxreclen;
+		}
 
 		inp += reclen;
 		base += reclen;
 		len -= reclen;
 
-		retval += linuxreclen;
-		outp += linuxreclen;
-		resid -= linuxreclen;
 	}
 	td->td_retval[0] = retval;
 
 out:
 	free(lbuf, M_LINUX);
 out1:
-	free(buf, M_LINUX);
+	free(bufsav, M_LINUX);
 	return (error);
 }
 #endif
@@ -478,7 +520,7 @@ int
 linux_getdents64(struct thread *td, struct linux_getdents64_args *args)
 {
 	struct dirent *bdp;
-	caddr_t inp, buf;		/* BSD-format */
+	caddr_t inp, buf, bufsav;	/* BSD-format */
 	int len, reclen;		/* BSD-format */
 	caddr_t outp;			/* Linux-format */
 	int resid, linuxreclen;		/* Linux-format */
@@ -487,11 +529,11 @@ linux_getdents64(struct thread *td, struct linux_getdents64_args *args)
 	int buflen, error;
 	size_t retval;
 
-	buflen = min(args->count, MAXBSIZE);
-	buf = malloc(buflen, M_LINUX, M_WAITOK);
+	buflen = min(roundup2(args->count, DEV_BSIZE), MAXBSIZE);
+	bufsav = buf = malloc(buflen, M_LINUX, M_WAITOK);
 
-	error = kern_getdirentries(td, args->fd, buf, buflen,
-	    &base, NULL, UIO_SYSSPACE);
+	error = linux_getdirentries(td, args->fd, &buf, buflen,
+	    &base, &len);
 	if (error != 0) {
 		error = linux_getdents_error(td, args->fd, error);
 		goto out1;
@@ -500,7 +542,6 @@ linux_getdents64(struct thread *td, struct linux_getdents64_args *args)
 	linux_dirent64 = malloc(LINUX_RECLEN64(LINUX_NAME_MAX), M_LINUX,
 	    M_WAITOK | M_ZERO);
 
-	len = td->td_retval[0];
 	inp = buf;
 	outp = (caddr_t)args->dirent;
 	resid = args->count;
@@ -509,40 +550,43 @@ linux_getdents64(struct thread *td, struct linux_getdents64_args *args)
 	while (len > 0) {
 		bdp = (struct dirent *) inp;
 		reclen = bdp->d_reclen;
-		linuxreclen = LINUX_RECLEN64(bdp->d_namlen);
-		/*
-		 * No more space in the user supplied dirent buffer.
-		 * Return EINVAL.
-		 */
-		if (resid < linuxreclen) {
-			error = EINVAL;
-			goto out;
-		}
+		/* Copy a valid entry out. */
+		if (bdp->d_fileno != 0) {
+			linuxreclen = LINUX_RECLEN64(bdp->d_namlen);
+			/*
+			 * No more space in the user supplied dirent buffer.
+			 * Return EINVAL.
+			 */
+			if (resid < linuxreclen) {
+				error = EINVAL;
+				goto out;
+			}
 
-		linux_dirent64->d_ino = bdp->d_fileno;
-		linux_dirent64->d_off = bdp->d_off;
-		linux_dirent64->d_reclen = linuxreclen;
-		linux_dirent64->d_type = bdp->d_type;
-		strlcpy(linux_dirent64->d_name, bdp->d_name,
-		    linuxreclen - offsetof(struct l_dirent64, d_name));
-		error = copyout(linux_dirent64, outp, linuxreclen);
-		if (error != 0)
-			goto out;
+			linux_dirent64->d_ino = bdp->d_fileno;
+			linux_dirent64->d_off = bdp->d_off;
+			linux_dirent64->d_reclen = linuxreclen;
+			linux_dirent64->d_type = bdp->d_type;
+			strlcpy(linux_dirent64->d_name, bdp->d_name,
+			    linuxreclen - offsetof(struct l_dirent64, d_name));
+			error = copyout(linux_dirent64, outp, linuxreclen);
+			if (error != 0)
+				goto out;
+			retval += linuxreclen;
+			outp += linuxreclen;
+			resid -= linuxreclen;
+		}
 
 		inp += reclen;
 		base += reclen;
 		len -= reclen;
 
-		retval += linuxreclen;
-		outp += linuxreclen;
-		resid -= linuxreclen;
 	}
 	td->td_retval[0] = retval;
 
 out:
 	free(linux_dirent64, M_LINUX);
 out1:
-	free(buf, M_LINUX);
+	free(bufsav, M_LINUX);
 	return (error);
 }
 
@@ -551,22 +595,22 @@ int
 linux_readdir(struct thread *td, struct linux_readdir_args *args)
 {
 	struct dirent *bdp;
-	caddr_t buf;			/* BSD-format */
+	caddr_t buf, bufsav;		/* BSD-format */
 	int linuxreclen;		/* Linux-format */
 	off_t base;
 	struct l_dirent *linux_dirent;	/* Linux-format */
-	int buflen, error;
+	int buflen, error, len;
 
-	buflen = sizeof(*bdp);
-	buf = malloc(buflen, M_LINUX, M_WAITOK);
+	buflen = DEV_BSIZE;
+	bufsav = buf = malloc(buflen, M_LINUX, M_WAITOK);
 
-	error = kern_getdirentries(td, args->fd, buf, buflen,
-	    &base, NULL, UIO_SYSSPACE);
+	error = linux_getdirentries(td, args->fd, &buf, buflen,
+	    &base, &len);
 	if (error != 0) {
 		error = linux_getdents_error(td, args->fd, error);
 		goto out;
 	}
-	if (td->td_retval[0] == 0)
+	if (len == 0)
 		goto out;
 
 	linux_dirent = malloc(LINUX_RECLEN(LINUX_NAME_MAX), M_LINUX,
@@ -586,7 +630,7 @@ linux_readdir(struct thread *td, struct linux_readdir_args *args)
 
 	free(linux_dirent, M_LINUX);
 out:
-	free(buf, M_LINUX);
+	free(bufsav, M_LINUX);
 	return (error);
 }
 #endif /* __i386__ || (__amd64__ && COMPAT_LINUX32) */
@@ -636,8 +680,8 @@ linux_faccessat2(struct thread *td, struct linux_faccessat2_args *args)
 {
 	int flags, unsupported;
 
-	/* XXX. AT_SYMLINK_NOFOLLOW is not supported by kern_accessat */
-	unsupported = args->flags & ~(LINUX_AT_EACCESS | LINUX_AT_EMPTY_PATH);
+	unsupported = args->flags & ~(LINUX_AT_EACCESS | LINUX_AT_EMPTY_PATH  |
+	    LINUX_AT_SYMLINK_NOFOLLOW);
 	if (unsupported != 0) {
 		linux_msg(td, "faccessat2 unsupported flag 0x%x", unsupported);
 		return (EINVAL);
@@ -647,6 +691,8 @@ linux_faccessat2(struct thread *td, struct linux_faccessat2_args *args)
 	    AT_EACCESS;
 	flags |= (args->flags & LINUX_AT_EMPTY_PATH) == 0 ? 0 :
 	    AT_EMPTY_PATH;
+	flags |= (args->flags & LINUX_AT_SYMLINK_NOFOLLOW) == 0 ? 0 :
+	    AT_SYMLINK_NOFOLLOW;
 	return (linux_do_accessat(td, args->dfd, args->filename, args->amode,
 	    flags));
 }
@@ -1167,7 +1213,7 @@ linux_oldumount(struct thread *td, struct linux_oldumount_args *args)
 int
 linux_umount(struct thread *td, struct linux_umount_args *args)
 {
-	int flags;
+	uint64_t flags;
 
 	flags = 0;
 	if ((args->flags & LINUX_MNT_FORCE) != 0) {
@@ -1451,6 +1497,14 @@ fcntl_common(struct thread *td, struct linux_fcntl_args *args)
 		fpipe = fp->f_data;
 		td->td_retval[0] = fpipe->pipe_buffer.size;
 		fdrop(fp, td);
+		return (0);
+
+	case LINUX_F_DUPFD_QUERY:
+		error = kern_kcmp(td, td->td_proc->p_pid, td->td_proc->p_pid,
+		    KCMP_FILE, args->fd, args->arg);
+		if (error != 0)
+			return (error);
+		td->td_retval[0] = (td->td_retval[0] == 0) ? 1 : 0;
 		return (0);
 
 	default:
@@ -1788,7 +1842,7 @@ linux_memfd_create(struct thread *td, struct linux_memfd_create_args *args)
 	if ((flags & MFD_ALLOW_SEALING) != 0)
 		shmflags |= SHM_ALLOW_SEALING;
 	return (kern_shm_open2(td, SHM_ANON, oflags, 0, shmflags, NULL,
-	    memfd_name));
+	    memfd_name, NULL));
 }
 
 int
@@ -1874,4 +1928,123 @@ linux_writev(struct thread *td, struct linux_writev_args *args)
 	error = kern_writev(td, args->fd, auio);
 	freeuio(auio);
 	return (linux_enobufs2eagain(td, args->fd, error));
+}
+
+static int
+linux_inotify_init_flags(int l_flags)
+{
+	int bsd_flags;
+
+	if ((l_flags & ~(LINUX_IN_CLOEXEC | LINUX_IN_NONBLOCK)) != 0)
+		linux_msg(NULL, "inotify_init1 unsupported flags 0x%x",
+		    l_flags);
+
+	bsd_flags = 0;
+	if ((l_flags & LINUX_IN_CLOEXEC) != 0)
+		bsd_flags |= O_CLOEXEC;
+	if ((l_flags & LINUX_IN_NONBLOCK) != 0)
+		bsd_flags |= O_NONBLOCK;
+	return (bsd_flags);
+}
+
+static int
+inotify_init_common(struct thread *td, int flags)
+{
+	struct specialfd_inotify si;
+
+	si.flags = linux_inotify_init_flags(flags);
+	return (kern_specialfd(td, SPECIALFD_INOTIFY, &si));
+}
+
+#if defined(__i386__) || defined(__amd64__)
+int
+linux_inotify_init(struct thread *td, struct linux_inotify_init_args *args)
+{
+	return (inotify_init_common(td, 0));
+}
+#endif
+
+int
+linux_inotify_init1(struct thread *td, struct linux_inotify_init1_args *args)
+{
+	return (inotify_init_common(td, args->flags));
+}
+
+/*
+ * The native implementation uses the same values for inotify events as
+ * libinotify, which gives us binary compatibility with Linux.  This simplifies
+ * the shim implementation a lot, as otherwise we would have to handle read(2)
+ * calls on inotify descriptors and translate events to Linux's ABI.
+ */
+_Static_assert(LINUX_IN_ACCESS == IN_ACCESS,
+    "IN_ACCESS mismatch");
+_Static_assert(LINUX_IN_MODIFY == IN_MODIFY,
+    "IN_MODIFY mismatch");
+_Static_assert(LINUX_IN_ATTRIB == IN_ATTRIB,
+    "IN_ATTRIB mismatch");
+_Static_assert(LINUX_IN_CLOSE_WRITE == IN_CLOSE_WRITE,
+    "IN_CLOSE_WRITE mismatch");
+_Static_assert(LINUX_IN_CLOSE_NOWRITE == IN_CLOSE_NOWRITE,
+    "IN_CLOSE_NOWRITE mismatch");
+_Static_assert(LINUX_IN_OPEN == IN_OPEN,
+    "IN_OPEN mismatch");
+_Static_assert(LINUX_IN_MOVED_FROM == IN_MOVED_FROM,
+    "IN_MOVED_FROM mismatch");
+_Static_assert(LINUX_IN_MOVED_TO == IN_MOVED_TO,
+    "IN_MOVED_TO mismatch");
+_Static_assert(LINUX_IN_CREATE == IN_CREATE,
+    "IN_CREATE mismatch");
+_Static_assert(LINUX_IN_DELETE == IN_DELETE,
+    "IN_DELETE mismatch");
+_Static_assert(LINUX_IN_DELETE_SELF == IN_DELETE_SELF,
+    "IN_DELETE_SELF mismatch");
+_Static_assert(LINUX_IN_MOVE_SELF == IN_MOVE_SELF,
+    "IN_MOVE_SELF mismatch");
+
+_Static_assert(LINUX_IN_UNMOUNT == IN_UNMOUNT,
+    "IN_UNMOUNT mismatch");
+_Static_assert(LINUX_IN_Q_OVERFLOW == IN_Q_OVERFLOW,
+    "IN_Q_OVERFLOW mismatch");
+_Static_assert(LINUX_IN_IGNORED == IN_IGNORED,
+    "IN_IGNORED mismatch");
+
+_Static_assert(LINUX_IN_ISDIR == IN_ISDIR,
+    "IN_ISDIR mismatch");
+_Static_assert(LINUX_IN_ONLYDIR == IN_ONLYDIR,
+    "IN_ONLYDIR mismatch");
+_Static_assert(LINUX_IN_DONT_FOLLOW == IN_DONT_FOLLOW,
+    "IN_DONT_FOLLOW mismatch");
+_Static_assert(LINUX_IN_MASK_CREATE == IN_MASK_CREATE,
+    "IN_MASK_CREATE mismatch");
+_Static_assert(LINUX_IN_MASK_ADD == IN_MASK_ADD,
+    "IN_MASK_ADD mismatch");
+_Static_assert(LINUX_IN_ONESHOT == IN_ONESHOT,
+    "IN_ONESHOT mismatch");
+_Static_assert(LINUX_IN_EXCL_UNLINK == IN_EXCL_UNLINK,
+    "IN_EXCL_UNLINK mismatch");
+
+static int
+linux_inotify_watch_flags(int l_flags)
+{
+	if ((l_flags & ~(LINUX_IN_ALL_EVENTS | LINUX_IN_ALL_FLAGS)) != 0) {
+		linux_msg(NULL, "inotify_add_watch unsupported flags 0x%x",
+		    l_flags);
+	}
+
+	return (l_flags);
+}
+
+int
+linux_inotify_add_watch(struct thread *td,
+    struct linux_inotify_add_watch_args *args)
+{
+	return (kern_inotify_add_watch(args->fd, AT_FDCWD, args->pathname,
+	    linux_inotify_watch_flags(args->mask), td));
+}
+
+int
+linux_inotify_rm_watch(struct thread *td,
+    struct linux_inotify_rm_watch_args *args)
+{
+	return (kern_inotify_rm_watch(args->fd, args->wd, td));
 }

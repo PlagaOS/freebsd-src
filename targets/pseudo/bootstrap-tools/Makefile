@@ -1,4 +1,3 @@
-
 # building clang is particularly tedious - so avoid re-inventing wheels
 
 all: bootstrap-toolchain
@@ -39,7 +38,6 @@ BSARGS= 	DESTDIR= \
 		BOOTSTRAPPING=${OSRELDATE} \
 		BWPHASE=${.TARGET} \
 		-DNO_CPU_CFLAGS \
-		-DNO_LINT \
 		-DNO_PIC \
 		-DNO_SHARED \
 		MK_CTF=no \
@@ -48,7 +46,6 @@ BSARGS= 	DESTDIR= \
 		MK_CLANG_FULL=no \
 		MK_HTML=no \
 		MK_MAN=no \
-		MK_PROFILE=no \
 		MK_RETPOLINE=no \
 		MK_SSP=no \
 		MK_TESTS=no \

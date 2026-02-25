@@ -620,7 +620,7 @@ cqspi_delayed_attach(void *arg)
 	sc = arg;
 
 	cqspi_add_devices(sc->dev);
-	bus_generic_attach(sc->dev);
+	bus_attach_children(sc->dev);
 
 	config_intrhook_disestablish(&sc->config_intrhook);
 }
@@ -754,7 +754,7 @@ static device_method_t cqspi_methods[] = {
 	DEVMETHOD(qspi_write,		cqspi_write),
 	DEVMETHOD(qspi_erase,		cqspi_erase),
 
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 DEFINE_CLASS_1(cqspi, cqspi_driver, cqspi_methods,

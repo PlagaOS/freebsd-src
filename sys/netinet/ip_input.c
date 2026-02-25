@@ -29,7 +29,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_bootp.h"
 #include "opt_inet.h"
 #include "opt_ipstealth.h"
@@ -83,6 +82,7 @@
 #include <machine/in_cksum.h>
 #include <netinet/ip_carp.h>
 #include <netinet/in_rss.h>
+#include <netinet/ip_mroute.h>
 #ifdef SCTP
 #include <netinet/sctp_var.h>
 #endif
@@ -353,6 +353,7 @@ VNET_SYSINIT(ip_vnet_init, SI_SUB_PROTO_DOMAIN, SI_ORDER_FOURTH,
 static void
 ip_init(const void *unused __unused)
 {
+	struct ifnet *ifp;
 
 	ipreass_init();
 
@@ -377,6 +378,14 @@ ip_init(const void *unused __unused)
 #ifdef	RSS
 	netisr_register(&ip_direct_nh);
 #endif
+	/*
+	 * XXXGL: we use SYSINIT() here, but go over V_ifnet.  It was the same
+	 * way before dom_ifattach removal.  This worked because when any
+	 * non-default vnet is created, there are no interfaces inside.
+	 * Eventually this needs to be fixed.
+	 */
+	CK_STAILQ_FOREACH(ifp, &V_ifnet, if_link)
+		in_ifattach(NULL, ifp);
 }
 SYSINIT(ip_init, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD, ip_init, NULL);
 
@@ -521,14 +530,15 @@ ip_input(struct mbuf *m)
 			goto bad;
 		}
 	}
-	/* The unspecified address can appear only as a src address - RFC1122 */
-	if (__predict_false(ntohl(ip->ip_dst.s_addr) == INADDR_ANY)) {
-		IPSTAT_INC(ips_badaddr);
-		goto bad;
-	}
 
 	if (m->m_pkthdr.csum_flags & CSUM_IP_CHECKED) {
 		sum = !(m->m_pkthdr.csum_flags & CSUM_IP_VALID);
+	} else if (m->m_pkthdr.csum_flags & CSUM_IP) {
+		/*
+		 * Packet from local host that offloaded checksum computation.
+		 * Checksum not required since the packet wasn't on the wire.
+		 */
+		sum = 0;
 	} else {
 		if (hlen == sizeof(struct ip)) {
 			sum = in_cksum_hdr(ip);
@@ -641,6 +651,17 @@ tooshort:
 		}
 	}
 passin:
+	/*
+	 * The unspecified address can appear only as a src address - RFC1122.
+	 *
+	 * The check is deferred to here to give firewalls a chance to block
+	 * (and log) such packets.  ip_tryforward() will not process such
+	 * packets.
+	 */
+	if (__predict_false(ntohl(ip->ip_dst.s_addr) == INADDR_ANY)) {
+		IPSTAT_INC(ips_badaddr);
+		goto bad;
+	}
 
 	/*
 	 * Process options and, if not destined for us,
@@ -751,7 +772,8 @@ passin:
 		 * RFC 3927 2.7: Do not forward multicast packets from
 		 * IN_LINKLOCAL.
 		 */
-		if (V_ip_mrouter && !IN_LINKLOCAL(ntohl(ip->ip_src.s_addr))) {
+		if (V_ip_mrouting_enabled &&
+		    !IN_LINKLOCAL(ntohl(ip->ip_src.s_addr))) {
 			/*
 			 * If we are acting as a multicast router, all
 			 * incoming multicast packets are passed to the
@@ -783,9 +805,7 @@ passin:
 		 */
 		goto ours;
 	}
-	if (ip->ip_dst.s_addr == (u_long)INADDR_BROADCAST)
-		goto ours;
-	if (ip->ip_dst.s_addr == INADDR_ANY)
+	if (in_broadcast(ip->ip_dst))
 		goto ours;
 	/* RFC 3927 2.7: Do not forward packets to or from IN_LINKLOCAL. */
 	if (IN_LINKLOCAL(ntohl(ip->ip_dst.s_addr)) ||
@@ -920,7 +940,7 @@ ip_forward(struct mbuf *m, int srcrt)
 
 	NET_EPOCH_ASSERT();
 
-	if (m->m_flags & (M_BCAST|M_MCAST) || in_canforward(ip->ip_dst) == 0) {
+	if (m->m_flags & (M_BCAST|M_MCAST) || !in_canforward(ip->ip_dst)) {
 		IPSTAT_INC(ips_cantforward);
 		m_freem(m);
 		return;
@@ -942,6 +962,18 @@ ip_forward(struct mbuf *m, int srcrt)
 	flowid = m->m_pkthdr.flowid;
 	ro.ro_nh = fib4_lookup(M_GETFIB(m), ip->ip_dst, 0, NHR_REF, flowid);
 	if (ro.ro_nh != NULL) {
+		if (ro.ro_nh->nh_flags & (NHF_BLACKHOLE | NHF_BROADCAST)) {
+			IPSTAT_INC(ips_cantforward);
+			m_freem(m);
+			NH_FREE(ro.ro_nh);
+			return;
+		}
+		if (ro.ro_nh->nh_flags & NHF_REJECT) {
+			IPSTAT_INC(ips_cantforward);
+			NH_FREE(ro.ro_nh);
+			icmp_error(m, ICMP_UNREACH, ICMP_UNREACH_HOST, 0, 0);
+			return;
+		}
 		ia = ifatoia(ro.ro_nh->nh_ifa);
 	} else
 		ia = NULL;

@@ -1,4 +1,3 @@
-
 .include <src.opts.mk>
 
 PROG=	netstat
@@ -51,8 +50,6 @@ CFLAGS+=-DSDP
 CFLAGS+=-DPF
 .endif
 
-BINGRP=	kmem
-BINMODE=2555
 LIBADD=	kvm memstat xo util
 
 .if ${MK_NETGRAPH_SUPPORT} != "no"

@@ -2,7 +2,7 @@
 
 SPDX-License-Identifier: BSD-2-Clause
 
-Copyright (c) 2018-2023 Gavin D. Howard and contributors.
+Copyright (c) 2018-2025 Gavin D. Howard and contributors.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -687,6 +687,9 @@ The operators will be described in more detail below.
 
 :   The **boolean not** operator returns **1** if the expression is **0**, or
     **0** otherwise.
+
+    **Warning**: This operator has a **different precedence** than the
+    equivalent operator in GNU bc(1) and other bc(1) implementations!
 
     This is a **non-portable extension**.
 
@@ -1472,7 +1475,7 @@ use a period (**.**) as a radix point, regardless of the value of
 Before version **6.1.0**, this bc(1) had incorrect behavior for the **quit**
 statement.
 
-No other bugs are known. Report bugs at https://git.gavinhoward.com/gavin/bc .
+No other bugs are known. Report bugs at https://github.com/gavinhoward/bc .
 
 # AUTHORS
 

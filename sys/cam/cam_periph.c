@@ -767,27 +767,28 @@ camperiphfree(struct cam_periph *periph)
 		CAM_DEBUG(periph->path, CAM_DEBUG_INFO, ("Periph destroyed\n"));
 
 	if (periph->flags & CAM_PERIPH_NEW_DEV_FOUND) {
-		union ccb ccb;
-		void *arg;
-
-		memset(&ccb, 0, sizeof(ccb));
 		switch (periph->deferred_ac) {
-		case AC_FOUND_DEVICE:
-			ccb.ccb_h.func_code = XPT_GDEV_TYPE;
-			xpt_setup_ccb(&ccb.ccb_h, periph->path, CAM_PRIORITY_NORMAL);
-			xpt_action(&ccb);
-			arg = &ccb;
-			break;
-		case AC_PATH_REGISTERED:
-			xpt_path_inq(&ccb.cpi, periph->path);
-			arg = &ccb;
-			break;
-		default:
-			arg = NULL;
+		case AC_FOUND_DEVICE: {
+			struct ccb_getdev cgd;
+
+			xpt_gdev_type(&cgd, periph->path);
+			periph->deferred_callback(NULL, periph->deferred_ac,
+			    periph->path, &cgd);
 			break;
 		}
-		periph->deferred_callback(NULL, periph->deferred_ac,
-					  periph->path, arg);
+		case AC_PATH_REGISTERED: {
+			struct ccb_pathinq cpi;
+
+			xpt_path_inq(&cpi, periph->path);
+			periph->deferred_callback(NULL, periph->deferred_ac,
+			    periph->path, &cpi);
+			break;
+		}
+		default:
+			periph->deferred_callback(NULL, periph->deferred_ac,
+			    periph->path, NULL);
+			break;
+		}
 	}
 	xpt_free_path(periph->path);
 	free(periph, M_CAMPERIPH);
@@ -928,16 +929,6 @@ cam_periph_mapmem(union ccb *ccb, struct cam_periph_map_info *mapinfo,
 		}
 	}
 
-	/*
-	 * This keeps the kernel stack of current thread from getting
-	 * swapped.  In low-memory situations where the kernel stack might
-	 * otherwise get swapped out, this holds it and allows the thread
-	 * to make progress and release the kernel mapped pages sooner.
-	 *
-	 * XXX KDM should I use P_NOSWAP instead?
-	 */
-	PHOLD(curproc);
-
 	for (i = 0; i < numbufs; i++) {
 		/* Save the user's data address. */
 		mapinfo->orig[i] = *data_ptrs[i];
@@ -1005,7 +996,6 @@ fail:
 			free(*data_ptrs[i], M_CAMPERIPH);
 		*data_ptrs[i] = mapinfo->orig[i];
 	}
-	PRELE(curproc);
 	return(EACCES);
 }
 
@@ -1115,9 +1105,6 @@ cam_periph_unmapmem(union ccb *ccb, struct cam_periph_map_info *mapinfo)
 		/* Set the user's pointer back to the original value */
 		*data_ptrs[i] = mapinfo->orig[i];
 	}
-
-	/* allow ourselves to be swapped once again */
-	PRELE(curproc);
 
 	return (error);
 }
@@ -1696,10 +1683,7 @@ camperiphscsisenseerror(union ccb *ccb, union ccb **orig,
 		/*
 		 * Grab the inquiry data for this device.
 		 */
-		memset(&cgd, 0, sizeof(cgd));
-		xpt_setup_ccb(&cgd.ccb_h, ccb->ccb_h.path, CAM_PRIORITY_NORMAL);
-		cgd.ccb_h.func_code = XPT_GDEV_TYPE;
-		xpt_action((union ccb *)&cgd);
+		xpt_gdev_type(&cgd, ccb->ccb_h.path);
 
 		err_action = scsi_error_action(&ccb->csio, &cgd.inq_data,
 		    sense_flags);
@@ -1888,7 +1872,8 @@ cam_periph_error(union ccb *ccb, cam_flags camflags,
 	struct cam_periph *periph;
 	const char *action_string;
 	cam_status  status;
-	int	    frozen, error, openings, devctl_err;
+	bool	    frozen;
+	int	    error, openings, devctl_err;
 	uint32_t   action, relsim_flags, timeout;
 
 	action = SSQ_PRINT_SENSE;
@@ -2108,11 +2093,11 @@ cam_periph_error(union ccb *ccb, cam_flags camflags,
 
 	/* Attempt a retry */
 	if (error == ERESTART || error == 0) {
-		if (frozen != 0)
+		if (frozen)
 			ccb->ccb_h.status &= ~CAM_DEV_QFRZN;
 		if (error == ERESTART)
 			xpt_action(ccb);
-		if (frozen != 0)
+		if (frozen)
 			cam_release_devq(ccb->ccb_h.path,
 					 relsim_flags,
 					 openings,
@@ -2123,7 +2108,7 @@ cam_periph_error(union ccb *ccb, cam_flags camflags,
 	return (error);
 }
 
-#define CAM_PERIPH_DEVD_MSG_SIZE	256
+#define CAM_PERIPH_DEVD_MSG_SIZE	1024
 
 static void
 cam_periph_devctl_notify(union ccb *ccb)
@@ -2131,7 +2116,6 @@ cam_periph_devctl_notify(union ccb *ccb)
 	struct cam_periph *periph;
 	struct ccb_getdev *cgd;
 	struct sbuf sb;
-	int serr, sk, asc, ascq;
 	char *sbmsg, *type;
 
 	sbmsg = malloc(CAM_PERIPH_DEVD_MSG_SIZE, M_CAMPERIPH, M_NOWAIT);
@@ -2146,11 +2130,7 @@ cam_periph_devctl_notify(union ccb *ccb)
 
 	sbuf_cat(&sb, "serial=\"");
 	if ((cgd = (struct ccb_getdev *)xpt_alloc_ccb_nowait()) != NULL) {
-		xpt_setup_ccb(&cgd->ccb_h, ccb->ccb_h.path,
-		    CAM_PRIORITY_NORMAL);
-		cgd->ccb_h.func_code = XPT_GDEV_TYPE;
-		xpt_action((union ccb *)cgd);
-
+		xpt_gdev_type(cgd, ccb->ccb_h.path);
 		if (cgd->ccb_h.status == CAM_REQ_CMP)
 			sbuf_bcat(&sb, cgd->serial_num, cgd->serial_num_len);
 		xpt_free_ccb((union ccb *)cgd);
@@ -2164,10 +2144,7 @@ cam_periph_devctl_notify(union ccb *ccb)
 		type = "timeout";
 		break;
 	case CAM_SCSI_STATUS_ERROR:
-		sbuf_printf(&sb, "scsi_status=%d ", ccb->csio.scsi_status);
-		if (scsi_extract_sense_ccb(ccb, &serr, &sk, &asc, &ascq))
-			sbuf_printf(&sb, "scsi_sense=\"%02x %02x %02x %02x\" ",
-			    serr, sk, asc, ascq);
+		scsi_format_sense_devd(&ccb->csio, &sb);
 		type = "error";
 		break;
 	case CAM_ATA_STATUS_ERROR:
@@ -2180,9 +2157,9 @@ cam_periph_devctl_notify(union ccb *ccb)
 	{
 		struct ccb_nvmeio *n = &ccb->nvmeio;
 
-		sbuf_printf(&sb, "sc=\"%02x\" sct=\"%02x\" cdw0=\"%08x\" ",
-		    NVME_STATUS_GET_SC(n->cpl.status),
-		    NVME_STATUS_GET_SCT(n->cpl.status), n->cpl.cdw0);
+		sbuf_printf(&sb, "sct=\"%02x\" sc=\"%02x\" cdw0=\"%08x\" ",
+		    NVME_STATUS_GET_SCT(n->cpl.status),
+		    NVME_STATUS_GET_SC(n->cpl.status), n->cpl.cdw0);
 		type = "error";
 		break;
 	}

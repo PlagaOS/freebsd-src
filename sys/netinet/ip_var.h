@@ -47,7 +47,7 @@ struct ipovly {
 	u_short	ih_len;			/* protocol length */
 	struct	in_addr ih_src;		/* source internet address */
 	struct	in_addr ih_dst;		/* destination internet address */
-};
+} __packed;
 
 #ifdef _KERNEL
 /*
@@ -136,15 +136,19 @@ struct	ipstat {
 
 #include <sys/counter.h>
 #include <net/vnet.h>
+#include <netinet/in_kdtrace.h>
 
 VNET_PCPUSTAT_DECLARE(struct ipstat, ipstat);
 /*
  * In-kernel consumers can use these accessor macros directly to update
  * stats.
  */
-#define	IPSTAT_ADD(name, val)	\
-    VNET_PCPUSTAT_ADD(struct ipstat, ipstat, name, (val))
-#define	IPSTAT_SUB(name, val)	IPSTAT_ADD(name, -(val))
+#define IPSTAT_ADD(name, val)                                          \
+	do {                                                           \
+		MIB_SDT_PROBE1(ip, count, name, (val));                \
+		VNET_PCPUSTAT_ADD(struct ipstat, ipstat, name, (val)); \
+	} while (0)
+#define IPSTAT_SUB(name, val) IPSTAT_ADD(name, -(val))
 #define	IPSTAT_INC(name)	IPSTAT_ADD(name, 1)
 #define	IPSTAT_DEC(name)	IPSTAT_SUB(name, 1)
 
@@ -152,11 +156,19 @@ VNET_PCPUSTAT_DECLARE(struct ipstat, ipstat);
  * Kernel module consumers must use this accessor macro.
  */
 void	kmod_ipstat_inc(int statnum);
-#define	KMOD_IPSTAT_INC(name)	\
-    kmod_ipstat_inc(offsetof(struct ipstat, name) / sizeof(uint64_t))
-void	kmod_ipstat_dec(int statnum);
-#define	KMOD_IPSTAT_DEC(name)	\
-    kmod_ipstat_dec(offsetof(struct ipstat, name) / sizeof(uint64_t))
+#define KMOD_IPSTAT_INC(name)                                          \
+	do {                                                           \
+		MIB_SDT_PROBE1(ip, count, name, 1);                    \
+		kmod_ipstat_inc(                                       \
+		    offsetof(struct ipstat, name) / sizeof(uint64_t)); \
+	} while (0)
+void kmod_ipstat_dec(int statnum);
+#define KMOD_IPSTAT_DEC(name)                                          \
+	do {                                                           \
+		MIB_SDT_PROBE1(ip, count, name, -1);                   \
+		kmod_ipstat_dec(                                       \
+		    offsetof(struct ipstat, name) / sizeof(uint64_t)); \
+	} while (0)
 
 /* flags passed to ip_output as last parameter */
 #define	IP_FORWARDING		0x1		/* most of ip header exists */
@@ -187,11 +199,9 @@ VNET_DECLARE(int, ipsendredirects);
 VNET_DECLARE(int, ipstealth);			/* stealth forwarding */
 #endif
 VNET_DECLARE(struct socket *, ip_rsvpd);	/* reservation protocol daemon*/
-VNET_DECLARE(struct socket *, ip_mrouter);	/* multicast routing daemon */
-extern int	(*legal_vif_num)(int);
-extern u_long	(*ip_mcast_src)(int);
 VNET_DECLARE(int, rsvp_on);
 VNET_DECLARE(int, drop_redirect);
+VNET_DECLARE(int, ip_random_id);
 
 #define	V_ip_id			VNET(ip_id)
 #define	V_ip_defttl		VNET(ip_defttl)
@@ -201,9 +211,9 @@ VNET_DECLARE(int, drop_redirect);
 #define	V_ipstealth		VNET(ipstealth)
 #endif
 #define	V_ip_rsvpd		VNET(ip_rsvpd)
-#define	V_ip_mrouter		VNET(ip_mrouter)
 #define	V_rsvp_on		VNET(rsvp_on)
 #define	V_drop_redirect		VNET(drop_redirect)
+#define	V_ip_random_id		VNET(ip_random_id)
 
 void	inp_freemoptions(struct ip_moptions *);
 int	inp_getmoptions(struct inpcb *, struct sockopt *);
@@ -213,9 +223,6 @@ int	ip_ctloutput(struct socket *, struct sockopt *sopt);
 int	ip_fragment(struct ip *ip, struct mbuf **m_frag, int mtu,
 	    u_long if_hwassist_flags);
 void	ip_forward(struct mbuf *m, int srcrt);
-extern int
-	(*ip_mforward)(struct ip *, struct ifnet *, struct mbuf *,
-	    struct ip_moptions *);
 int	ip_output(struct mbuf *,
 	    struct mbuf *, struct route *, int, struct ip_moptions *,
 	    struct inpcb *);
@@ -223,16 +230,13 @@ struct mbuf *
 	ip_reass(struct mbuf *);
 void	ip_savecontrol(struct inpcb *, struct mbuf **, struct ip *,
 	    struct mbuf *);
-void	ip_fillid(struct ip *);
+void	ip_fillid(struct ip *, bool);
 int	rip_ctloutput(struct socket *, struct sockopt *);
 int	ipip_input(struct mbuf **, int *, int);
 int	rsvp_input(struct mbuf **, int *, int);
 
 int	ip_rsvp_init(struct socket *);
 int	ip_rsvp_done(void);
-extern int	(*ip_rsvp_vif)(struct socket *, struct sockopt *);
-extern void	(*ip_rsvp_force_done)(struct socket *);
-extern int	(*rsvp_input_p)(struct mbuf **, int *, int);
 
 typedef int	ipproto_input_t(struct mbuf **, int *, int);
 struct icmp;
@@ -257,6 +261,7 @@ VNET_DECLARE(struct pfil_head *, inet_local_pfil_head);
 #define	PFIL_INET_LOCAL_NAME	"inet-local"
 
 void	in_delayed_cksum(struct mbuf *m);
+void	in_delayed_cksum_o(struct mbuf *m, uint16_t o);
 
 /* Hooks for ipfw, dummynet, divert etc. Most are declared in raw_ip.c */
 /*

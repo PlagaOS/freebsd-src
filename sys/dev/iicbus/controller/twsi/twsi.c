@@ -812,12 +812,13 @@ twsi_attach(device_t dev)
 	    &sc->debug, 0, "Set debug level (zero to disable)");
 
 	/* Attach the iicbus. */
-	if ((sc->iicbus = device_add_child(dev, "iicbus", -1)) == NULL) {
+	if ((sc->iicbus = device_add_child(dev, "iicbus",
+	    DEVICE_UNIT_ANY)) == NULL) {
 		device_printf(dev, "could not allocate iicbus instance\n");
 		twsi_detach(dev);
 		return (ENXIO);
 	}
-	bus_generic_attach(dev);
+	bus_attach_children(dev);
 
 	config_intrhook_oneshot(twsi_intr_start, dev);
 
@@ -834,10 +835,6 @@ twsi_detach(device_t dev)
 
 	if ((rv = bus_generic_detach(dev)) != 0)
 		return (rv);
-
-	if (sc->iicbus != NULL)
-		if ((rv = device_delete_child(dev, sc->iicbus)) != 0)
-			return (rv);
 
 	if (sc->intrhand != NULL)
 		bus_teardown_intr(sc->dev, sc->res[1], sc->intrhand);
@@ -872,7 +869,7 @@ static device_method_t twsi_methods[] = {
 	DEVMETHOD(iicbus_read,		twsi_read),
 	DEVMETHOD(iicbus_reset,		twsi_reset),
 	DEVMETHOD(iicbus_transfer,	twsi_transfer),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 DEFINE_CLASS_0(twsi, twsi_driver, twsi_methods,

@@ -1,4 +1,3 @@
-
 .include <src.opts.mk>
 
 PACKAGE=runtime
@@ -32,8 +31,6 @@ CFLAGS+=-DWITH_CASPER
 
 CFLAGS+=-DIPSEC
 LIBADD+=	ipsec
-
-CFLAGS+=	-Wno-error=unused-but-set-variable
 
 HAS_TESTS=
 SUBDIR.${MK_TESTS}+= tests

@@ -288,12 +288,21 @@ CaseFile::ReEvaluate(const string &devPath, const string &physPath, Vdev *vdev)
 		return (/*consumed*/false);
 	}
 
-	if (VdevState() > VDEV_STATE_CANT_OPEN) {
+	if (VdevState() > VDEV_STATE_FAULTED) {
 		/*
 		 * For now, newly discovered devices only help for
 		 * devices that are missing.  In the future, we might
 		 * use a newly inserted spare to replace a degraded
 		 * or faulted device.
+		 */
+		syslog(LOG_INFO, "CaseFile::ReEvaluate(%s,%s): Pool/Vdev ignored",
+		    PoolGUIDString().c_str(), VdevGUIDString().c_str());
+		return (/*consumed*/false);
+	}
+	if (VdevState() == VDEV_STATE_OFFLINE) {
+		/*
+		 * OFFLINE is an administrative decision.  No need for zfsd to
+		 * do anything.
 		 */
 		syslog(LOG_INFO, "CaseFile::ReEvaluate(%s,%s): Pool/Vdev ignored",
 		    PoolGUIDString().c_str(), VdevGUIDString().c_str());
@@ -401,7 +410,8 @@ CaseFile::ReEvaluate(const ZfsEvent &event)
 		return (/*consumed*/true);
 	} else if (event.Value("type") == "sysevent.fs.zfs.config_sync") {
 		RefreshVdevState();
-		if (VdevState() < VDEV_STATE_HEALTHY)
+		if (VdevState() < VDEV_STATE_HEALTHY &&
+		    VdevState() != VDEV_STATE_OFFLINE)
 			consumed = ActivateSpare();
 	}
 
@@ -694,6 +704,11 @@ CaseFile::CloseIfSolved()
 		switch (VdevState()) {
 		case VDEV_STATE_HEALTHY:
 			/* No need to keep cases for healthy vdevs */
+		case VDEV_STATE_OFFLINE:
+			/*
+			 * Offline is a deliberate administrative action.  zfsd
+			 * doesn't need to do anything for this state.
+			 */
 			Close();
 			return (true);
 		case VDEV_STATE_REMOVED:
@@ -710,7 +725,6 @@ CaseFile::CloseIfSolved()
 			 */
 		case VDEV_STATE_UNKNOWN:
 		case VDEV_STATE_CLOSED:
-		case VDEV_STATE_OFFLINE:
 			/*
 			 * Keep open?  This may not be the correct behavior,
 			 * but it's what we've always done

@@ -30,6 +30,8 @@
 #ifndef WITHOUT_CAPSICUM
 #include <sys/capsicum.h>
 #endif
+#include <sys/cpuset.h>
+#include <sys/domainset.h>
 #include <sys/mman.h>
 #ifdef BHYVE_SNAPSHOT
 #include <sys/socket.h>
@@ -39,6 +41,7 @@
 #ifdef BHYVE_SNAPSHOT
 #include <sys/un.h>
 #endif
+#include <sys/wait.h>
 
 #include <machine/atomic.h>
 
@@ -54,6 +57,7 @@
 #include <fcntl.h>
 #endif
 #include <libgen.h>
+#include <libutil.h>
 #include <unistd.h>
 #include <assert.h>
 #include <pthread.h>
@@ -68,6 +72,7 @@
 #include <libxo/xo.h>
 #endif
 
+#include <dev/vmm/vmm_mem.h>
 #include <vmmapi.h>
 
 #include "acpi.h"
@@ -100,10 +105,16 @@ uint16_t cpu_cores, cpu_sockets, cpu_threads;
 
 int raw_stdio = 0;
 
-static char *progname;
+#ifdef BHYVE_SNAPSHOT
+char *restore_file;
+#endif
+
 static const int BSP = 0;
 
 static cpuset_t cpumask;
+
+static struct vm_mem_domain guest_domains[VM_MAXMEMDOM];
+static int guest_ndomains = 0;
 
 static void vm_loop(struct vmctx *ctx, struct vcpu *vcpu);
 
@@ -115,48 +126,6 @@ static struct vcpu_info {
 
 static cpuset_t **vcpumap;
 
-static void
-usage(int code)
-{
-
-	fprintf(stderr,
-		"Usage: %s [-AaCDeHhPSuWwxY]\n"
-		"       %*s [-c [[cpus=]numcpus][,sockets=n][,cores=n][,threads=n]]\n"
-		"       %*s [-G port] [-k config_file] [-l lpc] [-m mem] [-o var=value]\n"
-		"       %*s [-p vcpu:hostcpu] [-r file] [-s pci] [-U uuid] vmname\n"
-		"       -A: create ACPI tables\n"
-		"       -a: local apic is in xAPIC mode (deprecated)\n"
-		"       -C: include guest memory in core file\n"
-		"       -c: number of CPUs and/or topology specification\n"
-		"       -D: destroy on power-off\n"
-		"       -e: exit on unhandled I/O access\n"
-		"       -G: start a debug server\n"
-		"       -H: vmexit from the guest on HLT\n"
-		"       -h: help\n"
-		"       -k: key=value flat config file\n"
-		"       -K: PS2 keyboard layout\n"
-		"       -l: LPC device configuration\n"
-		"       -m: memory size\n"
-		"       -o: set config 'var' to 'value'\n"
-		"       -P: vmexit from the guest on pause\n"
-		"       -p: pin 'vcpu' to 'hostcpu'\n"
-#ifdef BHYVE_SNAPSHOT
-		"       -r: path to checkpoint file\n"
-#endif
-		"       -S: guest memory cannot be swapped\n"
-		"       -s: <slot,driver,configinfo> PCI slot config\n"
-		"       -U: UUID\n"
-		"       -u: RTC keeps UTC time\n"
-		"       -W: force virtio to use single-vector MSI\n"
-		"       -w: ignore unimplemented MSRs\n"
-		"       -x: local APIC is in x2APIC mode\n"
-		"       -Y: disable MPtable generation\n",
-		progname, (int)strlen(progname), "", (int)strlen(progname), "",
-		(int)strlen(progname), "");
-
-	exit(code);
-}
-
 /*
  * XXX This parser is known to have the following issues:
  * 1.  It accepts null key=value tokens ",," as setting "cpus" to an
@@ -165,8 +134,8 @@ usage(int code)
  * The acceptance of a null specification ('-c ""') is by design to match the
  * manual page syntax specification, this results in a topology of 1 vCPU.
  */
-static int
-topology_parse(const char *opt)
+int
+bhyve_topology_parse(const char *opt)
 {
 	char *cp, *str, *tofree;
 
@@ -216,6 +185,118 @@ parse_int_value(const char *key, const char *value, int minval, int maxval)
 	    lval > maxval)
 		errx(4, "Invalid value for %s: '%s'", key, value);
 	return (lval);
+}
+
+int
+bhyve_numa_parse(const char *opt)
+{
+	int id = -1;
+	nvlist_t *nvl;
+	char *cp, *str, *tofree;
+	char pathbuf[64] = { 0 };
+	char *size = NULL, *cpus = NULL, *domain_policy = NULL;
+
+	if (*opt == '\0') {
+		return (-1);
+	}
+
+	tofree = str = strdup(opt);
+	if (str == NULL)
+		errx(4, "Failed to allocate memory");
+
+	while ((cp = strsep(&str, ",")) != NULL) {
+		if (strncmp(cp, "id=", strlen("id=")) == 0)
+			id = parse_int_value("id", cp + strlen("id="), 0,
+			    UINT8_MAX);
+		else if (strncmp(cp, "size=", strlen("size=")) == 0)
+			size = cp + strlen("size=");
+		else if (strncmp(cp,
+		    "domain_policy=", strlen("domain_policy=")) == 0)
+			domain_policy = cp + strlen("domain_policy=");
+		else if (strncmp(cp, "cpus=", strlen("cpus=")) == 0)
+			cpus = cp + strlen("cpus=");
+	}
+
+	if (id == -1) {
+		EPRINTLN("Missing NUMA domain ID in '%s'", opt);
+		goto out;
+	}
+
+	snprintf(pathbuf, sizeof(pathbuf), "domains.%d", id);
+	nvl = find_config_node(pathbuf);
+	if (nvl == NULL)
+		nvl = create_config_node(pathbuf);
+	if (size != NULL)
+		set_config_value_node(nvl, "size", size);
+	if (domain_policy != NULL)
+		set_config_value_node(nvl, "domain_policy", domain_policy);
+	if (cpus != NULL)
+		set_config_value_node(nvl, "cpus", cpus);
+
+	free(tofree);
+	return (0);
+
+out:
+	free(tofree);
+	return (-1);
+}
+
+static void
+calc_mem_affinity(size_t vm_memsize)
+{
+	int i;
+	nvlist_t *nvl;
+	bool need_recalc;
+	const char *value;
+	struct vm_mem_domain *dom;
+	char pathbuf[64] = { 0 };
+
+	need_recalc = false;
+	for (i = 0; i < VM_MAXMEMDOM; i++) {
+		dom = &guest_domains[i];
+		snprintf(pathbuf, sizeof(pathbuf), "domains.%d", i);
+		nvl = find_config_node(pathbuf);
+		if (nvl == NULL) {
+			break;
+		}
+
+		value = get_config_value_node(nvl, "size");
+		need_recalc |= value == NULL;
+		if (value != NULL && vm_parse_memsize(value, &dom->size)) {
+			errx(EX_USAGE, "invalid memsize for domain %d: '%s'", i,
+			    value);
+		}
+
+		dom->ds_mask = calloc(1, sizeof(domainset_t));
+		if (dom->ds_mask == NULL) {
+			errx(EX_OSERR, "Failed to allocate domainset mask");
+		}
+		dom->ds_size = sizeof(domainset_t);
+		value = get_config_value_node(nvl, "domain_policy");
+		if (value == NULL) {
+			dom->ds_policy = DOMAINSET_POLICY_INVALID;
+			DOMAINSET_ZERO(dom->ds_mask);
+		} else if (domainset_parselist(value, dom->ds_mask, &dom->ds_policy) !=
+		    CPUSET_PARSE_OK) {
+				errx(EX_USAGE, "failed to parse domain policy '%s'", value);
+		}
+	}
+
+	guest_ndomains = i;
+	if (guest_ndomains == 0) {
+		/*
+		 * No domains were specified - create domain
+		 * 0 holding all CPUs and memory.
+		 */
+		guest_ndomains = 1;
+		guest_domains[0].size = vm_memsize;
+	} else if (need_recalc) {
+		warnx("At least one domain memory size was not specified, distributing"
+		    " total VM memory size across all domains");
+		for (i = 0; i < guest_ndomains; i++) {
+			guest_domains[i].size = vm_memsize / guest_ndomains;
+		}
+	}
 }
 
 /*
@@ -275,8 +356,8 @@ calc_topology(void)
 		guest_ncpus = ncpus;
 }
 
-static int
-pincpu_parse(const char *opt)
+int
+bhyve_pincpu_parse(const char *opt)
 {
 	const char *value;
 	char *newval;
@@ -379,6 +460,56 @@ build_vcpumaps(void)
 	}
 }
 
+static void
+set_vcpu_affinities(void)
+{
+	int cpu, error;
+	nvlist_t *nvl = NULL;
+	cpuset_t cpus;
+	const char *value;
+	char pathbuf[64] = { 0 };
+
+	for (int dom = 0; dom < guest_ndomains; dom++) {
+		snprintf(pathbuf, sizeof(pathbuf), "domains.%d", dom);
+		nvl = find_config_node(pathbuf);
+		if (nvl == NULL)
+			break;
+
+		value = get_config_value_node(nvl, "cpus");
+		if (value == NULL) {
+			EPRINTLN("Missing CPU set for domain %d", dom);
+			exit(BHYVE_EXIT_ERROR);
+		}
+
+		parse_cpuset(dom, value, &cpus);
+		CPU_FOREACH_ISSET(cpu, &cpus) {
+			error = acpi_add_vcpu_affinity(cpu, dom);
+			if (error) {
+				EPRINTLN(
+				    "Unable to set vCPU %d affinity for domain %d: %s",
+				    cpu, dom, strerror(errno));
+				exit(BHYVE_EXIT_ERROR);
+			}
+		}
+	}
+	if (guest_ndomains > 1 || nvl != NULL)
+		return;
+
+	/*
+	 * If we're dealing with one domain and no cpuset was provided, create a
+	 * default one holding all cpus.
+	 */
+	for (cpu = 0; cpu < guest_ncpus; cpu++) {
+		error = acpi_add_vcpu_affinity(cpu, 0);
+		if (error) {
+			EPRINTLN(
+			    "Unable to set vCPU %d affinity for domain %d: %s",
+			    cpu, 0, strerror(errno));
+			exit(BHYVE_EXIT_ERROR);
+		}
+	}
+}
+
 void *
 paddr_guest2host(struct vmctx *ctx, uintptr_t gaddr, size_t len)
 {
@@ -431,10 +562,8 @@ fbsdrun_start_thread(void *param)
 #endif
 
 	vm_loop(vi->ctx, vi->vcpu);
-
-	/* not reached */
-	exit(1);
-	return (NULL);
+	/* We get here if the VM was destroyed asynchronously. */
+	exit(BHYVE_EXIT_ERROR);
 }
 
 void
@@ -452,7 +581,8 @@ fbsdrun_addcpu(int vcpuid)
 
 	CPU_SET_ATOMIC(vcpuid, &cpumask);
 
-	vm_suspend_cpu(vi->vcpu);
+	error = vm_suspend_cpu(vi->vcpu);
+	assert(error == 0);
 
 	error = pthread_create(&thr, NULL, fbsdrun_start_thread, vi);
 	assert(error == 0);
@@ -467,7 +597,7 @@ fbsdrun_deletecpu(int vcpu)
 	pthread_mutex_lock(&resetcpu_mtx);
 	if (!CPU_ISSET(vcpu, &cpumask)) {
 		EPRINTLN("Attempting to delete unknown cpu %d", vcpu);
-		exit(4);
+		exit(BHYVE_EXIT_ERROR);
 	}
 
 	CPU_CLR(vcpu, &cpumask);
@@ -516,7 +646,7 @@ vm_loop(struct vmctx *ctx, struct vcpu *vcpu)
 		if (exitcode >= VM_EXITCODE_MAX ||
 		    vmexit_handlers[exitcode] == NULL) {
 			warnx("vm_loop: unexpected exitcode 0x%x", exitcode);
-			exit(4);
+			exit(BHYVE_EXIT_ERROR);
 		}
 
 		rc = (*vmexit_handlers[exitcode])(ctx, vcpu, &vmrun);
@@ -527,7 +657,7 @@ vm_loop(struct vmctx *ctx, struct vcpu *vcpu)
 		case VMEXIT_ABORT:
 			abort();
 		default:
-			exit(4);
+			exit(BHYVE_EXIT_ERROR);
 		}
 	}
 	EPRINTLN("vm_run error %d, errno %d", error, errno);
@@ -558,46 +688,28 @@ static struct vmctx *
 do_open(const char *vmname)
 {
 	struct vmctx *ctx;
-	int error;
-	bool reinit, romboot;
+	int error, flags;
+	bool romboot, monitor;
 
-	reinit = romboot = false;
+	monitor = get_config_bool_default("monitor", false);
+	romboot = bootrom_boot();
 
-#ifdef __amd64__
-	if (lpc_bootrom())
-		romboot = true;
-#endif
-
-	error = vm_create(vmname);
-	if (error) {
-		if (errno == EEXIST) {
-			if (romboot) {
-				reinit = true;
-			} else {
-				/*
-				 * The virtual machine has been setup by the
-				 * userspace bootloader.
-				 */
-			}
-		} else {
-			perror("vm_create");
-			exit(4);
-		}
-	} else {
-		if (!romboot) {
-			/*
-			 * If the virtual machine was just created then a
-			 * bootrom must be configured to boot it.
-			 */
-			fprintf(stderr, "virtual machine cannot be booted\n");
-			exit(4);
-		}
-	}
-
-	ctx = vm_open(vmname);
+	/*
+	 * If we don't have a boot ROM, the guest context must have been
+	 * initialized by bhyveload(8) or equivalent.
+	 */
+	ctx = vm_openf(vmname, romboot ? VMMAPI_OPEN_REINIT : 0);
 	if (ctx == NULL) {
-		perror("vm_open");
-		exit(4);
+		if (errno != ENOENT)
+			err(4, "vm_openf");
+		if (!romboot)
+			errx(4, "no bootrom was configured");
+		flags = VMMAPI_OPEN_CREATE;
+		if (monitor)
+			flags |= VMMAPI_OPEN_CREATE_DESTROY_ON_CLOSE;
+		ctx = vm_openf(vmname, flags);
+		if (ctx == NULL)
+			err(4, "vm_openf");
 	}
 
 #ifndef WITHOUT_CAPSICUM
@@ -605,21 +717,14 @@ do_open(const char *vmname)
 		err(EX_OSERR, "vm_limit_rights");
 #endif
 
-	if (reinit) {
-		error = vm_reinit(ctx);
-		if (error) {
-			perror("vm_reinit");
-			exit(4);
-		}
-	}
 	error = vm_set_topology(ctx, cpu_sockets, cpu_cores, cpu_threads, 0);
 	if (error)
 		errx(EX_OSERR, "vm_set_topology");
 	return (ctx);
 }
 
-static bool
-parse_config_option(const char *option)
+bool
+bhyve_parse_config_option(const char *option)
 {
 	const char *value;
 	char *path;
@@ -631,11 +736,12 @@ parse_config_option(const char *option)
 	if (path == NULL)
 		err(4, "Failed to allocate memory");
 	set_config_value(path, value + 1);
+	free(path);
 	return (true);
 }
 
-static void
-parse_simple_config_file(const char *path)
+void
+bhyve_parse_simple_config_file(const char *path)
 {
 	FILE *fp;
 	char *line, *cp;
@@ -654,7 +760,7 @@ parse_simple_config_file(const char *path)
 		cp = strchr(line, '\n');
 		if (cp != NULL)
 			*cp = '\0';
-		if (!parse_config_option(line))
+		if (!bhyve_parse_config_option(line))
 			errx(4, "%s line %u: invalid config option '%s'", path,
 			    lineno, line);
 	}
@@ -663,8 +769,8 @@ parse_simple_config_file(const char *path)
 }
 
 #ifdef BHYVE_GDB
-static void
-parse_gdb_options(const char *opt)
+void
+bhyve_parse_gdb_options(const char *opt)
 {
 	const char *sport;
 	char *colon;
@@ -691,163 +797,23 @@ parse_gdb_options(const char *opt)
 int
 main(int argc, char *argv[])
 {
-	int c, error;
+	int error, status;
 	int max_vcpus, memflags;
 	struct vcpu *bsp;
 	struct vmctx *ctx;
 	size_t memsize;
-	const char *optstr, *value, *vmname;
+	const char *value, *vmname;
 #ifdef BHYVE_SNAPSHOT
-	char *restore_file;
 	struct restore_state rstate;
-
-	restore_file = NULL;
 #endif
 
 	bhyve_init_config();
-
-	progname = basename(argv[0]);
-
-#ifdef BHYVE_SNAPSHOT
-	optstr = "aehuwxACDHIPSWYk:f:o:p:G:c:s:m:l:K:U:r:";
-#else
-	optstr = "aehuwxACDHIPSWYk:f:o:p:G:c:s:m:l:K:U:";
-#endif
-	while ((c = getopt(argc, argv, optstr)) != -1) {
-		switch (c) {
-#ifdef __amd64__
-		case 'a':
-			set_config_bool("x86.x2apic", false);
-			break;
-#endif
-		case 'A':
-			/*
-			 * NOP. For backward compatibility. Most systems don't
-			 * work properly without sane ACPI tables. Therefore,
-			 * we're always generating them.
-			 */
-			break;
-		case 'D':
-			set_config_bool("destroy_on_poweroff", true);
-			break;
-		case 'p':
-			if (pincpu_parse(optarg) != 0) {
-				errx(EX_USAGE, "invalid vcpu pinning "
-				    "configuration '%s'", optarg);
-			}
-			break;
-		case 'c':
-			if (topology_parse(optarg) != 0) {
-			    errx(EX_USAGE, "invalid cpu topology "
-				"'%s'", optarg);
-			}
-			break;
-		case 'C':
-			set_config_bool("memory.guest_in_core", true);
-			break;
-		case 'f':
-			if (qemu_fwcfg_parse_cmdline_arg(optarg) != 0) {
-			    errx(EX_USAGE, "invalid fwcfg item '%s'", optarg);
-			}
-			break;
-#ifdef BHYVE_GDB
-		case 'G':
-			parse_gdb_options(optarg);
-			break;
-#endif
-		case 'k':
-			parse_simple_config_file(optarg);
-			break;
-		case 'K':
-			set_config_value("keyboard.layout", optarg);
-			break;
-#ifdef __amd64__
-		case 'l':
-			if (strncmp(optarg, "help", strlen(optarg)) == 0) {
-				lpc_print_supported_devices();
-				exit(0);
-			} else if (lpc_device_parse(optarg) != 0) {
-				errx(EX_USAGE, "invalid lpc device "
-				    "configuration '%s'", optarg);
-			}
-			break;
-#endif
-#ifdef BHYVE_SNAPSHOT
-		case 'r':
-			restore_file = optarg;
-			break;
-#endif
-		case 's':
-			if (strncmp(optarg, "help", strlen(optarg)) == 0) {
-				pci_print_supported_devices();
-				exit(0);
-			} else if (pci_parse_slot(optarg) != 0)
-				exit(4);
-			else
-				break;
-		case 'S':
-			set_config_bool("memory.wired", true);
-			break;
-		case 'm':
-			set_config_value("memory.size", optarg);
-			break;
-		case 'o':
-			if (!parse_config_option(optarg))
-				errx(EX_USAGE, "invalid configuration option '%s'", optarg);
-			break;
-#ifdef __amd64__
-		case 'H':
-			set_config_bool("x86.vmexit_on_hlt", true);
-			break;
-		case 'I':
-			/*
-			 * The "-I" option was used to add an ioapic to the
-			 * virtual machine.
-			 *
-			 * An ioapic is now provided unconditionally for each
-			 * virtual machine and this option is now deprecated.
-			 */
-			break;
-		case 'P':
-			set_config_bool("x86.vmexit_on_pause", true);
-			break;
-		case 'e':
-			set_config_bool("x86.strictio", true);
-			break;
-		case 'u':
-			set_config_bool("rtc.use_localtime", false);
-			break;
-#endif
-		case 'U':
-			set_config_value("uuid", optarg);
-			break;
-#ifdef __amd64__
-		case 'w':
-			set_config_bool("x86.strictmsr", false);
-			break;
-#endif
-		case 'W':
-			set_config_bool("virtio_msix", false);
-			break;
-#ifdef __amd64__
-		case 'x':
-			set_config_bool("x86.x2apic", true);
-			break;
-		case 'Y':
-			set_config_bool("x86.mptable", false);
-			break;
-#endif
-		case 'h':
-			usage(0);
-		default:
-			usage(1);
-		}
-	}
+	bhyve_optparse(argc, argv);
 	argc -= optind;
 	argv += optind;
 
 	if (argc > 1)
-		usage(1);
+		bhyve_usage(1);
 
 #ifdef BHYVE_SNAPSHOT
 	if (restore_file != NULL) {
@@ -855,7 +821,7 @@ main(int argc, char *argv[])
 		if (error) {
 			fprintf(stderr, "Failed to read checkpoint info from "
 					"file: '%s'.\n", restore_file);
-			exit(1);
+			exit(BHYVE_EXIT_ERROR);
 		}
 		vmname = lookup_vmname(&rstate);
 		if (vmname != NULL)
@@ -868,11 +834,11 @@ main(int argc, char *argv[])
 
 	vmname = get_config_value("name");
 	if (vmname == NULL)
-		usage(1);
+		bhyve_usage(1);
 
 	if (get_config_bool_default("config.dump", false)) {
 		dump_config();
-		exit(1);
+		exit(BHYVE_EXIT_POWEROFF);
 	}
 
 	calc_topology();
@@ -894,16 +860,68 @@ main(int argc, char *argv[])
 
 	if (guest_ncpus < 1) {
 		fprintf(stderr, "Invalid guest vCPUs (%d)\n", guest_ncpus);
-		exit(1);
+		exit(BHYVE_EXIT_ERROR);
 	}
 #endif
+
+	calc_mem_affinity(memsize);
+	memflags = 0;
+	if (get_config_bool_default("memory.wired", false))
+		memflags |= VM_MEM_F_WIRED;
+	if (get_config_bool_default("memory.guest_in_core", false))
+		memflags |= VM_MEM_F_INCORE;
+	vm_set_memflags(ctx, memflags);
+	error = vm_setup_memory_domains(ctx, VM_MMAP_ALL, guest_domains,
+	    guest_ndomains);
+	if (error) {
+		fprintf(stderr, "Unable to setup memory (%d)\n", errno);
+		exit(BHYVE_EXIT_ERROR);
+	}
+
+	set_vcpu_affinities();
+	init_mem(guest_ncpus);
+	init_bootrom(ctx);
+
+	if (get_config_bool_default("monitor", false)) {
+		while (1) {
+			pid_t child = fork();
+			if (child == -1) {
+				EPRINTLN("Monitor mode fork failed: %s",
+				    strerror(errno));
+				exit(BHYVE_EXIT_ERROR);
+			}
+			if (child == 0)
+				break;
+			while ((error = waitpid(child, &status, 0)) == -1 && errno == EINTR)
+			    ;
+			if (error == -1) {
+				EPRINTLN("Monitor mode wait failed: %s",
+				    strerror(errno));
+				exit(BHYVE_EXIT_ERROR);
+			}
+			if (WIFSIGNALED(status)) {
+				EPRINTLN("Child process was killed by signal %d",
+				    WTERMSIG(status));
+				exit(BHYVE_EXIT_ERROR);
+			} else {
+				status = WEXITSTATUS(status);
+				if (status != BHYVE_EXIT_RESET)
+					exit(status);
+			}
+			if (vm_reinit(ctx) != 0) {
+				EPRINTLN("Monitor mode reinit failed: %s",
+				    strerror(errno));
+				exit(BHYVE_EXIT_ERROR);
+			};
+		}
+	}
 
 	bsp = vm_vcpu_open(ctx, BSP);
 	max_vcpus = num_vcpus_allowed(ctx, bsp);
 	if (guest_ncpus > max_vcpus) {
 		fprintf(stderr, "%d vCPUs requested but only %d available\n",
 			guest_ncpus, max_vcpus);
-		exit(4);
+		exit(BHYVE_EXIT_ERROR);
 	}
 
 	bhyve_init_vcpu(bsp);
@@ -919,32 +937,18 @@ main(int argc, char *argv[])
 			vcpu_info[vcpuid].vcpu = vm_vcpu_open(ctx, vcpuid);
 	}
 
-	memflags = 0;
-	if (get_config_bool_default("memory.wired", false))
-		memflags |= VM_MEM_F_WIRED;
-	if (get_config_bool_default("memory.guest_in_core", false))
-		memflags |= VM_MEM_F_INCORE;
-	vm_set_memflags(ctx, memflags);
-	error = vm_setup_memory(ctx, memsize, VM_MMAP_ALL);
-	if (error) {
-		fprintf(stderr, "Unable to setup memory (%d)\n", errno);
-		exit(4);
-	}
-
-	init_mem(guest_ncpus);
-	init_bootrom(ctx);
 	if (bhyve_init_platform(ctx, bsp) != 0)
-		exit(4);
+		exit(BHYVE_EXIT_ERROR);
 
 	if (qemu_fwcfg_init(ctx) != 0) {
 		fprintf(stderr, "qemu fwcfg initialization error\n");
-		exit(4);
+		exit(BHYVE_EXIT_ERROR);
 	}
 
 	if (qemu_fwcfg_add_file("opt/bhyve/hw.ncpu", sizeof(guest_ncpus),
 	    &guest_ncpus) != 0) {
 		fprintf(stderr, "Could not add qemu fwcfg opt/bhyve/hw.ncpu\n");
-		exit(4);
+		exit(BHYVE_EXIT_ERROR);
 	}
 
 	/*
@@ -953,11 +957,11 @@ main(int argc, char *argv[])
 	if (init_pci(ctx) != 0) {
 		EPRINTLN("Device emulation initialization error: %s",
 		    strerror(errno));
-		exit(4);
+		exit(BHYVE_EXIT_ERROR);
 	}
 	if (init_tpm(ctx) != 0) {
 		EPRINTLN("Failed to init TPM device");
-		exit(4);
+		exit(BHYVE_EXIT_ERROR);
 	}
 
 	/*
@@ -982,37 +986,37 @@ main(int argc, char *argv[])
 		FPRINTLN(stdout, "Pausing pci devs...");
 		if (vm_pause_devices() != 0) {
 			EPRINTLN("Failed to pause PCI device state.");
-			exit(1);
+			exit(BHYVE_EXIT_ERROR);
 		}
 
 		FPRINTLN(stdout, "Restoring vm mem...");
 		if (restore_vm_mem(ctx, &rstate) != 0) {
 			EPRINTLN("Failed to restore VM memory.");
-			exit(1);
+			exit(BHYVE_EXIT_ERROR);
 		}
 
 		FPRINTLN(stdout, "Restoring pci devs...");
 		if (vm_restore_devices(&rstate) != 0) {
 			EPRINTLN("Failed to restore PCI device state.");
-			exit(1);
+			exit(BHYVE_EXIT_ERROR);
 		}
 
 		FPRINTLN(stdout, "Restoring kernel structs...");
 		if (vm_restore_kern_structs(ctx, &rstate) != 0) {
 			EPRINTLN("Failed to restore kernel structs.");
-			exit(1);
+			exit(BHYVE_EXIT_ERROR);
 		}
 
 		FPRINTLN(stdout, "Resuming pci devs...");
 		if (vm_resume_devices() != 0) {
 			EPRINTLN("Failed to resume PCI device state.");
-			exit(1);
+			exit(BHYVE_EXIT_ERROR);
 		}
 	}
 #endif
 
 	if (bhyve_init_platform_late(ctx, bsp) != 0)
-		exit(4);
+		exit(BHYVE_EXIT_ERROR);
 
 	/*
 	 * Change the proc title to include the VM name.
@@ -1054,5 +1058,5 @@ main(int argc, char *argv[])
 	 */
 	mevent_dispatch();
 
-	exit(4);
+	exit(BHYVE_EXIT_ERROR);
 }

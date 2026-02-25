@@ -77,6 +77,7 @@
 #include <paths.h>
 #include <regex.h>
 #include <stdbool.h>
+#include <stdckdint.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -203,9 +204,9 @@ static int	 *klist;		/* will be overlaid on file[0] after class */
 static int	 *member;		/* will be overlaid on file[1] */
 static int	 clen;
 static int	 inifdef;		/* whether or not we are in a #ifdef block */
-static int	 len[2];
-static int	 pref, suff;	/* length of prefix and suffix */
-static int	 slen[2];
+static size_t	 len[2];		/* lengths of files in lines */
+static size_t	 pref, suff;		/* lengths of prefix and suffix */
+static size_t	 slen[2];		/* lengths of files minus pref / suff */
 static int	 anychange;
 static int	 hw, lpad,rpad;		/* half width and padding */
 static int	 edoffset;
@@ -371,6 +372,9 @@ diffreg_stone(char *file1, char *file2, int flags, int capsicum)
 		goto closem;
 	}
 
+	if (stb1.st_dev == stb2.st_dev && stb1.st_ino == stb2.st_ino)
+		goto closem;
+
 	if (lflag)
 		pr = start_pr(file1, file2);
 
@@ -402,13 +406,18 @@ diffreg_stone(char *file1, char *file2, int flags, int capsicum)
 		break;
 	default:
 		/* error */
+		if (ferror(f1))
+			warn("%s", file1);
+		if (ferror(f2))
+			warn("%s", file2);
 		rval = D_ERROR;
 		status |= 2;
 		goto closem;
 	}
 
 	if (diff_format == D_BRIEF && ignore_pats == NULL &&
-	    (flags & (D_FOLDBLANKS|D_IGNOREBLANKS|D_IGNORECASE|D_STRIPCR)) == 0)
+	    (flags & (D_FOLDBLANKS|D_IGNOREBLANKS|D_IGNORECASE|
+	    D_SKIPBLANKLINES|D_STRIPCR)) == 0)
 	{
 		rval = D_DIFFER;
 		status |= 1;
@@ -424,6 +433,10 @@ diffreg_stone(char *file1, char *file2, int flags, int capsicum)
 		status |= 1;
 		goto closem;
 	}
+	if (len[0] > INT_MAX - 2)
+		errc(1, EFBIG, "%s", file1);
+	if (len[1] > INT_MAX - 2)
+		errc(1, EFBIG, "%s", file2);
 
 	prune();
 	sort(sfile[0], slen[0]);
@@ -490,9 +503,9 @@ files_differ(FILE *f1, FILE *f2, int flags)
 		return (0);
 
 	for (;;) {
-		i = fread(buf1, 1, sizeof(buf1), f1);
-		j = fread(buf2, 1, sizeof(buf2), f2);
-		if ((!i && ferror(f1)) || (!j && ferror(f2)))
+		if ((i = fread(buf1, 1, sizeof(buf1), f1)) == 0 && ferror(f1))
+			return (-1);
+		if ((j = fread(buf2, 1, sizeof(buf2), f2)) == 0 && ferror(f2))
 			return (-1);
 		if (i != j)
 			return (1);
@@ -549,18 +562,17 @@ prepare(int i, FILE *fd, size_t filesize, int flags)
 		sz = 100;
 
 	p = xcalloc(sz + 3, sizeof(*p));
-	while ((r = readhash(fd, flags, &h)) != RH_EOF)
-		switch (r) {
-		case RH_EOF: /* otherwise clang complains */
-		case RH_BINARY:
+	while ((r = readhash(fd, flags, &h)) != RH_EOF) {
+		if (r == RH_BINARY)
 			return (false);
-		case RH_OK:
-			if (j == sz) {
-				sz = sz * 3 / 2;
-				p = xreallocarray(p, sz + 3, sizeof(*p));
-			}
-			p[++j].value = h;
+		if (j == SIZE_MAX)
+			break;
+		if (j == sz) {
+			sz = sz * 3 / 2;
+			p = xreallocarray(p, sz + 3, sizeof(*p));
 		}
+		p[++j].value = h;
+	}
 
 	len[i] = j;
 	file[i] = p;
@@ -571,7 +583,7 @@ prepare(int i, FILE *fd, size_t filesize, int flags)
 static void
 prune(void)
 {
-	int i, j;
+	size_t i, j;
 
 	for (pref = 0; pref < len[0] && pref < len[1] &&
 	    file[0][pref + 1].value == file[1][pref + 1].value;
@@ -709,7 +721,7 @@ static void
 unravel(int p)
 {
 	struct cand *q;
-	int i;
+	size_t i;
 
 	for (i = 0; i <= len[0]; i++)
 		J[i] = i <= pref ? i :
@@ -736,7 +748,7 @@ check(FILE *f1, FILE *f2, int flags)
 	ixold[0] = ixnew[0] = 0;
 	/* jackpot = 0; */
 	ctold = ctnew = 0;
-	for (i = 1; i <= len[0]; i++) {
+	for (i = 1; i <= (int)len[0]; i++) {
 		if (J[i] == 0) {
 			ixold[i] = ctold += skipline(f1);
 			continue;
@@ -836,7 +848,7 @@ check(FILE *f1, FILE *f2, int flags)
 		ixnew[j] = ctnew;
 		j++;
 	}
-	for (; j <= len[1]; j++) {
+	for (; j <= (int)len[1]; j++) {
 		ixnew[j] = ctnew += skipline(f2);
 	}
 	/*
@@ -1052,7 +1064,7 @@ change(char *file1, FILE *f1, char *file2, FILE *f2, int a, int b, int c, int d,
 {
 	static size_t max_context = 64;
 	long curpos;
-	int i, nc;
+	int dist, i, nc;
 	const char *walk;
 	bool skip_blanks, ignore;
 
@@ -1116,8 +1128,9 @@ proceed:
 			 */
 			print_header(file1, file2);
 			anychange = 1;
-		} else if (a > context_vec_ptr->b + (2 * diff_context) + 1 &&
-		    c > context_vec_ptr->d + (2 * diff_context) + 1) {
+		} else if (!ckd_add(&dist, diff_context, diff_context) &&
+		    a - context_vec_ptr->b - 1 > dist &&
+		    c - context_vec_ptr->d - 1 > dist) {
 			/*
 			 * If this change is more than 'diff_context' lines from the
 			 * previous change, dump the record and reset it.
@@ -1502,10 +1515,14 @@ dump_context_vec(FILE *f1, FILE *f2, int flags)
 		return;
 
 	b = d = 0;		/* gcc */
-	lowa = MAX(1, cvp->a - diff_context);
-	upb = MIN(len[0], context_vec_ptr->b + diff_context);
-	lowc = MAX(1, cvp->c - diff_context);
-	upd = MIN(len[1], context_vec_ptr->d + diff_context);
+	if (ckd_sub(&lowa, cvp->a, diff_context) || lowa < 1)
+		lowa = 1;
+	if (ckd_add(&upb, context_vec_ptr->b, diff_context) || upb > (int)len[0])
+		upb = (int)len[0];
+	if (ckd_sub(&lowc, cvp->c, diff_context) || lowc < 1)
+		lowc = 1;
+	if (ckd_add(&upd, context_vec_ptr->d, diff_context) || upd > (int)len[1])
+		upd = (int)len[1];
 
 	printf("***************");
 	if (flags & (D_PROTOTYPE | D_MATCHLAST)) {
@@ -1605,10 +1622,14 @@ dump_unified_vec(FILE *f1, FILE *f2, int flags)
 		return;
 
 	b = d = 0;		/* gcc */
-	lowa = MAX(1, cvp->a - diff_context);
-	upb = MIN(len[0], context_vec_ptr->b + diff_context);
-	lowc = MAX(1, cvp->c - diff_context);
-	upd = MIN(len[1], context_vec_ptr->d + diff_context);
+	if (ckd_sub(&lowa, cvp->a, diff_context) || lowa < 1)
+		lowa = 1;
+	if (ckd_add(&upb, context_vec_ptr->b, diff_context) || upb > (int)len[0])
+		upb = (int)len[0];
+	if (ckd_sub(&lowc, cvp->c, diff_context) || lowc < 1)
+		lowc = 1;
+	if (ckd_add(&upd, context_vec_ptr->d, diff_context) || upd > (int)len[1])
+		upd = (int)len[1];
 
 	printf("@@ -");
 	uni_range(lowa, upb);

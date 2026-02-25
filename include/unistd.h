@@ -37,6 +37,10 @@
 #include <sys/_null.h>
 #include <sys/_types.h>
 
+#if !defined(_STANDALONE) && defined(_FORTIFY_SOURCE) && _FORTIFY_SOURCE > 0
+#include <ssp/unistd.h>
+#endif
+
 #ifndef _GID_T_DECLARED
 typedef	__gid_t		gid_t;
 #define	_GID_T_DECLARED
@@ -288,6 +292,11 @@ typedef	__useconds_t	useconds_t;
 #define	_SC_NPROCESSORS_CONF	57
 #define	_SC_NPROCESSORS_ONLN	58
 #define	_SC_CPUSET_SIZE		122
+#define	_SC_UEXTERR_MAXLEN	123 /* user */
+#endif
+
+#if __POSIX_VISIBLE >= 202405
+#define	_SC_NSIG		124
 #endif
 
 /* Extensions found in Solaris and Linux. */
@@ -503,6 +512,7 @@ int	 exect(const char *, char * const *, char * const *);
 int	 execvP(const char *, const char *, char * const *);
 int	 execvpe(const char *, char * const *, char * const *);
 int	 feature_present(const char *);
+int	 fchroot(int);
 char	*fflagstostr(u_long);
 int	 getdomainname(char *, int);
 int	 getentropy(void *, size_t);

@@ -32,7 +32,7 @@
 /*
  * Ok, here's how it goes.  The UDF specs are pretty clear on how each data
  * structure is made up, but not very clear on how they relate to each other.
- * Here is the skinny... This demostrates a filesystem with one file in the
+ * Here is the skinny... This demonstrates a filesystem with one file in the
  * root directory.  Subdirectories are treated just as normal files, but they
  * have File Id Descriptors of their children as their file data.  As for the
  * Anchor Volume Descriptor Pointer, it can exist in two of the following three
@@ -81,6 +81,7 @@
 #include <sys/fcntl.h>
 #include <sys/iconv.h>
 #include <sys/kernel.h>
+#include <sys/limits.h>
 #include <sys/malloc.h>
 #include <sys/mount.h>
 #include <sys/namei.h>
@@ -140,11 +141,6 @@ static int
 udf_init(struct vfsconf *foo)
 {
 
-	/*
-	 * This code used to pre-allocate a certain number of pages for each
-	 * pool, reducing the need to grow the zones later on.  UMA doesn't
-	 * advertise any such functionality, unfortunately =-<
-	 */
 	udf_zone_trans = uma_zcreate("UDF translation buffer, zone", MAXNAMLEN *
 	    sizeof(unicode_t), NULL, NULL, NULL, NULL, 0, 0);
 
@@ -153,12 +149,6 @@ udf_init(struct vfsconf *foo)
 
 	udf_zone_ds = uma_zcreate("UDF Dirstream zone",
 	    sizeof(struct udf_dirstream), NULL, NULL, NULL, NULL, 0, 0);
-
-	if ((udf_zone_node == NULL) || (udf_zone_trans == NULL) ||
-	    (udf_zone_ds == NULL)) {
-		printf("Cannot create allocation zones.\n");
-		return (ENOMEM);
-	}
 
 	return 0;
 }
@@ -740,18 +730,22 @@ udf_fhtovp(struct mount *mp, struct fid *fhp, int flags, struct vnode **vpp)
 	struct ifid *ifhp;
 	struct vnode *nvp;
 	struct udf_node *np;
-	off_t fsize;
+	uint64_t fsize;
 	int error;
 
 	ifhp = (struct ifid *)fhp;
 
 	if ((error = VFS_VGET(mp, ifhp->ifid_ino, LK_EXCLUSIVE, &nvp)) != 0) {
-		*vpp = NULLVP;
+		*vpp = NULL;
 		return (error);
 	}
 
 	np = VTON(nvp);
 	fsize = le64toh(np->fentry->inf_len);
+	if (fsize > OFF_MAX) {
+		*vpp = NULL;
+		return (EIO);
+	}
 
 	*vpp = nvp;
 	vnode_create_vobject(*vpp, fsize, curthread);

@@ -235,6 +235,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_sgtl5000>;
 		reg = <0x0a>;
+		#sound-dai-cells = <0>;
 		clocks = <&clks IMX6QDL_CLK_CKO>;
 		VDDA-supply = <&reg_3p3v>;
 		VDDIO-supply = <&reg_3p3v>;
@@ -264,7 +265,7 @@
 		>;
 	};
 
-	pinctrl_ecspi2: ecspi2 {
+	pinctrl_ecspi2: ecspi2grp {
 		fsl,pins = <
 			MX6QDL_PAD_CSI0_DAT8__ECSPI2_SCLK      0x100b1
 			MX6QDL_PAD_CSI0_DAT9__ECSPI2_MOSI      0x100b1
@@ -279,7 +280,7 @@
 		>;
 	};
 
-	pinctrl_enet: enet {
+	pinctrl_enet: enetgrp {
 		fsl,pins = <
 			MX6QDL_PAD_ENET_MDIO__ENET_MDIO		0x1b0b0
 			MX6QDL_PAD_ENET_MDC__ENET_MDC		0x1b0b0

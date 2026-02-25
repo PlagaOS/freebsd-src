@@ -47,7 +47,7 @@
 #include <sys/filedesc.h>
 #include <sys/sysctl.h>
 
-#define LOG_RDPRI	(PZERO + 1)
+#define LOG_RDPRI	PZERO
 
 #define LOG_ASYNC	0x04
 
@@ -74,11 +74,12 @@ static struct cdevsw log_cdevsw = {
 static int	logkqread(struct knote *note, long hint);
 static void	logkqdetach(struct knote *note);
 
-static struct filterops log_read_filterops = {
+static const struct filterops log_read_filterops = {
 	.f_isfd =	1,
 	.f_attach =	NULL,
 	.f_detach =	logkqdetach,
 	.f_event =	logkqread,
+	.f_copy = knote_triv_copy,
 };
 
 static struct logsoftc {

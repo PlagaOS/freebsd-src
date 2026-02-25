@@ -1,12 +1,12 @@
-# $NetBSD: varmod-assign.mk,v 1.19 2024/01/07 11:42:22 rillig Exp $
+# $NetBSD: varmod-assign.mk,v 1.28 2025/03/30 01:09:41 rillig Exp $
 #
 # Tests for the obscure ::= variable modifiers, which perform variable
 # assignments during evaluation, just like the = operator in C.
 
 .if !make(target)
 
-all:	mod-assign-empty
-all:	mod-assign-parse
+all:	mod-assign-empty-{1,2,3,4}
+all:	mod-assign-parse-{1,2,3}
 all:	mod-assign-shell-error
 
 # In the following loop expression,
@@ -71,32 +71,44 @@ SINK4:=	${0:?${THEN4::=then4${IT4::=t4}}:${ELSE4::=else4${IE4::=e4}}} ${THEN4}${
 .  error
 .endif
 
-mod-assign-empty:
+mod-assign-empty-1:
 	# Assigning to the empty variable would obviously not work since that
-	# variable is write-protected.  Therefore it is rejected early with a
-	# "Bad modifier" message.
+	# variable is write-protected.
+# expect: make: Invalid attempt to assign "value" to variable "" via modifier "::="
 	@echo $@: ${::=value}
 
+mod-assign-empty-2:
 	# In this variant, it is not as obvious that the name of the
-	# expression is empty.  Assigning to it is rejected as well, with the
-	# same "Bad modifier" message.
+	# expression is empty.
+# expect: make: Invalid attempt to assign "overwritten" to variable "" via modifier "::="
 	@echo $@: ${:Uvalue::=overwritten}
 
+mod-assign-empty-3:
+	# In this variant, it is not as obvious that the name of the
+	# expression is empty.
+# expect: make: Invalid attempt to assign "appended" to variable "" via modifier "::+="
+	@echo $@: ${:Uvalue::+=appended}
+
+mod-assign-empty-4:
 	# The :L modifier sets the value of the expression to its variable
 	# name.  The name of the expression is "VAR", therefore assigning to
 	# that variable works.
+# expect: mod-assign-empty-4: VAR=overwritten
 	@echo $@: ${VAR:L::=overwritten} VAR=${VAR}
 
-mod-assign-parse:
+mod-assign-parse-1:
 	# The modifier for assignment operators starts with a ':'.
 	# An 'x' after that is an invalid modifier.
-	# expect: make: Unknown modifier ":x"
+# expect: make: Unknown modifier "::x"
 	@echo ${ASSIGN::x}
 
+mod-assign-parse-2:
 	# When parsing an assignment operator fails because the operator is
 	# incomplete, make falls back to the SysV modifier.
 	@echo ${SYSV::=sysv\:x}${SYSV::x=:y}
 
+mod-assign-parse-3:
+# expect: make: Unfinished modifier after "value	# missing closing brace", expecting "}"
 	@echo ${ASSIGN::=value	# missing closing brace
 
 mod-assign-shell-error:
@@ -105,7 +117,7 @@ mod-assign-shell-error:
 
 	# If the command fails, the variable keeps its previous value.
 	@${SH_ERR::=previous}
-	@${SH_ERR::!= echo word; false } echo err=${SH_ERR}
+	@${SH_ERR::!= echo word; (exit 13) } echo err=${SH_ERR}
 
 # XXX: The ::= modifier expands its right-hand side exactly once.
 # This differs subtly from normal assignments such as '+=' or '=', which copy

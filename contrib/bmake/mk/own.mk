@@ -1,4 +1,4 @@
-# $Id: own.mk,v 1.47 2024/02/19 00:06:19 sjg Exp $
+# $Id: own.mk,v 1.51 2024/11/12 17:40:13 sjg Exp $
 
 # should be set properly in sys.mk
 _this ?= ${.PARSEFILE:S,bsd.,,}
@@ -71,6 +71,7 @@ OPTIONS_DEFAULT_NO+= DPADD_MK
 
 # process options
 OPTIONS_DEFAULT_NO+= \
+	DEBUG \
 	INSTALL_AS_USER \
 	GPROF \
 	PROG_LDORDER_MK \
@@ -96,6 +97,7 @@ OPTIONS_DEFAULT_YES+= \
 
 OPTIONS_DEFAULT_DEPENDENT+= \
 	CATPAGES/MAN \
+	DEBUG_RUST/DEBUG \
 	LDORDER_MK/PROG_LDORDER_MK \
 	OBJDIRS/OBJ \
 	PICINSTALL/LINKLIB \
@@ -103,6 +105,7 @@ OPTIONS_DEFAULT_DEPENDENT+= \
 	PROFILE/LINKLIB \
 	STAGING_MAN/STAGING \
 	STAGING_PROG/STAGING \
+	STAGING_RUST/STAGING_PROG \
 
 .include <options.mk>
 
@@ -136,8 +139,7 @@ INCDIR?=	${INCLUDEDIR}
 # Define MANZ to have the man pages compressed (gzip)
 #MANZ=		1
 
-MANTARGET?= cat
-MANDIR?=	${prefix}/share/man/${MANTARGET}
+MANDIR?=	${prefix}/share/man
 MANGRP?=	${BINGRP}
 MANOWN?=	${BINOWN}
 MANMODE?=	${NONBINMODE}
@@ -249,7 +251,7 @@ TARGET_SPEC_VARS_REV = ${TARGET_SPEC_VARS}
 .endif
 .if ${MK_STAGING} == "yes"
 STAGE_ROOT?= ${OBJROOT}/stage
-STAGE_OBJTOP?= ${STAGE_ROOT}/${TARGET_SPEC_VARS_REV:ts/}
+STAGE_OBJTOP?= ${STAGE_ROOT}/${TARGET_SPEC_VARS_REV:@v@${$v}@:ts/}
 .endif
 .endif
 

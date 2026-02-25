@@ -29,7 +29,7 @@
 #
 
 .if !target(__<src.opts.mk>__)
-__<src.opts.mk>__:
+__<src.opts.mk>__:	.NOTMAIN
 
 .include <bsd.own.mk>
 
@@ -66,6 +66,7 @@ __DEFAULT_YES_OPTIONS = \
     AUTOFS \
     BHYVE \
     BLACKLIST \
+    BLOCKLIST \
     BLUETOOTH \
     BOOT \
     BOOTPARAMD \
@@ -80,12 +81,12 @@ __DEFAULT_YES_OPTIONS = \
     CDDL \
     CLANG \
     CLANG_BOOTSTRAP \
-    CLEAN \
     CPP \
     CROSS_COMPILER \
     CRYPT \
     CUSE \
     CXGBETOOL \
+    DEPEND_CLEANUP \
     DICT \
     DMAGENT \
     DTRACE \
@@ -98,12 +99,9 @@ __DEFAULT_YES_OPTIONS = \
     FINGER \
     FLOPPY \
     FORTH \
-    FP_LIBC \
     FREEBSD_UPDATE \
     FTP \
     GAMES \
-    GH_BC \
-    GNU_DIFF \
     GOOGLETEST \
     GPIO \
     HAST \
@@ -117,6 +115,7 @@ __DEFAULT_YES_OPTIONS = \
     IPFW \
     ISCSI \
     JAIL \
+    JEMALLOC_LG_VADDR_WIDE \
     KDUMP \
     KVM \
     LDNS \
@@ -125,13 +124,17 @@ __DEFAULT_YES_OPTIONS = \
     LLD \
     LLD_BOOTSTRAP \
     LLVM_ASSERTIONS \
+    LLVM_BINUTILS \
     LLVM_COV \
     LLVM_CXXFILT \
+    LOADER_BIOS_TEXTONLY \
     LOADER_GELI \
     LOADER_KBOOT \
     LOADER_LUA \
     LOADER_OFW \
+    LOADER_PXEBOOT \
     LOADER_UBOOT \
+    LOADER_IA32 \
     LOCALES \
     LOCATE \
     LPR \
@@ -140,6 +143,7 @@ __DEFAULT_YES_OPTIONS = \
     MAIL \
     MAILWRAPPER \
     MAKE \
+    MITKRB5 \
     MLX5TOOL \
     NETCAT \
     NETGRAPH \
@@ -149,7 +153,6 @@ __DEFAULT_YES_OPTIONS = \
     NS_CACHING \
     NTP \
     NUAGEINIT \
-    NVME \
     OFED \
     OPENSSL \
     PAM \
@@ -167,6 +170,7 @@ __DEFAULT_YES_OPTIONS = \
     SERVICESDB \
     SETUID_LOGIN \
     SHAREDOCS \
+    SOUND \
     SOURCELESS \
     SOURCELESS_HOST \
     SOURCELESS_UCODE \
@@ -188,6 +192,7 @@ __DEFAULT_YES_OPTIONS = \
     WIRELESS \
     WPA_SUPPLICANT_EAPOL \
     ZFS \
+    ZFS_TESTS \
     LOADER_ZFS \
     ZONEINFO
 
@@ -196,6 +201,7 @@ __DEFAULT_NO_OPTIONS = \
     BHYVE_SNAPSHOT \
     CLANG_EXTRAS \
     CLANG_FORMAT \
+    CLEAN \
     DIALOG \
     DETECT_TZ_CHANGES \
     DISK_IMAGE_TOOLS_BOOTSTRAP \
@@ -203,21 +209,19 @@ __DEFAULT_NO_OPTIONS = \
     DTRACE_TESTS \
     EXPERIMENTAL \
     HESIOD \
-    LOADER_BIOS_TEXTONLY \
+    IPFILTER_IPFS \
     LOADER_VERBOSE \
     LOADER_VERIEXEC_PASS_MANIFEST \
-    LLVM_BINUTILS \
     LLVM_FULL_DEBUGINFO \
+    LLVM_LINK_STATIC_LIBRARIES \
     MALLOC_PRODUCTION \
     OFED_EXTRA \
     OPENLDAP \
-    REPRODUCIBLE_BUILD \
     RPCBIND_WARMSTART_SUPPORT \
     SORT_THREADS \
     ZONEINFO_LEAPSECONDS_SUPPORT \
 
 __REQUIRED_OPTIONS = \
-    CAPSICUM \
     CASPER
 
 # LEFT/RIGHT. Left options which default to "yes" unless their corresponding
@@ -241,6 +245,7 @@ __LIBC_MALLOC_DEFAULT=	jemalloc
 #
 .for var in \
     BLACKLIST \
+    BLOCKLIST \
     BZIP2 \
     INET \
     INET6 \
@@ -294,18 +299,18 @@ __DEFAULT_NO_OPTIONS+=LLVM_TARGET_BPF LLVM_TARGET_MIPS
 .include <bsd.compiler.mk>
 
 .if ${__T} == "i386" || ${__T} == "amd64"
-__DEFAULT_NO_OPTIONS += FDT
+__DEFAULT_NO_OPTIONS+=FDT
 .else
-__DEFAULT_YES_OPTIONS += FDT
+__DEFAULT_YES_OPTIONS+=FDT
 .endif
 
-.if ${__T:Marm*} == "" && ${__T:Mriscv64*} == ""
+.if ${__T:Mriscv64*} == ""
 __DEFAULT_YES_OPTIONS+=LLDB
 .else
 __DEFAULT_NO_OPTIONS+=LLDB
 .endif
 # LIB32 is not supported on all 64-bit architectures.
-.if (${__T} == "amd64" || ${__T:Maarch64*} != "" || ${__T} == "powerpc64")
+.if (${__T:Maarch64*} != "" && ((defined(X_COMPILER_TYPE) && ${X_COMPILER_TYPE} != "gcc") || (!defined(X_COMPILER_TYPE) && ${COMPILER_TYPE} != "gcc"))) || ${__T} == "amd64" || ${__T} == "powerpc64"
 __DEFAULT_YES_OPTIONS+=LIB32
 .else
 BROKEN_OPTIONS+=LIB32
@@ -329,6 +334,10 @@ BROKEN_OPTIONS+=LOADER_KBOOT
 # UBOOT is only for arm, and big-endian powerpc
 .if (${__T:Marm*} == "" && ${__T:Mpowerpc*} == "") || ${__T} == "powerpc64le"
 BROKEN_OPTIONS+=LOADER_UBOOT
+.endif
+# The 32-bit UEFI loader is only for amd64
+.if ${__T} != "amd64"
+BROKEN_OPTIONS+=LOADER_IA32
 .endif
 # GELI and Lua in loader currently cause boot failures on powerpc.
 # Further debugging is required -- probably they are just broken on big
@@ -355,12 +364,6 @@ BROKEN_OPTIONS+=MLX5TOOL
 BROKEN_OPTIONS+=HYPERV
 .endif
 
-# NVME is only aarch64, x86 and powerpc64*
-.if ${__T} != "aarch64" && ${__T} != "amd64" && ${__T} != "i386" && \
-    ${__T:Mpowerpc64*} == ""
-BROKEN_OPTIONS+=NVME
-.endif
-
 .if ${__T} == "aarch64" || ${__T} == "amd64" || ${__T} == "i386" || \
     ${__T:Mpowerpc64*} != "" || ${__T:Mriscv64*} != ""
 __DEFAULT_YES_OPTIONS+=OPENMP
@@ -379,6 +382,10 @@ BROKEN_OPTIONS+= OFED
 BROKEN_OPTIONS+= TESTS
 .endif
 
+.if ${__T} != "amd64"
+BROKEN_OPTIONS+=BHYVE_SNAPSHOT
+.endif
+
 .-include <site.src.opts.mk>
 
 .include <bsd.mkopt.mk>
@@ -387,13 +394,17 @@ BROKEN_OPTIONS+= TESTS
 # Force some options off if their dependencies are off.
 # Order is somewhat important.
 #
-.if ${MK_CAPSICUM} == "no"
-MK_CASPER:=	no
-.endif
-
 .if ${MK_SOURCELESS} == "no"
 MK_SOURCELESS_HOST:=	no
 MK_SOURCELESS_UCODE:= no
+.endif
+
+.if ${MK_BLACKLIST} == "no"
+MK_BLOCKLIST:=	no
+.endif
+
+.if ${MK_BLACKLIST_SUPPORT} == "no"
+MK_BLOCKLIST_SUPPORT:=	no
 .endif
 
 .if ${MK_CDDL} == "no"
@@ -408,6 +419,7 @@ MK_OPENSSL:=	no
 MK_OPENSSH:=	no
 MK_KERBEROS:=	no
 MK_KERBEROS_SUPPORT:=	no
+MK_MITKRB5:=	no
 .endif
 
 .if ${MK_DTRACE} == "no"
@@ -434,6 +446,7 @@ MK_OPENSSH:=	no
 MK_OPENSSL_KTLS:=	no
 MK_KERBEROS:=	no
 MK_KERBEROS_SUPPORT:=	no
+MK_MITKRB5:=	no
 MK_LDNS:=	no
 MK_PKGBOOTSTRAP:=	no
 MK_LOADER_ZFS:=	no
@@ -455,6 +468,11 @@ MK_OFED_EXTRA:=	no
 
 .if ${MK_TESTS} == "no"
 MK_DTRACE_TESTS:= no
+MK_ZFS_TESTS:= no
+.endif
+
+.if ${MK_ZFS} == "no"
+MK_ZFS_TESTS:=	no
 .endif
 
 .if ${MK_TESTS_SUPPORT} == "no"
@@ -501,11 +519,15 @@ MK_LLVM_CXXFILT:=	yes
 MK_LOADER_VERIEXEC_PASS_MANIFEST := no
 .endif
 
+.if ${MK_CLEAN} == "yes"
+MK_DEPEND_CLEANUP:=	no
+.endif
+
 #
 # MK_* options whose default value depends on another option.
 #
 .for vv in \
-    GSSAPI/KERBEROS \
+    KERBEROS_SUPPORT/KERBEROS \
     MAN_UTILS/MAN
 .if defined(WITH_${vv:H})
 MK_${vv:H}:=	yes
@@ -515,9 +537,5 @@ MK_${vv:H}:=	no
 MK_${vv:H}:=	${MK_${vv:T}}
 .endif
 .endfor
-
-#
-# Set defaults for the MK_*_SUPPORT variables.
-#
 
 .endif #  !target(__<src.opts.mk>__)

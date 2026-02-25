@@ -3655,8 +3655,7 @@ sctp_process_cmsgs_for_init(struct sctp_tcb *stcb, struct mbuf *control, int *er
 				sin.sin_len = sizeof(struct sockaddr_in);
 				sin.sin_port = stcb->rport;
 				m_copydata(control, cmsg_data_off, sizeof(struct in_addr), (caddr_t)&sin.sin_addr);
-				if ((sin.sin_addr.s_addr == INADDR_ANY) ||
-				    (sin.sin_addr.s_addr == INADDR_BROADCAST) ||
+				if (in_broadcast(sin.sin_addr) ||
 				    IN_MULTICAST(ntohl(sin.sin_addr.s_addr))) {
 					*error = EINVAL;
 					return (1);
@@ -3687,8 +3686,7 @@ sctp_process_cmsgs_for_init(struct sctp_tcb *stcb, struct mbuf *control, int *er
 #ifdef INET
 				if (IN6_IS_ADDR_V4MAPPED(&sin6.sin6_addr)) {
 					in6_sin6_2_sin(&sin, &sin6);
-					if ((sin.sin_addr.s_addr == INADDR_ANY) ||
-					    (sin.sin_addr.s_addr == INADDR_BROADCAST) ||
+					if (in_broadcast(sin.sin_addr) ||
 					    IN_MULTICAST(ntohl(sin.sin_addr.s_addr))) {
 						*error = EINVAL;
 						return (1);
@@ -4073,7 +4071,7 @@ sctp_lowlevel_chunk_output(struct sctp_inpcb *inp,
 				ip->ip_off = htons(0);
 			}
 			/* FreeBSD has a function for ip_id's */
-			ip_fillid(ip);
+			ip_fillid(ip, V_ip_random_id);
 
 			ip->ip_ttl = inp->ip_inp.inp.inp_ip_ttl;
 			ip->ip_len = htons(packet_length);
@@ -4598,9 +4596,9 @@ sctp_lowlevel_chunk_output(struct sctp_inpcb *inp,
 						}
 					}
 				} else if (ifp != NULL) {
-					if ((ND_IFINFO(ifp)->linkmtu > 0) &&
-					    (stcb->asoc.smallest_mtu > ND_IFINFO(ifp)->linkmtu)) {
-						sctp_pathmtu_adjustment(stcb, ND_IFINFO(ifp)->linkmtu, false);
+					if ((ifp->if_inet6->nd_linkmtu > 0) &&
+					    (stcb->asoc.smallest_mtu > ifp->if_inet6->nd_linkmtu)) {
+						sctp_pathmtu_adjustment(stcb, ifp->if_inet6->nd_linkmtu, false);
 					}
 				}
 			}
@@ -6705,7 +6703,9 @@ sctp_sendall_iterator(struct sctp_inpcb *inp, struct sctp_tcb *stcb, void *ptr,
 		} else {
 			m = sctp_get_mbuf_for_msg(sizeof(struct sctp_paramhdr),
 			    0, M_NOWAIT, 1, MT_DATA);
-			SCTP_BUF_LEN(m) = sizeof(struct sctp_paramhdr);
+			if (m != NULL) {
+				SCTP_BUF_LEN(m) = sizeof(struct sctp_paramhdr);
+			}
 		}
 		if (m != NULL) {
 			struct sctp_paramhdr *ph;
@@ -6909,10 +6909,20 @@ static int
 sctp_sendall(struct sctp_inpcb *inp, struct uio *uio, struct mbuf *m,
     struct sctp_nonpad_sndrcvinfo *srcv)
 {
-	int ret;
 	struct sctp_copy_all *ca;
+	struct mbuf *mat;
+	ssize_t sndlen;
+	int ret;
 
-	if (uio->uio_resid > (ssize_t)SCTP_BASE_SYSCTL(sctp_sendall_limit)) {
+	if (uio != NULL) {
+		sndlen = uio->uio_resid;
+	} else {
+		sndlen = 0;
+		for (mat = m; mat; mat = SCTP_BUF_NEXT(mat)) {
+			sndlen += SCTP_BUF_LEN(mat);
+		}
+	}
+	if (sndlen > (ssize_t)SCTP_BASE_SYSCTL(sctp_sendall_limit)) {
 		/* You must not be larger than the limit! */
 		return (EMSGSIZE);
 	}
@@ -6924,12 +6934,10 @@ sctp_sendall(struct sctp_inpcb *inp, struct uio *uio, struct mbuf *m,
 		return (ENOMEM);
 	}
 	memset(ca, 0, sizeof(struct sctp_copy_all));
-
 	ca->inp = inp;
 	if (srcv != NULL) {
 		memcpy(&ca->sndrcv, srcv, sizeof(struct sctp_nonpad_sndrcvinfo));
 	}
-
 	/* Serialize. */
 	SCTP_INP_WLOCK(inp);
 	if ((inp->sctp_flags & SCTP_PCB_FLAGS_SND_ITERATOR_UP) != 0) {
@@ -6940,15 +6948,14 @@ sctp_sendall(struct sctp_inpcb *inp, struct uio *uio, struct mbuf *m,
 	}
 	inp->sctp_flags |= SCTP_PCB_FLAGS_SND_ITERATOR_UP;
 	SCTP_INP_WUNLOCK(inp);
-
 	/*
 	 * take off the sendall flag, it would be bad if we failed to do
 	 * this :-0
 	 */
 	ca->sndrcv.sinfo_flags &= ~SCTP_SENDALL;
 	/* get length and mbuf chain */
-	if (uio) {
-		ca->sndlen = uio->uio_resid;
+	ca->sndlen = sndlen;
+	if (uio != NULL) {
 		ca->m = sctp_copy_out_all(uio, ca->sndlen);
 		if (ca->m == NULL) {
 			SCTP_FREE(ca, SCTP_M_COPYAL);
@@ -6960,20 +6967,14 @@ sctp_sendall(struct sctp_inpcb *inp, struct uio *uio, struct mbuf *m,
 			return (ENOMEM);
 		}
 	} else {
-		/* Gather the length of the send */
-		struct mbuf *mat;
-
-		ca->sndlen = 0;
-		for (mat = m; mat; mat = SCTP_BUF_NEXT(mat)) {
-			ca->sndlen += SCTP_BUF_LEN(mat);
-		}
+		ca->m = m;
 	}
 	ret = sctp_initiate_iterator(NULL, sctp_sendall_iterator, NULL,
 	    SCTP_PCB_ANY_FLAGS, SCTP_PCB_ANY_FEATURES,
 	    SCTP_ASOC_ANY_STATE,
 	    (void *)ca, 0,
 	    sctp_sendall_completes, inp, 1);
-	if (ret) {
+	if (ret != 0) {
 		SCTP_INP_WLOCK(inp);
 		inp->sctp_flags &= ~SCTP_PCB_FLAGS_SND_ITERATOR_UP;
 		SCTP_INP_WUNLOCK(inp);
@@ -11196,7 +11197,7 @@ sctp_send_resp_msg(struct sockaddr *src, struct sockaddr *dst,
 		ip->ip_hl = (sizeof(struct ip) >> 2);
 		ip->ip_tos = 0;
 		ip->ip_off = htons(IP_DF);
-		ip_fillid(ip);
+		ip_fillid(ip, V_ip_random_id);
 		ip->ip_ttl = MODULE_GLOBAL(ip_defttl);
 		if (port) {
 			ip->ip_p = IPPROTO_UDP;
@@ -11424,7 +11425,7 @@ sctp_send_hb(struct sctp_tcb *stcb, struct sctp_nets *net, int so_locked)
 	/* Fill out hb parameter */
 	hb->heartbeat.hb_info.ph.param_type = htons(SCTP_HEARTBEAT_INFO);
 	hb->heartbeat.hb_info.ph.param_length = htons(sizeof(struct sctp_heartbeat_info_param));
-	hb->heartbeat.hb_info.time_value_1 = (uint32_t)now.tv_sec;
+	hb->heartbeat.hb_info.time_value_1 = now.tv_sec;
 	hb->heartbeat.hb_info.time_value_2 = now.tv_usec;
 	/* Did our user request this one, put it in */
 	hb->heartbeat.hb_info.addr_family = (uint8_t)net->ro._l_addr.sa.sa_family;
@@ -13910,15 +13911,15 @@ sctp_v4src_match_nexthop(struct sctp_ifa *sifa, sctp_route_t *ro)
 	mask = (struct sockaddr_in *)(ifa->ifa_netmask);
 	sin = &sifa->address.sin;
 	srcnetaddr.s_addr = (sin->sin_addr.s_addr & mask->sin_addr.s_addr);
-	SCTPDBG(SCTP_DEBUG_OUTPUT1, "match_nexthop4: src address is ");
+	SCTPDBG(SCTP_DEBUG_OUTPUT2, "match_nexthop4: src address is ");
 	SCTPDBG_ADDR(SCTP_DEBUG_OUTPUT2, &sifa->address.sa);
-	SCTPDBG(SCTP_DEBUG_OUTPUT1, "network address is %x\n", srcnetaddr.s_addr);
+	SCTPDBG(SCTP_DEBUG_OUTPUT2, "network address is %x\n", srcnetaddr.s_addr);
 
 	sin = &ro->ro_nh->gw4_sa;
 	gwnetaddr.s_addr = (sin->sin_addr.s_addr & mask->sin_addr.s_addr);
-	SCTPDBG(SCTP_DEBUG_OUTPUT1, "match_nexthop4: nexthop is ");
+	SCTPDBG(SCTP_DEBUG_OUTPUT2, "match_nexthop4: nexthop is ");
 	SCTPDBG_ADDR(SCTP_DEBUG_OUTPUT2, &ro->ro_nh->gw_sa);
-	SCTPDBG(SCTP_DEBUG_OUTPUT1, "network address is %x\n", gwnetaddr.s_addr);
+	SCTPDBG(SCTP_DEBUG_OUTPUT2, "network address is %x\n", gwnetaddr.s_addr);
 	if (srcnetaddr.s_addr == gwnetaddr.s_addr) {
 		return (1);
 	}

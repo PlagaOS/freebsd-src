@@ -612,10 +612,6 @@ nm_os_vi_persist(const char *name, if_t *ret)
 	eaddr[5] = (uint8_t)unit;
 
 	ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		nm_prerr("if_alloc failed");
-		return ENOMEM;
-	}
 	if_initname(ifp, name, IF_DUNIT_NONE);
 	if_setflags(ifp, IFF_UP | IFF_SIMPLEX | IFF_MULTICAST);
 	if_setinitfn(ifp, (void *)nm_vi_dummy);
@@ -742,6 +738,7 @@ nm_os_extmem_create(unsigned long p, struct nmreq_pools_info *pi, int *perror)
 
 out_rem:
 	vm_map_remove(kernel_map, e->kva, e->kva + e->size);
+	e->obj = NULL; /* reference consumed by vm_map_remove() */
 out_rel:
 	vm_object_deallocate(e->obj);
 	e->obj = NULL;
@@ -864,16 +861,12 @@ nm_os_pt_memdev_iounmap(struct ptnetmap_memdev *ptn_dev)
 static int
 ptn_memdev_probe(device_t dev)
 {
-	char desc[256];
-
 	if (pci_get_vendor(dev) != PTNETMAP_PCI_VENDOR_ID)
 		return (ENXIO);
 	if (pci_get_device(dev) != PTNETMAP_PCI_DEVICE_ID)
 		return (ENXIO);
 
-	snprintf(desc, sizeof(desc), "%s PCI adapter",
-			PTNETMAP_MEMDEV_NAME);
-	device_set_desc_copy(dev, desc);
+	device_set_descf(dev, "%s PCI adapter", PTNETMAP_MEMDEV_NAME);
 
 	return (BUS_PROBE_DEFAULT);
 }
@@ -1033,11 +1026,20 @@ netmap_dev_pager_fault(vm_object_t object, vm_ooffset_t offset,
 	return (VM_PAGER_OK);
 }
 
+static void
+netmap_dev_pager_path(void *handle, char *path, size_t len)
+{
+	struct netmap_vm_handle_t *vmh = handle;
+	struct cdev *dev = vmh->dev;
+
+	dev_copyname(dev, path, len);
+}
 
 static struct cdev_pager_ops netmap_cdev_pager_ops = {
 	.cdev_pg_ctor = netmap_dev_pager_ctor,
 	.cdev_pg_dtor = netmap_dev_pager_dtor,
 	.cdev_pg_fault = netmap_dev_pager_fault,
+	.cdev_pg_path = netmap_dev_pager_path,
 };
 
 
@@ -1405,18 +1407,33 @@ netmap_knwrite(struct knote *kn, long hint)
 	return netmap_knrw(kn, hint, POLLOUT);
 }
 
-static struct filterops netmap_rfiltops = {
+static int
+netmap_kncopy(struct knote *kn, struct proc *p1)
+{
+	struct netmap_priv_d *priv;
+	struct nm_selinfo *si;
+
+	priv = kn->kn_hook;
+	si = priv->np_si[kn->kn_filter == EVFILT_WRITE ? NR_TX : NR_RX];
+	NMG_LOCK();
+	si->kqueue_users++;
+	NMG_UNLOCK();
+	return (0);
+}
+
+static const struct filterops netmap_rfiltops = {
 	.f_isfd = 1,
 	.f_detach = netmap_knrdetach,
 	.f_event = netmap_knread,
+	.f_copy = netmap_kncopy,
 };
 
-static struct filterops netmap_wfiltops = {
+static const struct filterops netmap_wfiltops = {
 	.f_isfd = 1,
 	.f_detach = netmap_knwdetach,
 	.f_event = netmap_knwrite,
+	.f_copy = netmap_kncopy,
 };
-
 
 /*
  * This is called when a thread invokes kevent() to record

@@ -131,7 +131,6 @@ host_pcib_get_busno(pci_read_config_fn read_config, int bus, int slot, int func,
 	return 1;
 }
 
-#ifdef NEW_PCIB
 /*
  * Return a pointer to a pretty name for a PCI device.  If the device
  * has a driver attached, the device's name is used, otherwise a name
@@ -201,7 +200,7 @@ pcib_host_res_decodes(struct pcib_host_resources *hr, int type, rman_res_t start
 
 struct resource *
 pcib_host_res_alloc(struct pcib_host_resources *hr, device_t dev, int type,
-    int *rid, rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
+    int rid, rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct resource_list_entry *rle;
 	struct resource *r;
@@ -242,7 +241,7 @@ restart:
 				device_printf(hr->hr_pcib,
 			    "allocated type %d (%#jx-%#jx) for rid %x of %s\n",
 				    type, rman_get_start(r), rman_get_end(r),
-				    *rid, pcib_child_name(dev));
+				    rid, pcib_child_name(dev));
 			return (r);
 		}
 	}
@@ -284,7 +283,6 @@ pcib_host_res_adjust(struct pcib_host_resources *hr, device_t dev,
 	return (ERANGE);
 }
 
-#ifdef PCI_RES_BUS
 struct pci_domain {
 	int	pd_domain;
 	struct rman pd_bus_rman;
@@ -329,7 +327,7 @@ pci_find_domain(int domain)
 }
 
 struct resource *
-pci_domain_alloc_bus(int domain, device_t dev, int *rid, rman_res_t start,
+pci_domain_alloc_bus(int domain, device_t dev, int rid, rman_res_t start,
     rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct pci_domain *d;
@@ -343,7 +341,7 @@ pci_domain_alloc_bus(int domain, device_t dev, int *rid, rman_res_t start,
 	if (res == NULL)
 		return (NULL);
 
-	rman_set_rid(res, *rid);
+	rman_set_rid(res, rid);
 	rman_set_type(res, PCI_RES_BUS);
 	return (res);
 }
@@ -412,6 +410,3 @@ pci_domain_deactivate_bus(int domain, device_t dev, struct resource *r)
 #endif
 	return (rman_deactivate_resource(r));
 }
-#endif /* PCI_RES_BUS */
-
-#endif /* NEW_PCIB */

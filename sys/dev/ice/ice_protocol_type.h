@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/*  Copyright (c) 2023, Intel Corporation
+/*  Copyright (c) 2024, Intel Corporation
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -143,7 +143,7 @@ enum ice_prot_id {
 	ICE_PROT_LLDP_OF	= 117,
 	ICE_PROT_ARP_OF		= 118,
 	ICE_PROT_EAPOL_OF	= 120,
-	ICE_PROT_META_ID	= 255, /* when offset == metaddata */
+	ICE_PROT_META_ID	= 255, /* when offset == metadata */
 	ICE_PROT_INVALID	= 255  /* when offset == ICE_FV_OFFSET_INVAL */
 };
 
@@ -179,6 +179,7 @@ enum ice_prot_id {
 #define ICE_TUN_FLAG_MDID_OFF(word) \
 	(ICE_MDID_SIZE * (ICE_TUN_FLAG_MDID + (word)))
 #define ICE_TUN_FLAG_MASK 0xFF
+#define ICE_FROM_NETWORK_FLAG_MASK 0x8
 #define ICE_DIR_FLAG_MASK 0x10
 #define ICE_TUN_FLAG_IN_VLAN_MASK 0x80 /* VLAN inside tunneled header */
 #define ICE_TUN_FLAG_VLAN_MASK 0x01

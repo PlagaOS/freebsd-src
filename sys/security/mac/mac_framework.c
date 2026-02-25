@@ -71,6 +71,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/condvar.h>
+#include <sys/jail.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/mac.h>
@@ -105,7 +106,12 @@ SYSCTL_NODE(_security, OID_AUTO, mac, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "TrustedBSD MAC policy controls");
 
 /*
- * Declare that the kernel provides MAC support, version 3 (FreeBSD 7.x).
+ * Root sysctl node for MAC modules' jail parameters.
+ */
+SYSCTL_JAIL_PARAM_NODE(mac, "Jail parameters for MAC policy controls");
+
+/*
+ * Declare that the kernel provides a specific version of MAC support.
  * This permits modules to refuse to be loaded if the necessary support isn't
  * present, even if it's pre-boot.
  */
@@ -314,7 +320,7 @@ mac_policy_xlock_assert(void)
  * Initialize the MAC subsystem, including appropriate SMP locks.
  */
 static void
-mac_init(void)
+mac_init(void *dummy __unused)
 {
 
 	LIST_INIT(&mac_static_policy_list);
@@ -334,7 +340,7 @@ mac_init(void)
  * kernel, or loaded before the kernel startup.
  */
 static void
-mac_late_init(void)
+mac_late_init(void *dummy __unused)
 {
 
 	mac_late = 1;
@@ -368,6 +374,7 @@ mac_policy_getlabeled(struct mac_policy_conf *mpc)
 	MPC_FLAG(mount_init_label, MPC_OBJECT_MOUNT);
 	MPC_FLAG(posixsem_init_label, MPC_OBJECT_POSIXSEM);
 	MPC_FLAG(posixshm_init_label, MPC_OBJECT_POSIXSHM);
+	MPC_FLAG(prison_init_label, MPC_OBJECT_PRISON);
 	MPC_FLAG(sysvmsg_init_label, MPC_OBJECT_SYSVMSG);
 	MPC_FLAG(sysvmsq_init_label, MPC_OBJECT_SYSVMSQ);
 	MPC_FLAG(sysvsem_init_label, MPC_OBJECT_SYSVSEM);

@@ -242,10 +242,6 @@ build_tree()
 	(cd $1 && printf '%s\n' $autogenfiles >> $metatmp && \
 	    rm -f $autogenfiles) || return 1
 
-	# Remove empty files.  These just clutter the output of 'diff'.
-	(cd $1 && find . -type f -size 0 -delete -print >> $metatmp) || \
-	    return 1
-
 	# Trim empty directories.
 	(cd $1 && find . -depth -type d -empty -delete -print >> $metatmp) || \
 	    return 1
@@ -1611,6 +1607,9 @@ EOF
 	# Initialize conflicts and warnings handling.
 	rm -f $WARNINGS
 	mkdir -p $CONFLICTS
+	if ! chmod 0700 ${CONFLICTS}; then
+		panic "Unable to set permissions on conflicts directory"
+	fi
 
 	# Ignore removed files for the pre-world case.  A pre-world
 	# update uses a stripped-down tree.

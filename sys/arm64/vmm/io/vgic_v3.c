@@ -47,7 +47,6 @@
 
 #include <dev/ofw/openfirm.h>
 
-#include <machine/armreg.h>
 #include <machine/atomic.h>
 #include <machine/bus.h>
 #include <machine/cpufunc.h>
@@ -58,7 +57,6 @@
 #include <machine/vmparam.h>
 #include <machine/intr.h>
 #include <machine/vmm.h>
-#include <machine/vmm_dev.h>
 #include <machine/vmm_instruction_emul.h>
 
 #include <arm/arm/gic_common.h>
@@ -68,6 +66,10 @@
 #include <arm64/vmm/hyp.h>
 #include <arm64/vmm/mmu.h>
 #include <arm64/vmm/arm64.h>
+#include <arm64/vmm/vmm_handlers.h>
+
+#include <dev/vmm/vmm_dev.h>
+#include <dev/vmm/vmm_vm.h>
 
 #include "vgic.h"
 #include "vgic_v3.h"
@@ -670,7 +672,7 @@ read_enabler(struct hypctx *hypctx, int n)
 		if (irq == NULL)
 			continue;
 
-		if (!irq->enabled)
+		if (irq->enabled)
 			ret |= 1u << i;
 		vgic_v3_release_irq(irq);
 	}
@@ -2252,7 +2254,7 @@ vgic_v3_init(device_t dev)
 	uint64_t ich_vtr_el2;
 	uint32_t pribits, prebits;
 
-	ich_vtr_el2 = vmm_call_hyp(HYP_READ_REGISTER, HYP_REG_ICH_VTR);
+	ich_vtr_el2 = vmm_read_reg(HYP_REG_ICH_VTR);
 
 	/* TODO: These fields are common with the vgicv2 driver */
 	pribits = ICH_VTR_EL2_PRIBITS(ich_vtr_el2);

@@ -57,9 +57,7 @@
 
 #include <machine/in_cksum.h>
 
-#ifdef RSS
 #include <net/rss_config.h>
-#endif
 
 #include "common/efx.h"
 
@@ -165,17 +163,7 @@ sfxge_rx_qflush_failed(struct sfxge_rxq *rxq)
 	rxq->flush_state = SFXGE_FLUSH_FAILED;
 }
 
-#ifdef RSS
 static uint8_t toep_key[RSS_KEYSIZE];
-#else
-static uint8_t toep_key[] = {
-	0x6d, 0x5a, 0x56, 0xda, 0x25, 0x5b, 0x0e, 0xc2,
-	0x41, 0x67, 0x25, 0x3d, 0x43, 0xa3, 0x8f, 0xb0,
-	0xd0, 0xca, 0x2b, 0xcb, 0xae, 0x7b, 0x30, 0xb4,
-	0x77, 0xcb, 0x2d, 0xa3, 0x80, 0x30, 0xf2, 0x0c,
-	0x6a, 0x42, 0xb7, 0x3b, 0xbe, 0xac, 0x01, 0xfa
-};
-#endif
 
 static void
 sfxge_rx_post_refill(void *arg)
@@ -483,7 +471,7 @@ sfxge_lro_merge(struct sfxge_lro_state *st, struct sfxge_lro_conn *c,
 		iph->ip6_plen += mbuf->m_len;
 		c_th = (struct tcphdr *)(iph + 1);
 	}
-	c_th->th_flags |= (th->th_flags & TH_PUSH);
+	tcp_set_flags(c_th, tcp_get_flags(c_th) | (tcp_get_flags(th) & TH_PUSH));
 	c->th_last = th;
 	++st->n_merges;
 
@@ -545,7 +533,7 @@ sfxge_lro_try_merge(struct sfxge_rxq *rxq, struct sfxge_lro_conn *c)
 		       hdr_length);
 	th_seq = ntohl(th->th_seq);
 	dont_merge = ((data_length <= 0)
-		      | (th->th_flags & (TH_URG | TH_SYN | TH_RST | TH_FIN)));
+		      | (tcp_get_flags(th) & (TH_URG | TH_SYN | TH_RST | TH_FIN)));
 
 	/* Check for options other than aligned timestamp. */
 	if (th->th_off != 5) {
@@ -592,7 +580,7 @@ sfxge_lro_try_merge(struct sfxge_rxq *rxq, struct sfxge_lro_conn *c)
 	if (__predict_false(dont_merge)) {
 		if (c->mbuf != NULL)
 			sfxge_lro_deliver(&rxq->lro, c);
-		if (th->th_flags & (TH_FIN | TH_RST)) {
+		if (tcp_get_flags(th) & (TH_FIN | TH_RST)) {
 			++rxq->lro.n_drop_closed;
 			sfxge_lro_drop(rxq, c);
 			return (0);
@@ -1143,9 +1131,7 @@ sfxge_rx_start(struct sfxge_softc *sc)
 	    EFX_RX_HASH_IPV4 | EFX_RX_HASH_TCPIPV4 |
 	    EFX_RX_HASH_IPV6 | EFX_RX_HASH_TCPIPV6, B_TRUE);
 
-#ifdef RSS
 	rss_getkey(toep_key);
-#endif
 	if ((rc = efx_rx_scale_key_set(sc->enp, EFX_RSS_CONTEXT_DEFAULT,
 				       toep_key,
 				       sizeof(toep_key))) != 0)

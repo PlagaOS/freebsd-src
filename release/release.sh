@@ -62,7 +62,7 @@ env_setup() {
 	# The default version control system command to obtain the sources.
 	for _dir in /usr/bin /usr/local/bin; do
 		[ -x "${_dir}/git" ] && VCSCMD="/${_dir}/git"
-		[ ! -z "${VCSCMD}" ] && break 2
+		[ -n "${VCSCMD}" ] && break 2
 	done
 
 	if [ -z "${VCSCMD}" -a -z "${NOGIT}" ]; then
@@ -89,9 +89,11 @@ env_setup() {
 	SRC_CONF="/dev/null"
 
 	# The number of make(1) jobs, defaults to the number of CPUs available
-	# for buildworld, and half of number of CPUs available for buildkernel.
+	# for buildworld, and half of number of CPUs available for buildkernel
+	# and 'make release'.
 	WORLD_FLAGS="-j$(sysctl -n hw.ncpu)"
 	KERNEL_FLAGS="-j$(( $(( $(sysctl -n hw.ncpu) + 1 )) / 2))"
+	RELEASE_FLAGS="-j$(( $(( $(sysctl -n hw.ncpu) + 1 )) / 2))"
 
 	MAKE_FLAGS="-s"
 
@@ -117,6 +119,9 @@ env_setup() {
 	# Set to non-empty value to build virtual machine images for various
 	# cloud providers as part of the release.
 	WITH_CLOUDWARE=
+
+	# Set to non-empty to build OCI images as part of the release
+	WITH_OCIIMAGES=
 
 	return 0
 } # env_setup()
@@ -177,7 +182,7 @@ env_check() {
 	fi
 
 	# Unset CHROOTBUILD_SKIP if the chroot(8) does not appear to exist.
-	if [ ! -z "${CHROOTBUILD_SKIP}" -a ! -e ${CHROOTDIR}/bin/sh ]; then
+	if [ -n "${CHROOTBUILD_SKIP}" -a ! -e ${CHROOTDIR}/bin/sh ]; then
 		CHROOTBUILD_SKIP=
 	fi
 
@@ -190,10 +195,12 @@ env_check() {
 		${CONF_FILES}"
 	RELEASE_KMAKEFLAGS="${MAKE_FLAGS} ${KERNEL_FLAGS} \
 		KERNCONF=\"${KERNEL}\" ${ARCH_FLAGS} ${CONF_FILES}"
-	RELEASE_RMAKEFLAGS="${ARCH_FLAGS} \
+	RELEASE_RMAKEFLAGS="${ARCH_FLAGS} ${RELEASE_FLAGS} \
 		KERNCONF=\"${KERNEL}\" ${CONF_FILES} ${SRCPORTS} \
 		WITH_DVD=${WITH_DVD} WITH_VMIMAGES=${WITH_VMIMAGES} \
-		WITH_CLOUDWARE=${WITH_CLOUDWARE} XZ_THREADS=${XZ_THREADS}"
+		WITH_CLOUDWARE=${WITH_CLOUDWARE} WITH_OCIIMAGES=${WITH_OCIIMAGES} \
+		XZ_THREADS=${XZ_THREADS} NOPKGBASE=${NOPKGBASE}"
+	RELEASE_RMAKEFLAGS="${RELEASE_RMAKEFLAGS} NO_ROOT=1 WITHOUT_QEMU=1"
 
 	return 0
 } # env_check()
@@ -252,11 +259,11 @@ extra_chroot_setup() {
 		cp ${SRC_CONF} ${CHROOTDIR}/${SRC_CONF}
 	fi
 
-	if [ -z "${NOGIT}" ]; then
-		# Install git from ports or packages if the ports tree is
-		# available and VCSCMD is unset.
-		_gitcmd="$(which git)"
-		if [ -d ${CHROOTDIR}/usr/ports -a -z "${_gitcmd}" ]; then
+	_gitcmd="$(which git)"
+	if [ -z "${NOGIT}" -a -z "${_gitcmd}" ]; then
+		# Install git from ports if the ports tree is available;
+		# otherwise install the pkg.
+		if [ -d ${CHROOTDIR}/usr/ports ]; then
 			# Trick the ports 'run-autotools-fixup' target to do the right
 			# thing.
 			_OSVERSION=$(chroot ${CHROOTDIR} /usr/bin/uname -U)
@@ -286,7 +293,7 @@ extra_chroot_setup() {
 		fi
 	fi
 
-	if [ ! -z "${EMBEDDEDPORTS}" ]; then
+	if [ -n "${EMBEDDEDPORTS}" ]; then
 		_OSVERSION=$(chroot ${CHROOTDIR} /usr/bin/uname -U)
 		REVISION=$(chroot ${CHROOTDIR} make -C /usr/src/release -V REVISION)
 		BRANCH=$(chroot ${CHROOTDIR} make -C /usr/src/release -V BRANCH)
@@ -311,7 +318,7 @@ extra_chroot_setup() {
 # chroot_build_target(): Build the userland and kernel for the build target.
 chroot_build_target() {
 	load_target_env
-	if [ ! -z "${EMBEDDEDBUILD}" ]; then
+	if [ -n "${EMBEDDEDBUILD}" ]; then
 		RELEASE_WMAKEFLAGS="${RELEASE_WMAKEFLAGS} \
 			TARGET=${EMBEDDED_TARGET} \
 			TARGET_ARCH=${EMBEDDED_TARGET_ARCH}"
@@ -321,6 +328,11 @@ chroot_build_target() {
 	fi
 	eval chroot ${CHROOTDIR} make -C /usr/src ${RELEASE_WMAKEFLAGS} buildworld
 	eval chroot ${CHROOTDIR} make -C /usr/src ${RELEASE_KMAKEFLAGS} buildkernel
+	if [ -n "${WITH_OCIIMAGES}" ]; then
+		mkdir -p ${CHROOT}/tmp/ports ${CHROOT}/tmp/distfiles
+		eval chroot ${CHROOTDIR} make -C /usr/src ${RELEASE_WMAKEFLAGS} \
+		    BOOTSTRAP_PKG_FROM_PORTS=YES packages
+	fi
 
 	return 0
 } # chroot_build_target
@@ -328,14 +340,14 @@ chroot_build_target() {
 # chroot_build_release(): Invoke the 'make release' target.
 chroot_build_release() {
 	load_target_env
-	if [ ! -z "${WITH_VMIMAGES}" ]; then
+	if [ -n "${WITH_VMIMAGES}" ]; then
 		if [ -z "${VMFORMATS}" ]; then
 			VMFORMATS="$(eval chroot ${CHROOTDIR} \
 				make -C /usr/src/release -V VMFORMATS)"
 		fi
 		if [ -z "${VMSIZE}" ]; then
 			VMSIZE="$(eval chroot ${CHROOTDIR} \
-				make -C /usr/src/release -V VMSIZE)"
+				make -C /usr/src/release ${ARCH_FLAGS} -V VMSIZE)"
 		fi
 		RELEASE_RMAKEFLAGS="${RELEASE_RMAKEFLAGS} \
 			VMFORMATS=\"${VMFORMATS}\" VMSIZE=${VMSIZE}"
@@ -380,7 +392,7 @@ chroot_arm_build_release() {
 		*)
 			;;
 	esac
-	[ ! -z "${RELEASECONF}" ] && . "${RELEASECONF}"
+	[ -n "${RELEASECONF}" ] && . "${RELEASECONF}"
 	export MAKE_FLAGS="${MAKE_FLAGS} TARGET=${EMBEDDED_TARGET}"
 	export MAKE_FLAGS="${MAKE_FLAGS} TARGET_ARCH=${EMBEDDED_TARGET_ARCH}"
 	export MAKE_FLAGS="${MAKE_FLAGS} ${CONF_FILES}"
@@ -430,7 +442,7 @@ main() {
 		esac
 	done
 	shift $(($OPTIND - 1))
-	if [ ! -z "${RELEASECONF}" ]; then
+	if [ -n "${RELEASECONF}" ]; then
 		if [ -e "${RELEASECONF}" ]; then
 			. ${RELEASECONF}
 		else

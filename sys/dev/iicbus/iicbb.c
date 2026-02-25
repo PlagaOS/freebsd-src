@@ -80,7 +80,6 @@ struct iicbb_softc {
 
 static int iicbb_attach(device_t);
 static void iicbb_child_detached(device_t, device_t);
-static int iicbb_detach(device_t);
 static int iicbb_print_child(device_t, device_t);
 static int iicbb_probe(device_t);
 
@@ -101,7 +100,7 @@ static device_method_t iicbb_methods[] = {
 	/* device interface */
 	DEVMETHOD(device_probe,		iicbb_probe),
 	DEVMETHOD(device_attach,	iicbb_attach),
-	DEVMETHOD(device_detach,	iicbb_detach),
+	DEVMETHOD(device_detach,	bus_generic_detach),
 
 	/* bus interface */
 	DEVMETHOD(bus_child_detached,	iicbb_child_detached),
@@ -122,7 +121,7 @@ static device_method_t iicbb_methods[] = {
 	DEVMETHOD(ofw_bus_get_node,	iicbb_get_node),
 #endif
 
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 driver_t iicbb_driver = {
@@ -144,7 +143,7 @@ iicbb_attach(device_t dev)
 {
 	struct iicbb_softc *sc = (struct iicbb_softc *)device_get_softc(dev);
 
-	sc->iicbus = device_add_child(dev, "iicbus", -1);
+	sc->iicbus = device_add_child(dev, "iicbus", DEVICE_UNIT_ANY);
 	if (!sc->iicbus)
 		return (ENXIO);
 
@@ -164,17 +163,7 @@ iicbb_attach(device_t dev)
 	    "io_latency", CTLFLAG_RWTUN, &sc->io_latency,
 	    0, "Estimate of pin toggling latency, microseconds");
 
-	bus_generic_attach(dev);
-	return (0);
-}
-
-static int
-iicbb_detach(device_t dev)
-{
-
-	bus_generic_detach(dev);
-	device_delete_children(dev);
-
+	bus_attach_children(dev);
 	return (0);
 }
 
@@ -342,7 +331,7 @@ iicbb_getack(device_t dev)
 {
 	struct iicbb_softc *sc = device_get_softc(dev);
 	int noack, err;
-	int t;
+	int t = 0;
 
 	/* Release SDA so that the slave can drive it. */
 	err = iicbb_clockin(dev, 1);
@@ -352,12 +341,13 @@ iicbb_getack(device_t dev)
 	}
 
 	/* Sample SDA until ACK (low) or udelay runs out. */
-	for (t = 0; t < sc->udelay; t++) {
+	do {
 		noack = I2C_GETSDA(dev);
 		if (!noack)
 			break;
 		DELAY(1);
-	}
+		t++;
+	} while(t < sc->udelay);
 
 	DELAY(sc->udelay - t);
 	iicbb_clockout(dev);

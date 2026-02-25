@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
  * Copyright (c) 2017 Netflix, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,6 +32,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,13 +57,13 @@ static struct option longopts[] = {
 
 #define	DEVMATCH_MAX_HITS 256
 
-static int all_flag;
-static int dump_flag;
+static bool all_flag;
+static bool  dump_flag;
 static char *linker_hints;
 static char *nomatch_str;
-static int quiet_flag;
-static int unbound_flag;
-static int verbose_flag;
+static bool quiet_flag;
+static bool unbound_flag;
+static bool verbose_flag;
 
 static void *hints;
 static void *hints_end;
@@ -126,6 +129,12 @@ read_linker_hints(void)
 			err(1, "Can't open %s for reading", fn);
 	}
 
+	if (len < sizeof(int)) {
+		warnx("Linker hints file too short.");
+		free(hints);
+		hints = NULL;
+		return;
+	}
 	if (*(int *)(intptr_t)hints != LINKER_HINTS_VERSION) {
 		warnx("Linker hints version %d doesn't match expected %d.",
 		    *(int *)(intptr_t)hints, LINKER_HINTS_VERSION);
@@ -406,7 +415,7 @@ search_hints(const char *bus, const char *dev, const char *pnpinfo)
 				else if (!notme) {
 					if (!unbound_flag) {
 						if (all_flag)
-							printf("%s: %s", *dev ? dev : "unattached", lastmod);
+							printf("%s: %s\n", *dev ? dev : "unattached", lastmod);
 						else
 							printf("%s\n", lastmod);
 						if (verbose_flag)
@@ -445,7 +454,7 @@ find_unmatched(struct devinfo_dev *dev, void *arg)
 			break;
 		if (!(dev->dd_flags & DF_ENABLED))
 			break;
-		if (dev->dd_flags & DF_ATTACHED_ONCE)
+		if (!all_flag && dev->dd_flags & DF_ATTACHED_ONCE)
 			break;
 		parent = devinfo_handle_to_device(dev->dd_parent);
 		bus = strdup(parent->dd_name);
@@ -573,10 +582,10 @@ main(int argc, char **argv)
 		    longopts, NULL)) != -1) {
 		switch (ch) {
 		case 'a':
-			all_flag++;
+			all_flag = true;
 			break;
 		case 'd':
-			dump_flag++;
+			dump_flag = true;
 			break;
 		case 'h':
 			linker_hints = optarg;
@@ -585,13 +594,13 @@ main(int argc, char **argv)
 			nomatch_str = optarg;
 			break;
 		case 'q':
-			quiet_flag++;
+			quiet_flag = true;
 			break;
 		case 'u':
-			unbound_flag++;
+			unbound_flag = true;
 			break;
 		case 'v':
-			verbose_flag++;
+			verbose_flag = true;
 			break;
 		default:
 			usage();

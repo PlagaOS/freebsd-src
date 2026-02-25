@@ -34,11 +34,9 @@
 #include <unistd.h>
 #include "libc_private.h"
 
-__weak_reference(__sys_close, __close);
-
 #pragma weak close
 int
 close(int fd)
 {
-	return (((int (*)(int))*(__libc_interposing_slot(INTERPOS_close)))(fd));
+	return (INTERPOS_SYS(close, fd));
 }

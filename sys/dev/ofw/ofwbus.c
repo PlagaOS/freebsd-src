@@ -117,7 +117,7 @@ ofwbus_attach(device_t dev)
 	/*
 	 * Allow devices to identify.
 	 */
-	bus_generic_probe(dev);
+	bus_identify_children(dev);
 
 	/*
 	 * Now walk the OFW tree and attach top-level devices.
@@ -125,11 +125,12 @@ ofwbus_attach(device_t dev)
 	for (node = OF_child(node); node > 0; node = OF_peer(node))
 		simplebus_add_device(dev, node, 0, NULL, -1, NULL);
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 }
 
 static struct resource *
-ofwbus_alloc_resource(device_t bus, device_t child, int type, int *rid,
+ofwbus_alloc_resource(device_t bus, device_t child, int type, int rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct resource *rv;
@@ -141,11 +142,11 @@ ofwbus_alloc_resource(device_t bus, device_t child, int type, int *rid,
 	rle = NULL;
 	if (!passthrough && isdefault) {
 		rle = resource_list_find(BUS_GET_RESOURCE_LIST(bus, child),
-		    type, *rid);
+		    type, rid);
 		if (rle == NULL) {
 			if (bootverbose)
 				device_printf(bus, "no default resources for "
-				    "rid = %d, type = %d\n", *rid, type);
+				    "rid = %d, type = %d\n", rid, type);
 			return (NULL);
 		}
 		start = rle->start;

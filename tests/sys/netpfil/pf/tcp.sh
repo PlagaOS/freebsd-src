@@ -33,12 +33,13 @@ rst_head()
 {
 	atf_set descr 'Check sequence number validation in RST packets'
 	atf_set require.user root
-	atf_set require.progs scapy
+	atf_set require.progs python3 scapy
 }
 
 rst_body()
 {
 	pft_init
+	vnet_init_bridge
 
 	epair_srv=$(vnet_mkepair)
 	epair_cl=$(vnet_mkepair)

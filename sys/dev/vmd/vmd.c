@@ -383,9 +383,9 @@ vmd_attach(device_t dev)
 	}
 
 	sc->vmd_dma_tag = bus_get_dma_tag(dev);
-
-	sc->psc.child = device_add_child(dev, "pci", -1);
-	return (bus_generic_attach(dev));
+	sc->psc.child = device_add_child(dev, "pci", DEVICE_UNIT_ANY);
+	bus_attach_children(dev);
+	return (0);
 
 fail:
 	vmd_free(sc);
@@ -399,9 +399,6 @@ vmd_detach(device_t dev)
 	int error;
 
 	error = bus_generic_detach(dev);
-	if (error)
-		return (error);
-	error = device_delete_children(dev);
 	if (error)
 		return (error);
 	if (sc->vmd_msix_count == 0)
@@ -435,14 +432,14 @@ vmd_get_rman(device_t dev, int type, u_int flags)
 }
 
 static struct resource *
-vmd_alloc_resource(device_t dev, device_t child, int type, int *rid,
+vmd_alloc_resource(device_t dev, device_t child, int type, int rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct resource *res;
 
 	if (type == SYS_RES_IRQ) {
 		/* VMD hardware does not support legacy interrupts. */
-		if (*rid == 0)
+		if (rid == 0)
 			return (NULL);
 		return (bus_generic_alloc_resource(dev, child, type, rid,
 		    start, end, count, flags | RF_SHAREABLE));
@@ -454,13 +451,13 @@ vmd_alloc_resource(device_t dev, device_t child, int type, int *rid,
 		case SYS_RES_MEMORY:
 			device_printf(dev,
 			    "allocated memory range (%#jx-%#jx) for rid %d of %s\n",
-			    rman_get_start(res), rman_get_end(res), *rid,
+			    rman_get_start(res), rman_get_end(res), rid,
 			    pcib_child_name(child));
 			break;
 		case PCI_RES_BUS:
 			device_printf(dev,
 			    "allocated bus range (%ju-%ju) for rid %d of %s\n",
-			    rman_get_start(res), rman_get_end(res), *rid,
+			    rman_get_start(res), rman_get_end(res), rid,
 			    pcib_child_name(child));
 			break;
 		}
@@ -543,7 +540,7 @@ vmd_map_resource(device_t dev, device_t child, struct resource *r,
 
 	args.offset = start - rman_get_start(pres);
 	args.length = length;
-	return (bus_generic_map_resource(dev, child, pres, &args, map));
+	return (bus_map_resource(dev, pres, &args, map));
 }
 
 static int
@@ -551,11 +548,12 @@ vmd_unmap_resource(device_t dev, device_t child, struct resource *r,
     struct resource_map *map)
 {
 	struct vmd_softc *sc = device_get_softc(dev);
+	struct resource *pres;
 
-	r = vmd_find_parent_resource(sc, r);
-	if (r == NULL)
+	pres = vmd_find_parent_resource(sc, r);
+	if (pres == NULL)
 		return (ENOENT);
-	return (bus_generic_unmap_resource(dev, child, r, map));
+	return (bus_unmap_resource(dev, pres, map));
 }
 
 static int

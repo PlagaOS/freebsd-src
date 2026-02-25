@@ -302,7 +302,7 @@ acpi_spibus_enumerate_child(ACPI_HANDLE handle, UINT32 level,
 	if (acpi_spibus_delete_acpi_child(handle) != 0)
 		return (AE_OK);
 
-	child = BUS_ADD_CHILD(spibus, 0, NULL, -1);
+	child = BUS_ADD_CHILD(spibus, 0, NULL, DEVICE_UNIT_ANY);
 	if (child == NULL) {
 		device_printf(spibus, "add child failed\n");
 		return (AE_OK);
@@ -394,7 +394,7 @@ acpi_spibus_detach(device_t dev)
 {
 	acpi_spibus_set_power_children(dev, ACPI_STATE_D3, false);
 
-	return (spibus_detach(dev));
+	return (bus_generic_detach(dev));
 }
 
 static int
@@ -416,7 +416,7 @@ acpi_spibus_resume(device_t dev)
 #ifndef INTRNG
 /* Mostly copy of acpi_alloc_resource() */
 static struct resource *
-acpi_spibus_alloc_resource(device_t dev, device_t child, int type, int *rid,
+acpi_spibus_alloc_resource(device_t dev, device_t child, int type, int rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	ACPI_RESOURCE ares;
@@ -434,7 +434,7 @@ acpi_spibus_alloc_resource(device_t dev, device_t child, int type, int *rid,
 	res = resource_list_alloc(rl, dev, child, type, rid,
 	    start, end, count, flags);
 	if (res != NULL && type == SYS_RES_IRQ &&
-	    ACPI_SUCCESS(acpi_lookup_irq_resource(child, *rid, res, &ares)))
+	    ACPI_SUCCESS(acpi_lookup_irq_resource(child, rid, res, &ares)))
 		acpi_config_intr(child, &ares);
 
 	return (res);
@@ -561,6 +561,7 @@ static device_method_t acpi_spibus_methods[] = {
 	DEVMETHOD(bus_alloc_resource,   acpi_spibus_alloc_resource),
 #endif
 	DEVMETHOD(bus_add_child,	acpi_spibus_add_child),
+	DEVMETHOD(bus_child_deleted,	spibus_child_deleted),
 	DEVMETHOD(bus_probe_nomatch,	acpi_spibus_probe_nomatch),
 	DEVMETHOD(bus_driver_added,	acpi_spibus_driver_added),
 	DEVMETHOD(bus_child_deleted,	acpi_spibus_child_deleted),

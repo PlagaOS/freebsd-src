@@ -160,12 +160,14 @@ typedef enum {
 				/* Path statistics (error counts, etc.) */
 	XPT_GDEV_STATS		= 0x0c,
 				/* Device statistics (error counts, etc.) */
+
+				/* 0x0d unused */
 	XPT_DEV_ADVINFO		= 0x0e,
 				/* Get/Set Device advanced information */
 	XPT_ASYNC		= 0x0f | XPT_FC_QUEUED | XPT_FC_USER_CCB
 				       | XPT_FC_XPT_ONLY,
 				/* Asynchronous event */
-/* SCSI Control Functions: 0x10->0x1F */
+/* SCSI, NVME, and ATA Control Functions: 0x10->0x1F */
 	XPT_ABORT		= 0x10,
 				/* Abort the specified CCB */
 	XPT_RESET_BUS		= 0x11 | XPT_FC_XPT_ONLY,
@@ -199,14 +201,10 @@ typedef enum {
 	XPT_GET_SIM_KNOB_OLD	= 0x18, /* Compat only */
 
 	XPT_SET_SIM_KNOB	= 0x19,
-				/*
-				 * Set SIM specific knob values.
-				 */
+				/* Set SIM specific knob values. */
 
 	XPT_GET_SIM_KNOB	= 0x1a,
-				/*
-				 * Get SIM specific knob values.
-				 */
+				/* Get SIM specific knob values. */
 
 	XPT_SMP_IO		= 0x1b | XPT_FC_DEV_QUEUED,
 				/* Serial Management Protocol */
@@ -250,8 +248,11 @@ typedef enum {
 	XPT_REPROBE_LUN		= 0x38 | XPT_FC_QUEUED | XPT_FC_USER_CCB,
 				/* Query device capacity and notify GEOM */
 
+/* More common commands: 0x40-0x7f */
 	XPT_MMC_SET_TRAN_SETTINGS = 0x40 | XPT_FC_DEV_QUEUED,
+				/* Queued MMC/SD set transmit settings */
 	XPT_MMC_GET_TRAN_SETTINGS = 0x41 | XPT_FC_DEV_QUEUED,
+				/* Queued MMC/SD get transmit settings */
 
 /* Vendor Unique codes: 0x80->0x8F */
 	XPT_VUNIQUE		= 0x80
@@ -297,9 +298,11 @@ typedef enum {
 	XPORT_SRP,	/* SCSI RDMA Protocol */
 	XPORT_NVME,	/* NVMe over PCIe */
 	XPORT_MMCSD,	/* MMC, SD, SDIO card */
+	XPORT_NVMF,	/* NVMe over Fabrics */
+	XPORT_UFSHCI,	/* Universal Flash Storage Host Interface */
 } cam_xport;
 
-#define XPORT_IS_NVME(t)	((t) == XPORT_NVME)
+#define XPORT_IS_NVME(t)	((t) == XPORT_NVME || (t) == XPORT_NVMF)
 #define XPORT_IS_ATA(t)		((t) == XPORT_ATA || (t) == XPORT_SATA)
 #define XPORT_IS_SCSI(t)	((t) != XPORT_UNKNOWN && \
 				 (t) != XPORT_UNSPECIFIED && \
@@ -612,6 +615,7 @@ typedef enum {
 } pi_tmflag;
 
 typedef enum {
+	PIM_WLUNS	= 0x400,/* Well known LUNs supported */
 	PIM_ATA_EXT	= 0x200,/* ATA requests can understand ata_ext requests */
 	PIM_EXTLUNS	= 0x100,/* 64bit extended LUNs supported */
 	PIM_SCANHILO	= 0x80,	/* Bus scans from high ID to low ID */
@@ -647,11 +651,17 @@ struct ccb_pathinq_settings_nvme {
 	uint8_t  bus;
 	uint8_t  slot;
 	uint8_t  function;
-	uint8_t  extra;
+	uint8_t  progif;
 	char	 dev_name[NVME_DEV_NAME_LEN]; /* nvme controller dev name for this device */
 };
 _Static_assert(sizeof(struct ccb_pathinq_settings_nvme) == 64,
     "ccb_pathinq_settings_nvme too big");
+
+struct ccb_pathinq_settings_nvmf {
+	uint32_t nsid;		/* Namespace ID for this path */
+	uint8_t  trtype;
+	char	 dev_name[NVME_DEV_NAME_LEN]; /* nvme controller dev name for this device */
+};
 
 #define	PATHINQ_SETTINGS_SIZE	128
 
@@ -684,6 +694,7 @@ struct ccb_pathinq {
 		struct ccb_pathinq_settings_fc fc;
 		struct ccb_pathinq_settings_sas sas;
 		struct ccb_pathinq_settings_nvme nvme;
+		struct ccb_pathinq_settings_nvmf nvmf;
 		char ccb_pathinq_settings_opaque[PATHINQ_SETTINGS_SIZE];
 	} xport_specific;
 	u_int		maxio;		/* Max supported I/O size, in bytes. */
@@ -1050,6 +1061,31 @@ struct ccb_trans_settings_nvme
 	uint8_t		max_speed;	/* PCIe generation for each lane */
 };
 
+struct ccb_trans_settings_nvmf
+{
+	u_int     	valid;		/* Which fields to honor */
+#define CTS_NVMF_VALID_TRTYPE	0x01
+	uint8_t		trtype;
+};
+
+struct ccb_trans_settings_ufshci
+{
+	u_int     	valid;		/* Which fields to honor */
+	/* 
+	 * Ensure the validity of the information for the Unipro link
+	 * (GEAR, SPEED, LANE)
+	 */
+#define CTS_UFSHCI_VALID_LINK	0x01
+	uint32_t 	speed;
+	uint8_t  	hs_gear;      	/* High Speed Gear (G1, G2, G3...) */
+	uint8_t  	tx_lanes;
+	uint8_t  	rx_lanes;
+	uint8_t		max_hs_gear;	/* Maximum HS Gear */
+	uint8_t		max_tx_lanes;
+	uint8_t		max_rx_lanes;
+};
+
+
 #include <cam/mmc/mmc_bus.h>
 struct ccb_trans_settings_mmc {
 	struct mmc_ios ios;
@@ -1122,6 +1158,8 @@ struct ccb_trans_settings {
 		struct ccb_trans_settings_pata ata;
 		struct ccb_trans_settings_sata sata;
 		struct ccb_trans_settings_nvme nvme;
+		struct ccb_trans_settings_nvmf nvmf;
+		struct ccb_trans_settings_ufshci ufshci;
 	} xport_specific;
 };
 
@@ -1488,6 +1526,7 @@ cam_fill_mmcio(struct ccb_mmcio *mmcio, uint32_t retries,
 	mmcio->cmd.opcode = mmc_opcode;
 	mmcio->cmd.arg = mmc_arg;
 	mmcio->cmd.flags = mmc_flags;
+	mmcio->cmd.error = 0;
 	mmcio->stop.opcode = 0;
 	mmcio->stop.arg = 0;
 	mmcio->stop.flags = 0;

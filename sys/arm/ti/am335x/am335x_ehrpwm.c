@@ -512,13 +512,15 @@ am335x_ehrpwm_attach(device_t dev)
 	reg |= TBCTL_CTRMODE_UP | TBCTL_FREERUN;
 	EPWM_WRITE2(sc, EPWM_TBCTL, reg);
 
-	if ((sc->sc_busdev = device_add_child(dev, "pwmbus", -1)) == NULL) {
+	if ((sc->sc_busdev = device_add_child(dev, "pwmbus",
+	    DEVICE_UNIT_ANY)) == NULL) {
 		device_printf(dev, "Cannot add child pwmbus\n");
 		// This driver can still do things even without the bus child.
 	}
 
-	bus_generic_probe(dev);
-	return (bus_generic_attach(dev));
+	bus_identify_children(dev);
+	bus_attach_children(dev);
+	return (0);
 fail:
 	PWM_LOCK_DESTROY(sc);
 	if (sc->sc_mem_res)
@@ -540,9 +542,6 @@ am335x_ehrpwm_detach(device_t dev)
 		return (error);
 
 	PWM_LOCK(sc);
-
-	if (sc->sc_busdev != NULL)
-		device_delete_child(dev, sc->sc_busdev);
 
 	if (sc->sc_mem_res)
 		bus_release_resource(dev, SYS_RES_MEMORY,

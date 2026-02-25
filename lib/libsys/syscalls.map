@@ -1,11 +1,13 @@
 /*
  * FreeBSD system call symbols.
- *  DO NOT EDIT-- this file is automatically @generated.
+ *
+ * DO NOT EDIT-- this file is automatically @generated.
  */
+
 FBSDprivate_1.0 {
 	_syscall;
 	__sys_syscall;
-	__sys_exit;
+	__sys__exit;
 	_fork;
 	__sys_fork;
 	_read;
@@ -115,10 +117,6 @@ FBSDprivate_1.0 {
 	__sys_madvise;
 	_mincore;
 	__sys_mincore;
-	_getgroups;
-	__sys_getgroups;
-	_setgroups;
-	__sys_setgroups;
 	_getpgrp;
 	__sys_getpgrp;
 	_setpgid;
@@ -643,8 +641,6 @@ FBSDprivate_1.0 {
 	__sys_unlinkat;
 	_posix_openpt;
 	__sys_posix_openpt;
-	_gssd_syscall;
-	__sys_gssd_syscall;
 	_jail_get;
 	__sys_jail_get;
 	_jail_set;
@@ -801,4 +797,30 @@ FBSDprivate_1.0 {
 	__sys_timerfd_settime;
 	_kcmp;
 	__sys_kcmp;
+	_getrlimitusage;
+	__sys_getrlimitusage;
+	_fchroot;
+	__sys_fchroot;
+	_setcred;
+	__sys_setcred;
+	_exterrctl;
+	__sys_exterrctl;
+	_inotify_add_watch_at;
+	__sys_inotify_add_watch_at;
+	_inotify_rm_watch;
+	__sys_inotify_rm_watch;
+	_getgroups;
+	__sys_getgroups;
+	_setgroups;
+	__sys_setgroups;
+	_jail_attach_jd;
+	__sys_jail_attach_jd;
+	_jail_remove_jd;
+	__sys_jail_remove_jd;
+	_kexec_load;
+	__sys_kexec_load;
+	_pdrfork;
+	__sys_pdrfork;
+	_pdwait;
+	__sys_pdwait;
 };

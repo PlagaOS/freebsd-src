@@ -19,7 +19,6 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/cdefs.h>
 /*-
  * Ralink Technology RT2500USB chipset driver
  * http://www.ralinktech.com/
@@ -473,6 +472,8 @@ ural_attach(device_t self)
 	    | IEEE80211_C_BGSCAN	/* bg scanning supported */
 	    | IEEE80211_C_WPA		/* 802.11i */
 	    ;
+
+	ic->ic_flags_ext |= IEEE80211_FEXT_SEQNO_OFFLOAD;
 
 	ural_getradiocaps(ic, IEEE80211_CHAN_MAX, &ic->ic_nchans,
 	    ic->ic_channels);
@@ -1074,6 +1075,8 @@ ural_tx_mgt(struct ural_softc *sc, struct mbuf *m0, struct ieee80211_node *ni)
 	STAILQ_REMOVE_HEAD(&sc->tx_free, next);
 	sc->tx_nfree--;
 
+	ieee80211_output_seqno_assign(ni, -1, m0);
+
 	wh = mtod(m0, struct ieee80211_frame *);
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
 		k = ieee80211_crypto_encap(ni, m0);
@@ -1097,10 +1100,7 @@ ural_tx_mgt(struct ural_softc *sc, struct mbuf *m0, struct ieee80211_node *ni)
 		USETW(wh->i_dur, dur);
 
 		/* tell hardware to add timestamp for probe responses */
-		if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) ==
-		    IEEE80211_FC0_TYPE_MGT &&
-		    (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
-		    IEEE80211_FC0_SUBTYPE_PROBE_RESP)
+		if (IEEE80211_IS_MGMT_PROBE_RESP(wh))
 			flags |= RAL_TX_TIMESTAMP;
 	}
 
@@ -1230,8 +1230,10 @@ ural_tx_data(struct ural_softc *sc, struct mbuf *m0, struct ieee80211_node *ni)
 		rate = tp->ucastrate;
 	else {
 		(void) ieee80211_ratectl_rate(ni, NULL, 0);
-		rate = ni->ni_txrate;
+		rate = ieee80211_node_get_txrate_dot11rate(ni);
 	}
+
+	ieee80211_output_seqno_assign(ni, -1, m0);
 
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
 		k = ieee80211_crypto_encap(ni, m0);

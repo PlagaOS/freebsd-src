@@ -78,4 +78,12 @@ struct dmi_system_id {
 #define	I2C_NAME_SIZE		20
 #define	I2C_MODULE_PREFIX	"i2c:"
 
+#define	ACPI_ID_LEN		16
+
+/* -----------------------------------------------------------------------------
+ * USB
+ */
+/* struct usb_device_id is defined in sys/dev/usb/usbdi.h. */
+/* MODULE_DEVICE_TABLE_BUS_usb we have in usb.h. */
+
 #endif	/* __LINUXKPI_LINUX_MOD_DEVICETABLE_H__ */

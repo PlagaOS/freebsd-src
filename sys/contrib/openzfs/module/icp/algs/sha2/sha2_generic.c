@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -76,7 +77,8 @@ static const uint32_t SHA256_K[64] = {
 	h = g, g = f, f = e, e = d + T1; \
 	d = c, c = b, b = a, a = T1 + T2;
 
-static void sha256_generic(uint32_t state[8], const void *data, size_t num_blks)
+static void
+icp_sha256_generic(uint32_t state[8], const void *data, size_t num_blks)
 {
 	uint64_t blk;
 
@@ -172,7 +174,8 @@ static const uint64_t SHA512_K[80] = {
 	0x5fcb6fab3ad6faec, 0x6c44198c4a475817
 };
 
-static void sha512_generic(uint64_t state[8], const void *data, size_t num_blks)
+static void
+icp_sha512_generic(uint64_t state[8], const void *data, size_t num_blks)
 {
 	uint64_t blk;
 
@@ -225,7 +228,8 @@ static void sha512_generic(uint64_t state[8], const void *data, size_t num_blks)
 	}
 }
 
-static void sha256_update(sha256_ctx *ctx, const uint8_t *data, size_t len)
+static void
+icp_sha256_update(sha256_ctx *ctx, const uint8_t *data, size_t len)
 {
 	uint64_t pos = ctx->count[0];
 	uint64_t total = ctx->count[1];
@@ -257,7 +261,8 @@ static void sha256_update(sha256_ctx *ctx, const uint8_t *data, size_t len)
 	ctx->count[1] = total;
 }
 
-static void sha512_update(sha512_ctx *ctx, const uint8_t *data, size_t len)
+static void
+icp_sha512_update(sha512_ctx *ctx, const uint8_t *data, size_t len)
 {
 	uint64_t pos = ctx->count[0];
 	uint64_t total = ctx->count[1];
@@ -289,7 +294,8 @@ static void sha512_update(sha512_ctx *ctx, const uint8_t *data, size_t len)
 	ctx->count[1] = total;
 }
 
-static void sha256_final(sha256_ctx *ctx, uint8_t *result, int bits)
+static void
+icp_sha256_final(sha256_ctx *ctx, uint8_t *result, int bits)
 {
 	uint64_t mlen, pos = ctx->count[0];
 	uint8_t *m = ctx->wbuf;
@@ -333,7 +339,8 @@ static void sha256_final(sha256_ctx *ctx, uint8_t *result, int bits)
 	memset(ctx, 0, sizeof (*ctx));
 }
 
-static void sha512_final(sha512_ctx *ctx, uint8_t *result, int bits)
+static void
+icp_sha512_final(sha512_ctx *ctx, uint8_t *result, int bits)
 {
 	uint64_t mlen, pos = ctx->count[0];
 	uint8_t *m = ctx->wbuf, *r;
@@ -400,15 +407,13 @@ SHA2Init(int algotype, SHA2_CTX *ctx)
 	sha256_ctx *ctx256 = &ctx->sha256;
 	sha512_ctx *ctx512 = &ctx->sha512;
 
-	ASSERT3S(algotype, >=, SHA256_MECH_INFO_TYPE);
-	ASSERT3S(algotype, <=, SHA512_256_MECH_INFO_TYPE);
+	ASSERT3S(algotype, >=, SHA512_HMAC_MECH_INFO_TYPE);
+	ASSERT3S(algotype, <=, SHA512_256);
 
 	memset(ctx, 0, sizeof (*ctx));
 	ctx->algotype = algotype;
 	switch (ctx->algotype) {
-		case SHA256_MECH_INFO_TYPE:
-		case SHA256_HMAC_MECH_INFO_TYPE:
-		case SHA256_HMAC_GEN_MECH_INFO_TYPE:
+		case SHA256:
 			ctx256->state[0] = 0x6a09e667;
 			ctx256->state[1] = 0xbb67ae85;
 			ctx256->state[2] = 0x3c6ef372;
@@ -420,24 +425,8 @@ SHA2Init(int algotype, SHA2_CTX *ctx)
 			ctx256->count[0] = 0;
 			ctx256->ops = sha256_get_ops();
 			break;
-		case SHA384_MECH_INFO_TYPE:
-		case SHA384_HMAC_MECH_INFO_TYPE:
-		case SHA384_HMAC_GEN_MECH_INFO_TYPE:
-			ctx512->state[0] = 0xcbbb9d5dc1059ed8ULL;
-			ctx512->state[1] = 0x629a292a367cd507ULL;
-			ctx512->state[2] = 0x9159015a3070dd17ULL;
-			ctx512->state[3] = 0x152fecd8f70e5939ULL;
-			ctx512->state[4] = 0x67332667ffc00b31ULL;
-			ctx512->state[5] = 0x8eb44a8768581511ULL;
-			ctx512->state[6] = 0xdb0c2e0d64f98fa7ULL;
-			ctx512->state[7] = 0x47b5481dbefa4fa4ULL;
-			ctx512->count[0] = 0;
-			ctx512->count[1] = 0;
-			ctx512->ops = sha512_get_ops();
-			break;
-		case SHA512_MECH_INFO_TYPE:
+		case SHA512:
 		case SHA512_HMAC_MECH_INFO_TYPE:
-		case SHA512_HMAC_GEN_MECH_INFO_TYPE:
 			ctx512->state[0] = 0x6a09e667f3bcc908ULL;
 			ctx512->state[1] = 0xbb67ae8584caa73bULL;
 			ctx512->state[2] = 0x3c6ef372fe94f82bULL;
@@ -450,20 +439,7 @@ SHA2Init(int algotype, SHA2_CTX *ctx)
 			ctx512->count[1] = 0;
 			ctx512->ops = sha512_get_ops();
 			break;
-		case SHA512_224_MECH_INFO_TYPE:
-			ctx512->state[0] = 0x8c3d37c819544da2ULL;
-			ctx512->state[1] = 0x73e1996689dcd4d6ULL;
-			ctx512->state[2] = 0x1dfab7ae32ff9c82ULL;
-			ctx512->state[3] = 0x679dd514582f9fcfULL;
-			ctx512->state[4] = 0x0f6d2b697bd44da8ULL;
-			ctx512->state[5] = 0x77e36f7304c48942ULL;
-			ctx512->state[6] = 0x3f9d85a86a1d36c8ULL;
-			ctx512->state[7] = 0x1112e6ad91d692a1ULL;
-			ctx512->count[0] = 0;
-			ctx512->count[1] = 0;
-			ctx512->ops = sha512_get_ops();
-			break;
-		case SHA512_256_MECH_INFO_TYPE:
+		case SHA512_256:
 			ctx512->state[0] = 0x22312194fc2bf72cULL;
 			ctx512->state[1] = 0x9f555fa3c84c64c2ULL;
 			ctx512->state[2] = 0x2393b86b6f53b151ULL;
@@ -490,26 +466,15 @@ SHA2Update(SHA2_CTX *ctx, const void *data, size_t len)
 	ASSERT3P(data, !=, NULL);
 
 	switch (ctx->algotype) {
-		case SHA256_MECH_INFO_TYPE:
-		case SHA256_HMAC_MECH_INFO_TYPE:
-		case SHA256_HMAC_GEN_MECH_INFO_TYPE:
-			sha256_update(&ctx->sha256, data, len);
+		case SHA256:
+			icp_sha256_update(&ctx->sha256, data, len);
 			break;
-		case SHA384_MECH_INFO_TYPE:
-		case SHA384_HMAC_MECH_INFO_TYPE:
-		case SHA384_HMAC_GEN_MECH_INFO_TYPE:
-			sha512_update(&ctx->sha512, data, len);
-			break;
-		case SHA512_MECH_INFO_TYPE:
+		case SHA512:
 		case SHA512_HMAC_MECH_INFO_TYPE:
-		case SHA512_HMAC_GEN_MECH_INFO_TYPE:
-			sha512_update(&ctx->sha512, data, len);
+			icp_sha512_update(&ctx->sha512, data, len);
 			break;
-		case SHA512_224_MECH_INFO_TYPE:
-			sha512_update(&ctx->sha512, data, len);
-			break;
-		case SHA512_256_MECH_INFO_TYPE:
-			sha512_update(&ctx->sha512, data, len);
+		case SHA512_256:
+			icp_sha512_update(&ctx->sha512, data, len);
 			break;
 	}
 }
@@ -519,44 +484,34 @@ void
 SHA2Final(void *digest, SHA2_CTX *ctx)
 {
 	switch (ctx->algotype) {
-		case SHA256_MECH_INFO_TYPE:
-		case SHA256_HMAC_MECH_INFO_TYPE:
-		case SHA256_HMAC_GEN_MECH_INFO_TYPE:
-			sha256_final(&ctx->sha256, digest, 256);
+		case SHA256:
+			icp_sha256_final(&ctx->sha256, digest, 256);
 			break;
-		case SHA384_MECH_INFO_TYPE:
-		case SHA384_HMAC_MECH_INFO_TYPE:
-		case SHA384_HMAC_GEN_MECH_INFO_TYPE:
-			sha512_final(&ctx->sha512, digest, 384);
-			break;
-		case SHA512_MECH_INFO_TYPE:
+		case SHA512:
 		case SHA512_HMAC_MECH_INFO_TYPE:
-		case SHA512_HMAC_GEN_MECH_INFO_TYPE:
-			sha512_final(&ctx->sha512, digest, 512);
+			icp_sha512_final(&ctx->sha512, digest, 512);
 			break;
-		case SHA512_224_MECH_INFO_TYPE:
-			sha512_final(&ctx->sha512, digest, 224);
-			break;
-		case SHA512_256_MECH_INFO_TYPE:
-			sha512_final(&ctx->sha512, digest, 256);
+		case SHA512_256:
+			icp_sha512_final(&ctx->sha512, digest, 256);
 			break;
 	}
 }
 
 /* the generic implementation is always okay */
-static boolean_t sha2_is_supported(void)
+static boolean_t
+icp_sha2_is_supported(void)
 {
 	return (B_TRUE);
 }
 
 const sha256_ops_t sha256_generic_impl = {
 	.name = "generic",
-	.transform = sha256_generic,
-	.is_supported = sha2_is_supported
+	.transform = icp_sha256_generic,
+	.is_supported = icp_sha2_is_supported
 };
 
 const sha512_ops_t sha512_generic_impl = {
 	.name = "generic",
-	.transform = sha512_generic,
-	.is_supported = sha2_is_supported
+	.transform = icp_sha512_generic,
+	.is_supported = icp_sha2_is_supported
 };

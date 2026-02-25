@@ -79,6 +79,7 @@ memrw(struct cdev *dev, struct uio *uio, int flags)
 	struct iovec *iov;
 	void *p;
 	ssize_t orig_resid;
+	vm_prot_t prot;
 	u_long v, vd;
 	u_int c;
 	int error;
@@ -104,14 +105,22 @@ memrw(struct cdev *dev, struct uio *uio, int flags)
 			 * PAGE_SIZE, the uiomove() call does not
 			 * access past the end of the direct map.
 			 */
-			if (v >= DMAP_MIN_ADDRESS &&
-			    v < DMAP_MIN_ADDRESS + dmaplimit) {
+			if (v >= kva_layout.dmap_low &&
+			    v < kva_layout.dmap_high) {
 				error = uiomove((void *)v, c, uio);
 				break;
 			}
 
-			if (!kernacc((void *)v, c, uio->uio_rw == UIO_READ ?
-			    VM_PROT_READ : VM_PROT_WRITE)) {
+			switch (uio->uio_rw) {
+			case UIO_READ:
+				prot = VM_PROT_READ;
+				break;
+			case UIO_WRITE:
+				prot = VM_PROT_WRITE;
+				break;
+			}
+
+			if (!kernacc((void *)v, c, prot)) {
 				error = EFAULT;
 				break;
 			}
@@ -182,7 +191,7 @@ memmmap(struct cdev *dev, vm_ooffset_t offset, vm_paddr_t *paddr,
  * This is basically just an ioctl shim for mem_range_attr_get
  * and mem_range_attr_set.
  */
-int 
+int
 memioctl_md(struct cdev *dev __unused, u_long cmd, caddr_t data, int flags,
     struct thread *td)
 {
@@ -212,7 +221,7 @@ memioctl_md(struct cdev *dev __unused, u_long cmd, caddr_t data, int flags,
 				       M_MEMDESC, M_WAITOK);
 			error = mem_range_attr_get(md, &nd);
 			if (!error)
-				error = copyout(md, mo->mo_desc, 
+				error = copyout(md, mo->mo_desc,
 					nd * sizeof(struct mem_range_desc));
 			free(md, M_MEMDESC);
 		}
@@ -220,7 +229,7 @@ memioctl_md(struct cdev *dev __unused, u_long cmd, caddr_t data, int flags,
 			nd = mem_range_softc.mr_ndesc;
 		mo->mo_arg[0] = nd;
 		break;
-		
+
 	case MEMRANGE_SET:
 		md = (struct mem_range_desc *)malloc(sizeof(struct mem_range_desc),
 						    M_MEMDESC, M_WAITOK);

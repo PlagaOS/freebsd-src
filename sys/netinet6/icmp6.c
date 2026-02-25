@@ -60,7 +60,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #define	MBUF_PRIVATE	/* XXXRW: Optimisation tries to avoid M_EXT mbufs */
 
 #include "opt_inet.h"
@@ -143,6 +142,9 @@ SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_NODEINFO, nodeinfo,
 VNET_DECLARE(struct inpcbinfo, ripcbinfo);
 #define	V_ripcbinfo		VNET(ripcbinfo)
 
+VNET_DECLARE(int, rip_bind_all_fibs);
+#define	V_rip_bind_all_fibs	VNET(rip_bind_all_fibs)
+
 static void icmp6_errcount(int, int);
 static int icmp6_rip6_input(struct mbuf **, int);
 static void icmp6_reflect(struct mbuf *, size_t);
@@ -156,6 +158,7 @@ static int ni6_addrs(struct icmp6_nodeinfo *, struct mbuf *,
 static int ni6_store_addrs(struct icmp6_nodeinfo *, struct icmp6_nodeinfo *,
 				struct ifnet *, int);
 static int icmp6_notify_error(struct mbuf **, int, int);
+static void icmp6_mtudisc_update(struct ip6ctlparam *ip6cp);
 
 /*
  * Kernel module interface for updating icmp6stat.  The argument is an index
@@ -382,7 +385,7 @@ icmp6_error(struct mbuf *m, int type, int code, int param)
 	icmp6->icmp6_code = code;
 	icmp6->icmp6_pptr = htonl((u_int32_t)param);
 
-	ICMP6STAT_INC(icp6s_outhist[type]);
+	ICMP6STAT_INC2(icp6s_outhist, type);
 	NET_EPOCH_ENTER(et);
 	icmp6_reflect(m, sizeof(struct ip6_hdr)); /* header order: IPv6 - ICMPv6 */
 	NET_EPOCH_EXIT(et);
@@ -507,7 +510,7 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 		goto freeit;
 	}
 
-	ICMP6STAT_INC(icp6s_inhist[icmp6->icmp6_type]);
+	ICMP6STAT_INC2(icp6s_inhist, icmp6->icmp6_type);
 	icmp6_ifstat_inc(ifp, ifs6_in_msg);
 	if (icmp6->icmp6_type < ICMP6_INFOMSG_MASK)
 		icmp6_ifstat_inc(ifp, ifs6_in_error);
@@ -612,7 +615,7 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 			nicmp6->icmp6_type = ICMP6_ECHO_REPLY;
 			nicmp6->icmp6_code = 0;
 			ICMP6STAT_INC(icp6s_reflect);
-			ICMP6STAT_INC(icp6s_outhist[ICMP6_ECHO_REPLY]);
+			ICMP6STAT_INC2(icp6s_outhist, ICMP6_ECHO_REPLY);
 			icmp6_reflect(n, noff);
 		}
 		break;
@@ -744,7 +747,7 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 		}
 		if (n) {
 			ICMP6STAT_INC(icp6s_reflect);
-			ICMP6STAT_INC(icp6s_outhist[ICMP6_WRUREPLY]);
+			ICMP6STAT_INC2(icp6s_outhist, ICMP6_WRUREPLY);
 			icmp6_reflect(n, noff);
 		}
 		break;
@@ -1112,7 +1115,7 @@ icmp6_notify_error(struct mbuf **mp, int off, int icmp6len)
 		if (icmp6type == ICMP6_PACKET_TOO_BIG) {
 			notifymtu = ntohl(icmp6->icmp6_mtu);
 			ip6cp.ip6c_cmdarg = (void *)&notifymtu;
-			icmp6_mtudisc_update(&ip6cp, 1);	/*XXX*/
+			icmp6_mtudisc_update(&ip6cp);
 		}
 
 		if (ip6_ctlprotox[nxt] != NULL)
@@ -1127,47 +1130,18 @@ icmp6_notify_error(struct mbuf **mp, int off, int icmp6len)
 	return (-1);
 }
 
-void
-icmp6_mtudisc_update(struct ip6ctlparam *ip6cp, int validated)
+static void
+icmp6_mtudisc_update(struct ip6ctlparam *ip6cp)
 {
 	struct in6_addr *dst = &ip6cp->ip6c_finaldst->sin6_addr;
 	struct icmp6_hdr *icmp6 = ip6cp->ip6c_icmp6;
-	struct mbuf *m = ip6cp->ip6c_m;	/* will be necessary for scope issue */
+	struct mbuf *m = ip6cp->ip6c_m;
 	u_int mtu = ntohl(icmp6->icmp6_mtu);
 	struct in_conninfo inc;
 	uint32_t max_mtu;
 
-#if 0
-	/*
-	 * RFC2460 section 5, last paragraph.
-	 * even though minimum link MTU for IPv6 is IPV6_MMTU,
-	 * we may see ICMPv6 too big with mtu < IPV6_MMTU
-	 * due to packet translator in the middle.
-	 * see ip6_output() and ip6_getpmtu() "alwaysfrag" case for
-	 * special handling.
-	 */
 	if (mtu < IPV6_MMTU)
 		return;
-#endif
-
-	/*
-	 * we reject ICMPv6 too big with abnormally small value.
-	 * XXX what is the good definition of "abnormally small"?
-	 */
-	if (mtu < sizeof(struct ip6_hdr) + sizeof(struct ip6_frag) + 8)
-		return;
-
-	if (!validated)
-		return;
-
-	/*
-	 * In case the suggested mtu is less than IPV6_MMTU, we
-	 * only need to remember that it was for above mentioned
-	 * "alwaysfrag" case.
-	 * Try to be as close to the spec as possible.
-	 */
-	if (mtu < IPV6_MMTU)
-		mtu = IPV6_MMTU - 8;
 
 	bzero(&inc, sizeof(inc));
 	inc.inc_fibnum = M_GETFIB(m);
@@ -1934,7 +1908,7 @@ icmp6_rip6_input(struct mbuf **mp, int off)
 	struct sockaddr_in6 fromsa;
 	struct icmp6_hdr *icmp6;
 	struct mbuf *opts = NULL;
-	int delivered = 0;
+	int delivered = 0, fib;
 
 	/* This is assumed to be safe; icmp6_input() does a pullup. */
 	icmp6 = (struct icmp6_hdr *)((caddr_t)ip6 + off);
@@ -1953,7 +1927,15 @@ icmp6_rip6_input(struct mbuf **mp, int off)
 		return (IPPROTO_DONE);
 	}
 
+	fib = M_GETFIB(m);
+
 	while ((inp = inp_next(&inpi)) != NULL) {
+		if (V_rip_bind_all_fibs == 0 && fib != inp->inp_inc.inc_fibnum)
+			/*
+			 * Sockets bound to a specific FIB can only receive
+			 * packets from that FIB.
+			 */
+			continue;
 		if (ICMP6_FILTER_WILLBLOCK(icmp6->icmp6_type,
 		    inp->in6p_icmp6filt))
 			continue;
@@ -2076,6 +2058,12 @@ icmp6_reflect(struct mbuf *m, size_t off)
 	hlim = 0;
 	srcp = NULL;
 
+	if (__predict_false(IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_src))) {
+		nd6log((LOG_DEBUG,
+		    "icmp6_reflect: source address is unspecified\n"));
+		goto bad;
+	}
+
 	/*
 	 * If the incoming packet was addressed directly to us (i.e. unicast),
 	 * use dst as the src for the reply.
@@ -2092,7 +2080,8 @@ icmp6_reflect(struct mbuf *m, size_t off)
 
 			if (m->m_pkthdr.rcvif != NULL) {
 				/* XXX: This may not be the outgoing interface */
-				hlim = ND_IFINFO(m->m_pkthdr.rcvif)->chlim;
+				hlim =
+				    m->m_pkthdr.rcvif->if_inet6->nd_curhoplimit;
 			} else
 				hlim = V_ip6_defhlim;
 		}
@@ -2144,6 +2133,7 @@ icmp6_reflect(struct mbuf *m, size_t off)
 
 	m->m_flags &= ~(M_BCAST|M_MCAST);
 	m->m_pkthdr.rcvif = NULL;
+	m->m_pkthdr.csum_flags = 0;
 	ip6_output(m, NULL, NULL, 0, NULL, &outif, NULL);
 	if (outif)
 		icmp6_ifoutstat_inc(outif, type, code);
@@ -2374,7 +2364,7 @@ void
 icmp6_redirect_output(struct mbuf *m0, struct nhop_object *nh)
 {
 	struct ifnet *ifp;	/* my outgoing interface */
-	struct in6_addr *ifp_ll6;
+	struct in6_addr ifp_ll6;
 	struct in6_addr *router_ll6;
 	struct ip6_hdr *sip6;	/* m0 as struct ip6_hdr */
 	struct mbuf *m = NULL;	/* newly allocated one */
@@ -2444,8 +2434,7 @@ icmp6_redirect_output(struct mbuf *m0, struct nhop_object *nh)
 						 IN6_IFF_NOTREADY|
 						 IN6_IFF_ANYCAST)) == NULL)
 			goto fail;
-		ifp_ll6 = &ia->ia_addr.sin6_addr;
-		/* XXXRW: reference released prematurely. */
+		bcopy(&ia->ia_addr.sin6_addr, &ifp_ll6, sizeof(ifp_ll6));
 		ifa_free(&ia->ia_ifa);
 	}
 
@@ -2468,7 +2457,7 @@ icmp6_redirect_output(struct mbuf *m0, struct nhop_object *nh)
 	ip6->ip6_nxt = IPPROTO_ICMPV6;
 	ip6->ip6_hlim = 255;
 	/* ip6->ip6_src must be linklocal addr for my outgoing if. */
-	bcopy(ifp_ll6, &ip6->ip6_src, sizeof(struct in6_addr));
+	bcopy(&ifp_ll6, &ip6->ip6_src, sizeof(struct in6_addr));
 	bcopy(&sip6->ip6_src, &ip6->ip6_dst, sizeof(struct in6_addr));
 
 	/* ND Redirect */
@@ -2588,6 +2577,7 @@ nolladdropt:
 				/* pad if easy enough, truncate if not */
 				if (8 - extra <= M_TRAILINGSPACE(m0)) {
 					/* pad */
+					bzero(m0->m_data + m0->m_len, 8 - extra);
 					m0->m_len += (8 - extra);
 					m0->m_pkthdr.len += (8 - extra);
 				} else {
@@ -2648,7 +2638,7 @@ noredhdropt:;
 		icmp6_ifstat_inc(outif, ifs6_out_msg);
 		icmp6_ifstat_inc(outif, ifs6_out_redirect);
 	}
-	ICMP6STAT_INC(icp6s_outhist[ND_REDIRECT]);
+	ICMP6STAT_INC2(icp6s_outhist, ND_REDIRECT);
 
 	return;
 
@@ -2683,7 +2673,7 @@ icmp6_ctloutput(struct socket *so, struct sockopt *sopt)
 	}
 
 	switch (op) {
-	case PRCO_SETOPT:
+	case SOPT_SET:
 		switch (optname) {
 		case ICMP6_FILTER:
 		    {
@@ -2708,7 +2698,7 @@ icmp6_ctloutput(struct socket *so, struct sockopt *sopt)
 		}
 		break;
 
-	case PRCO_GETOPT:
+	case SOPT_GET:
 		switch (optname) {
 		case ICMP6_FILTER:
 		    {
@@ -2739,22 +2729,6 @@ SYSCTL_PROC(_net_inet6_icmp6, ICMPV6CTL_ERRPPSLIMIT, errppslimit,
     &sysctl_icmp6lim_and_jitter, "IU",
     "Maximum number of ICMPv6 error/reply messages per second");
 
-VNET_DEFINE_STATIC(int, icmp6lim_curr_jitter) = 0;
-#define	V_icmp6lim_curr_jitter	VNET(icmp6lim_curr_jitter)
-
-VNET_DEFINE_STATIC(u_int, icmp6lim_jitter) = 8;
-#define	V_icmp6lim_jitter	VNET(icmp6lim_jitter)
-SYSCTL_PROC(_net_inet6_icmp6, OID_AUTO, icmp6lim_jitter, CTLTYPE_UINT |
-    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6lim_jitter), 0,
-    &sysctl_icmp6lim_and_jitter, "IU",
-    "Random errppslimit jitter adjustment limit");
-
-VNET_DEFINE_STATIC(int, icmp6lim_output) = 1;
-#define	V_icmp6lim_output	VNET(icmp6lim_output)
-SYSCTL_INT(_net_inet6_icmp6, OID_AUTO, icmp6lim_output,
-    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6lim_output), 0,
-    "Enable logging of ICMPv6 response rate limiting");
-
 typedef enum {
 	RATELIM_PARAM_PROB = 0,
 	RATELIM_TOO_BIG,
@@ -2776,15 +2750,33 @@ static const char *icmp6_rate_descrs[RATELIM_MAX] = {
 	[RATELIM_OTHER] = "(other)",
 };
 
+VNET_DEFINE_STATIC(int, icmp6lim_curr_jitter[RATELIM_MAX]) = {0};
+#define	V_icmp6lim_curr_jitter	VNET(icmp6lim_curr_jitter)
+
+VNET_DEFINE_STATIC(u_int, icmp6lim_jitter) = 8;
+#define	V_icmp6lim_jitter	VNET(icmp6lim_jitter)
+SYSCTL_PROC(_net_inet6_icmp6, OID_AUTO, icmp6lim_jitter, CTLTYPE_UINT |
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6lim_jitter), 0,
+    &sysctl_icmp6lim_and_jitter, "IU",
+    "Random errppslimit jitter adjustment limit");
+
+VNET_DEFINE_STATIC(int, icmp6lim_output) = 1;
+#define	V_icmp6lim_output	VNET(icmp6lim_output)
+SYSCTL_INT(_net_inet6_icmp6, OID_AUTO, icmp6lim_output,
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6lim_output), 0,
+    "Enable logging of ICMPv6 response rate limiting");
+
 static void
-icmp6lim_new_jitter(void)
+icmp6lim_new_jitter(int which)
 {
 	/*
 	 * Adjust limit +/- to jitter the measurement to deny a side-channel
 	 * port scan as in https://dl.acm.org/doi/10.1145/3372297.3417280
 	 */
+	KASSERT(which >= 0 && which < RATELIM_MAX,
+	    ("%s: which %d", __func__, which));
 	if (V_icmp6lim_jitter > 0)
-		V_icmp6lim_curr_jitter =
+		V_icmp6lim_curr_jitter[which] =
 		    arc4random_uniform(V_icmp6lim_jitter * 2 + 1) -
 		    V_icmp6lim_jitter;
 }
@@ -2813,17 +2805,19 @@ sysctl_icmp6lim_and_jitter(SYSCTL_HANDLER_ARGS)
 				error = EINVAL;
 			else {
 				V_icmp6lim_jitter = new;
-				icmp6lim_new_jitter();
+				for (int i = 0; i < RATELIM_MAX; i++) {
+					icmp6lim_new_jitter(i);
+				}
 			}
 		}
 	}
-	MPASS(V_icmp6errppslim + V_icmp6lim_curr_jitter > 0);
+	MPASS(V_icmp6errppslim == 0 || V_icmp6errppslim > V_icmp6lim_jitter);
 
 	return (error);
 }
 
 
-VNET_DEFINE_STATIC(struct counter_rate, icmp6_rates[RATELIM_MAX]);
+VNET_DEFINE_STATIC(struct counter_rate *, icmp6_rates[RATELIM_MAX]);
 #define	V_icmp6_rates	VNET(icmp6_rates)
 
 static void
@@ -2831,10 +2825,9 @@ icmp6_ratelimit_init(void)
 {
 
 	for (int i = 0; i < RATELIM_MAX; i++) {
-		V_icmp6_rates[i].cr_rate = counter_u64_alloc(M_WAITOK);
-		V_icmp6_rates[i].cr_ticks = ticks;
+		V_icmp6_rates[i] = counter_rate_alloc(M_WAITOK, 1);
+		icmp6lim_new_jitter(i);
 	}
-	icmp6lim_new_jitter();
 }
 VNET_SYSINIT(icmp6_ratelimit, SI_SUB_PROTO_DOMAIN, SI_ORDER_ANY,
     icmp6_ratelimit_init, NULL);
@@ -2845,7 +2838,7 @@ icmp6_ratelimit_uninit(void)
 {
 
 	for (int i = 0; i < RATELIM_MAX; i++)
-		counter_u64_free(V_icmp6_rates[i].cr_rate);
+		counter_rate_free(V_icmp6_rates[i]);
 }
 VNET_SYSUNINIT(icmp6_ratelimit, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD,
     icmp6_ratelimit_uninit, NULL);
@@ -2895,15 +2888,15 @@ icmp6_ratelimit(const struct in6_addr *dst, const int type, const int code)
 		break;
 	};
 
-	pps = counter_ratecheck(&V_icmp6_rates[which], V_icmp6errppslim +
-	    V_icmp6lim_curr_jitter);
+	pps = counter_ratecheck(V_icmp6_rates[which], V_icmp6errppslim +
+	    V_icmp6lim_curr_jitter[which]);
 	if (pps > 0) {
 		if (V_icmp6lim_output)
 			log(LOG_NOTICE, "Limiting ICMPv6 %s output from %jd "
 			    "to %d packets/sec\n", icmp6_rate_descrs[which],
 			    (intmax_t )pps, V_icmp6errppslim +
-			    V_icmp6lim_curr_jitter);
-		icmp6lim_new_jitter();
+			    V_icmp6lim_curr_jitter[which]);
+		icmp6lim_new_jitter(which);
 	}
 	if (pps == -1) {
 		ICMP6STAT_INC(icp6s_toofreq);

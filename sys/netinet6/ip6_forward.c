@@ -31,7 +31,6 @@
  *	$KAME: ip6_forward.c,v 1.69 2001/05/17 03:48:30 itojun Exp $
  */
 
-#include <sys/cdefs.h>
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
@@ -75,6 +74,10 @@
 
 #include <netipsec/ipsec_support.h>
 
+#if defined(SCTP) || defined(SCTP_SUPPORT)
+#include <netinet/sctp_crc32.h>
+#endif
+
 /*
  * Forward a packet.  If some error occurs return the sender
  * an icmp packet.  Note we can't always generate a meaningful
@@ -109,7 +112,8 @@ ip6_forward(struct mbuf *m, int srcrt)
 	 */
 	if ((m->m_flags & (M_BCAST|M_MCAST)) != 0 ||
 	    IN6_IS_ADDR_MULTICAST(&ip6->ip6_dst) ||
-	    IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_src)) {
+	    IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_src) ||
+	    IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_dst)) {
 		IP6STAT_INC(ip6s_cantforward);
 		/* XXX in6_ifstat_inc(rt->rt_ifp, ifs6_in_discard) */
 		if (V_ip6_log_cannot_forward && ip6_log_ratelimit()) {
@@ -380,13 +384,36 @@ again:
 pass:
 	/* See if the size was changed by the packet filter. */
 	/* TODO: change to nh->nh_mtu */
-	if (m->m_pkthdr.len > IN6_LINKMTU(nh->nh_ifp)) {
+	if (m->m_pkthdr.len > in6_ifmtu(nh->nh_ifp)) {
 		in6_ifstat_inc(nh->nh_ifp, ifs6_in_toobig);
 		if (mcopy)
 			icmp6_error(mcopy, ICMP6_PACKET_TOO_BIG, 0,
-			    IN6_LINKMTU(nh->nh_ifp));
+			    in6_ifmtu(nh->nh_ifp));
 		goto bad;
 	}
+
+	/*
+	 * If TCP/UDP header still needs a valid checksum and interface will not
+	 * calculate it for us, do it here.
+	 */
+	if (__predict_false(m->m_pkthdr.csum_flags & CSUM_DELAY_DATA_IPV6 &
+	    ~nh->nh_ifp->if_hwassist)) {
+		int offset = ip6_lasthdr(m, 0, IPPROTO_IPV6, NULL);
+
+		if (offset < sizeof(struct ip6_hdr) || offset > m->m_pkthdr.len)
+			goto bad;
+		in6_delayed_cksum(m, m->m_pkthdr.len - offset, offset);
+		m->m_pkthdr.csum_flags &= ~CSUM_DELAY_DATA_IPV6;
+	}
+#if defined(SCTP) || defined(SCTP_SUPPORT)
+	if (__predict_false(m->m_pkthdr.csum_flags & CSUM_IP6_SCTP &
+	    ~nh->nh_ifp->if_hwassist)) {
+		int offset = ip6_lasthdr(m, 0, IPPROTO_IPV6, NULL);
+
+		sctp_delayed_cksum(m, offset);
+		m->m_pkthdr.csum_flags &= ~CSUM_IP6_SCTP;
+	}
+#endif
 
 	/* Currently LLE layer stores embedded IPv6 addresses */
 	if (IN6_IS_SCOPE_LINKLOCAL(&dst.sin6_addr)) {

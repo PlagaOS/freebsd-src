@@ -28,7 +28,7 @@
 
 atf_check_same_file()
 {
-	atf_check_equal "$(stat -f %d,%i "$1")" "$(stat -f %d,%i "$2")"
+	atf_check test "$1" -ef "$2"
 }
 
 atf_check_symlink_to()
@@ -90,7 +90,7 @@ target_exists_hard_body()
 {
 	atf_check touch A B
 	atf_check -s exit:1 -e inline:'ln: B: File exists\n' \
-		ln A B
+	    ln A B
 }
 
 atf_test_case target_exists_symbolic
@@ -103,7 +103,7 @@ target_exists_symbolic_body()
 {
 	atf_check touch A B
 	atf_check -s exit:1 -e inline:'ln: B: File exists\n' \
-		ln -s A B
+	    ln -s A B
 }
 
 atf_test_case shf_flag_dir
@@ -170,11 +170,15 @@ sfF_flag_head()
 }
 sfF_flag_body()
 {
-	atf_check mkdir A B C
+	atf_check mkdir A B C D D/A
 	atf_check ln -sF A C
 	atf_check_symlink_to A C
 	atf_check ln -sfF B C
 	atf_check_symlink_to B C
+	atf_check ln -sfF A D/
+	atf_check_symlink_to A D/A
+	atf_check ln -sfF ../A .
+	atf_check_symlink_to ../A A
 }
 
 atf_test_case s_flag
@@ -210,8 +214,63 @@ sw_flag_head()
 sw_flag_body()
 {
 	atf_check -s exit:0 -e inline:'ln: warning: A: No such file or directory\n' \
-		ln -sw A B
+	    ln -sw A B
 	atf_check_symlink_to A B
+}
+
+atf_test_case link_argc
+link_argc_head() {
+	atf_set "descr" "Verify that link(1) requires exactly two arguments"
+}
+link_argc_body() {
+	atf_check -s exit:1 -e match:"usage: link" \
+	    link foo
+	atf_check -s exit:1 -e match:"No such file" \
+	    link foo bar
+	atf_check -s exit:1 -e match:"No such file" \
+	    link -- foo bar
+	atf_check -s exit:1 -e match:"usage: link" \
+	    link foo bar baz
+}
+
+atf_test_case link_basic
+link_basic_head() {
+	atf_set "descr" "Verify that link(1) creates a link"
+}
+link_basic_body() {
+	touch foo
+	atf_check link foo bar
+	atf_check_same_file foo bar
+	rm bar
+	ln -s foo bar
+	atf_check link bar baz
+	atf_check_same_file foo baz
+}
+
+atf_test_case link_eexist
+link_eexist_head() {
+	atf_set "descr" "Verify that link(1) fails if the target exists"
+}
+link_eexist_body() {
+	touch foo bar
+	atf_check -s exit:1 -e match:"bar.*exists" \
+	    link foo bar
+	ln -s non-existent baz
+	atf_check -s exit:1 -e match:"baz.*exists" \
+	    link foo baz
+}
+
+atf_test_case link_eisdir
+link_eisdir_head() {
+	atf_set "descr" "Verify that link(1) fails if the source is a directory"
+}
+link_eisdir_body() {
+	mkdir foo
+	atf_check -s exit:1 -e match:"foo.*directory" \
+	    link foo bar
+	ln -s foo bar
+	atf_check -s exit:1 -e match:"bar.*directory" \
+	    link bar baz
 }
 
 atf_init_test_cases()
@@ -229,4 +288,8 @@ atf_init_test_cases()
 	atf_add_test_case s_flag
 	atf_add_test_case s_flag_broken
 	atf_add_test_case sw_flag
+	atf_add_test_case link_argc
+	atf_add_test_case link_basic
+	atf_add_test_case link_eexist
+	atf_add_test_case link_eisdir
 }

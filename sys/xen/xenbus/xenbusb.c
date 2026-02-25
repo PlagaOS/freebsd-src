@@ -59,13 +59,12 @@
 #include <sys/malloc.h>
 #include <sys/module.h>
 #include <sys/sbuf.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <sys/syslog.h>
 #include <sys/systm.h>
 #include <sys/sx.h>
 #include <sys/taskqueue.h>
-
-#include <machine/stdarg.h>
 
 #include <xen/xen-os.h>
 #include <xen/gnttab.h>
@@ -716,7 +715,7 @@ xenbusb_add_device(device_t dev, const char *type, const char *id)
 		xbs->xbs_connecting_children++;
 		mtx_unlock(&xbs->xbs_lock);
 
-		child = device_add_child(dev, NULL, -1);
+		child = device_add_child(dev, NULL, DEVICE_UNIT_ANY);
 		ivars->xd_dev = child;
 		device_set_ivars(child, ivars);
 	}

@@ -50,6 +50,7 @@ extern	u_int	cpu_clflush_line_size;
 extern	u_int	cpu_stdext_feature;
 extern	u_int	cpu_stdext_feature2;
 extern	u_int	cpu_stdext_feature3;
+extern	u_int	cpu_stdext_feature4;
 extern	uint64_t cpu_ia32_arch_caps;
 extern	u_int	cpu_high;
 extern	u_int	cpu_id;
@@ -57,10 +58,12 @@ extern	u_int	cpu_max_ext_state_size;
 extern	u_int	cpu_mxcsr_mask;
 extern	u_int	cpu_procinfo;
 extern	u_int	cpu_procinfo2;
+extern	u_int	cpu_procinfo3;
 extern	char	cpu_vendor[];
 extern	char	cpu_model[];
 extern	u_int	cpu_vendor_id;
 extern	u_int	cpu_mon_mwait_flags;
+extern	u_int	cpu_mon_mwait_edx;
 extern	u_int	cpu_mon_min_size;
 extern	u_int	cpu_mon_max_size;
 extern	u_int	cpu_maxphyaddr;
@@ -146,7 +149,9 @@ void	zenbleed_sanitize_enable(void);
 void	zenbleed_check_and_apply(bool all_cpus);
 void	nmi_call_kdb(u_int cpu, u_int type, struct trapframe *frame);
 void	nmi_call_kdb_smp(u_int type, struct trapframe *frame);
-void	nmi_handle_intr(u_int type, struct trapframe *frame);
+void	nmi_register_handler(int (*handler)(struct trapframe *));
+void	nmi_remove_handler(int (*handler)(struct trapframe *));
+void	nmi_handle_intr(struct trapframe *frame);
 void	pagecopy(void *from, void *to);
 void	printcpuinfo(void);
 int	pti_get_default(void);
@@ -157,7 +162,7 @@ void	x86_set_fork_retval(struct thread *td);
 uint64_t rdtsc_ordered(void);
 
 /*
- * MSR ops for x86_msr_op()
+ * MSR ops for x86_msr_op().
  */
 #define	MSR_OP_ANDNOT		0x00000001
 #define	MSR_OP_OR		0x00000002
@@ -165,8 +170,9 @@ uint64_t rdtsc_ordered(void);
 #define	MSR_OP_READ		0x00000004
 
 /*
- * Where and which execution mode
+ * Where and which execution mode.
  */
+#define	MSR_OP_SAFE		0x08000000
 #define	MSR_OP_LOCAL		0x10000000
 #define	MSR_OP_SCHED_ALL	0x20000000
 #define	MSR_OP_SCHED_ONE	0x30000000
@@ -174,7 +180,7 @@ uint64_t rdtsc_ordered(void);
 #define	MSR_OP_RENDEZVOUS_ONE	0x50000000
 #define	MSR_OP_CPUID(id)	((id) << 8)
 
-void x86_msr_op(u_int msr, u_int op, uint64_t arg1, uint64_t *res);
+int x86_msr_op(u_int msr, u_int op, uint64_t arg1, uint64_t *res);
 
 #if defined(__i386__) && defined(INVARIANTS)
 void	trap_check_kstack(void);

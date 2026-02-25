@@ -27,7 +27,7 @@ properties:
     const: 1
 
 patternProperties:
-  "@[a-f0-9]+$":
+  "@[a-f0-9]+(,[0-7])?$":
     type: object
     $ref: fixed-cell.yaml
     unevaluatedProperties: false
@@ -43,6 +43,18 @@ examples:
         compatible = "fixed-layout";
         #address-cells = <1>;
         #size-cells = <1>;
+
+        mac@100 {
+            compatible = "mac-base";
+            reg = <0x100 0x6>;
+            #nvmem-cell-cells = <1>;
+        };
+
+        mac@110 {
+            compatible = "mac-base";
+            reg = <0x110 0x11>;
+            #nvmem-cell-cells = <1>;
+        };
 
         calibration@4000 {
             reg = <0x4000 0x100>;

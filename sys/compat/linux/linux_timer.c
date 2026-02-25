@@ -43,8 +43,8 @@
 #endif
 #include <compat/linux/linux_time.h>
 
-static int
-linux_convert_l_sigevent(struct l_sigevent *l_sig, struct sigevent *sig)
+int
+linux_convert_l_sigevent(const struct l_sigevent *l_sig, struct sigevent *sig)
 {
 
 	CP(*l_sig, *sig, sigev_notify);
@@ -131,7 +131,7 @@ linux_timer_settime(struct thread *td, struct linux_timer_settime_args *uap)
 		return (error);
 	error = kern_ktimer_settime(td, uap->timerid, flags, &val, ovalp);
 	if (error == 0 && uap->old != NULL) {
-		error = native_to_linux_itimerspec(&l_val, &val);
+		error = native_to_linux_itimerspec(&l_oval, &oval);
 		if (error == 0)
 			error = copyout(&l_oval, uap->old, sizeof(l_oval));
 	}
@@ -158,7 +158,7 @@ linux_timer_settime64(struct thread *td, struct linux_timer_settime64_args *uap)
 		return (error);
 	error = kern_ktimer_settime(td, uap->timerid, flags, &val, ovalp);
 	if (error == 0 && uap->old != NULL) {
-		error = native_to_linux_itimerspec64(&l_val, &val);
+		error = native_to_linux_itimerspec64(&l_oval, &oval);
 		if (error == 0)
 			error = copyout(&l_oval, uap->old, sizeof(l_oval));
 	}

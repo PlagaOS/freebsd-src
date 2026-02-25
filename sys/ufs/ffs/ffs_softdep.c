@@ -274,7 +274,7 @@ void
 softdep_setup_remove(struct buf *bp,
 	struct inode *dp,
 	struct inode *ip,
-	int isrmdir)
+	bool isrmdir)
 {
 
 	panic("softdep_setup_remove called");
@@ -285,7 +285,7 @@ softdep_setup_directory_change(struct buf *bp,
 	struct inode *dp,
 	struct inode *ip,
 	ino_t newinum,
-	int isrmdir)
+	u_int newparent)
 {
 
 	panic("softdep_setup_directory_change called");
@@ -497,7 +497,7 @@ softdep_check_suspend(struct mount *mp,
 	while (mp->mnt_secondary_writes != 0) {
 		BO_UNLOCK(bo);
 		msleep(&mp->mnt_secondary_writes, MNT_MTX(mp),
-		    (PUSER - 1) | PDROP, "secwr", 0);
+		    PRI_MAX_KERN | PDROP, "secwr", 0);
 		BO_LOCK(bo);
 		MNT_ILOCK(mp);
 	}
@@ -765,7 +765,7 @@ static	void initiate_write_inodeblock_ufs2(struct inodedep *, struct buf *);
 static	void handle_workitem_freefile(struct freefile *);
 static	int handle_workitem_remove(struct dirrem *, int);
 static	struct dirrem *newdirrem(struct buf *, struct inode *,
-	    struct inode *, int, struct dirrem **);
+	    struct inode *, bool, struct dirrem **);
 static	struct indirdep *indirdep_lookup(struct mount *, struct inode *,
 	    struct buf *);
 static	void cancel_indirdep(struct indirdep *, struct buf *,
@@ -1904,7 +1904,6 @@ process_worklist_item(struct mount *mp,
 	 */
 	if (curthread->td_pflags & TDP_COWINPROGRESS)
 		return (-1);
-	PHOLD(curproc);	/* Don't let the stack go away. */
 	ump = VFSTOUFS(mp);
 	LOCK_OWNED(ump);
 	matchcnt = 0;
@@ -1977,7 +1976,6 @@ process_worklist_item(struct mount *mp,
 		ump->softdep_worklist_tail =
 		    (struct worklist *)sentinel.wk_list.le_prev;
 	LIST_REMOVE(&sentinel, wk_list);
-	PRELE(curproc);
 	return (matchcnt);
 }
 
@@ -2150,7 +2148,7 @@ retry_flush:
 #ifdef QUOTA
 			UFS_LOCK(ump);
 			for (i = 0; i < MAXQUOTAS; i++) {
-				if (ump->um_quotas[i] != NULLVP)
+				if (ump->um_quotas[i] != NULL)
 					morework = 1;
 			}
 			UFS_UNLOCK(ump);
@@ -2633,7 +2631,8 @@ softdep_mount(struct vnode *devvp,
 
 	if ((fs->fs_flags & FS_SUJ) &&
 	    (error = journal_mount(mp, fs, cred)) != 0) {
-		printf("Failed to start journal: %d\n", error);
+		printf("%s: failed to start journal: %d\n",
+		    mp->mnt_stat.f_mntonname, error);
 		softdep_unmount(mp);
 		return (error);
 	}
@@ -2643,10 +2642,18 @@ softdep_mount(struct vnode *devvp,
 	ACQUIRE_LOCK(ump);
 	ump->softdep_flags |= FLUSH_STARTING;
 	FREE_LOCK(ump);
-	kproc_kthread_add(&softdep_flush, mp, &bufdaemonproc,
+	error = kproc_kthread_add(&softdep_flush, mp, &bufdaemonproc,
 	    &ump->softdep_flushtd, 0, 0, "softdepflush", "%s worker",
 	    mp->mnt_stat.f_mntonname);
 	ACQUIRE_LOCK(ump);
+	if (error != 0) {
+		printf("%s: failed to start softdepflush thread: %d\n",
+		    mp->mnt_stat.f_mntonname, error);
+		ump->softdep_flags &= ~FLUSH_STARTING;
+		FREE_LOCK(ump);
+		softdep_unmount(mp);
+		return (error);
+	}
 	while ((ump->softdep_flags & FLUSH_STARTING) != 0) {
 		msleep(&ump->softdep_flushtd, LOCK_PTR(ump), PVM, "sdstart",
 		    hz / 2);
@@ -3623,6 +3630,7 @@ softdep_process_journal(struct mount *mp,
 	int cnt;
 	int off;
 	int devbsize;
+	int savef;
 
 	ump = VFSTOUFS(mp);
 	if (ump->um_softdep == NULL || ump->um_softdep->sd_jblocks == NULL)
@@ -3634,6 +3642,8 @@ softdep_process_journal(struct mount *mp,
 	fs = ump->um_fs;
 	jblocks = ump->softdep_jblocks;
 	devbsize = ump->um_devvp->v_bufobj.bo_bsize;
+	savef = curthread_pflags_set(TDP_NORUNNINGBUF);
+
 	/*
 	 * We write anywhere between a disk block and fs block.  The upper
 	 * bound is picked to prevent buffer cache fragmentation and limit
@@ -3852,12 +3862,15 @@ softdep_process_journal(struct mount *mp,
 	 */
 	if (flags == 0 && jblocks->jb_suspended) {
 		if (journal_unsuspend(ump))
-			return;
+			goto out;
 		FREE_LOCK(ump);
 		VFS_SYNC(mp, MNT_NOWAIT);
 		ffs_sbupdate(ump, MNT_WAIT, 0);
 		ACQUIRE_LOCK(ump);
 	}
+
+out:
+	curthread_pflags_restore(savef);
 }
 
 /*
@@ -9156,7 +9169,7 @@ softdep_setup_remove(
 	struct buf *bp,		/* buffer containing directory block */
 	struct inode *dp,	/* inode for the directory being modified */
 	struct inode *ip,	/* inode for directory entry being removed */
-	int isrmdir)		/* indicates if doing RMDIR */
+	bool isrmdir)		/* indicates if doing RMDIR */
 {
 	struct dirrem *dirrem, *prevdirrem;
 	struct inodedep *inodedep;
@@ -9348,7 +9361,7 @@ newdirrem(
 	struct buf *bp,		/* buffer containing directory block */
 	struct inode *dp,	/* inode for the directory being modified */
 	struct inode *ip,	/* inode for directory entry being removed */
-	int isrmdir,		/* indicates if doing RMDIR */
+	bool isrmdir,		/* indicates if doing RMDIR */
 	struct dirrem **prevdirremp) /* previously referenced inode, if any */
 {
 	int offset;
@@ -9477,7 +9490,7 @@ newdirrem(
 	dirrem->dm_state |= COMPLETE;
 	cancel_diradd(dap, dirrem, jremref, dotremref, dotdotremref);
 #ifdef INVARIANTS
-	if (isrmdir == 0) {
+	if (!isrmdir) {
 		struct worklist *wk;
 
 		LIST_FOREACH(wk, &dirrem->dm_jwork, wk_list)
@@ -9512,7 +9525,7 @@ softdep_setup_directory_change(
 	struct inode *dp,	/* inode for the directory being modified */
 	struct inode *ip,	/* inode for directory entry being removed */
 	ino_t newinum,		/* new inode number for changed entry */
-	int isrmdir)		/* indicates if doing RMDIR */
+	u_int newparent)	/* indicates if doing RMDIR */
 {
 	int offset;
 	struct diradd *dap = NULL;
@@ -9545,10 +9558,10 @@ softdep_setup_directory_change(
 	/*
 	 * Allocate a new dirrem and ACQUIRE_LOCK.
 	 */
-	dirrem = newdirrem(bp, dp, ip, isrmdir, &prevdirrem);
+	dirrem = newdirrem(bp, dp, ip, newparent != 0, &prevdirrem);
 	pagedep = dirrem->dm_pagedep;
 	/*
-	 * The possible values for isrmdir:
+	 * The possible values for newparent:
 	 *	0 - non-directory file rename
 	 *	1 - directory rename within same directory
 	 *   inum - directory rename to new directory of given inode number
@@ -9559,7 +9572,7 @@ softdep_setup_directory_change(
 	 * the DIRCHG flag to tell handle_workitem_remove to skip the 
 	 * followup dirrem.
 	 */
-	if (isrmdir > 1)
+	if (newparent > 1)
 		dirrem->dm_state |= DIRCHG;
 
 	/*
@@ -9924,7 +9937,7 @@ clear_unlinked_inodedep( struct inodedep *inodedep)
 		if (pino == 0) {
 			bcopy((caddr_t)fs, bp->b_data, (uint64_t)fs->fs_sbsize);
 			bpfs = (struct fs *)bp->b_data;
-			ffs_oldfscompat_write(bpfs, ump);
+			ffs_oldfscompat_write(bpfs);
 			softdep_setup_sbupdate(ump, bpfs, bp);
 			/*
 			 * Because we may have made changes to the superblock,
@@ -9956,7 +9969,7 @@ clear_unlinked_inodedep( struct inodedep *inodedep)
 			    (int)fs->fs_sbsize, 0, 0, 0);
 			bcopy((caddr_t)fs, bp->b_data, (uint64_t)fs->fs_sbsize);
 			bpfs = (struct fs *)bp->b_data;
-			ffs_oldfscompat_write(bpfs, ump);
+			ffs_oldfscompat_write(bpfs);
 			softdep_setup_sbupdate(ump, bpfs, bp);
 			/*
 			 * Because we may have made changes to the superblock,
@@ -10230,7 +10243,6 @@ softdep_disk_io_initiation(
 		return;
 
 	marker.wk_type = D_LAST + 1;	/* Not a normal workitem */
-	PHOLD(curproc);			/* Don't swap out kernel stack */
 	ACQUIRE_LOCK(ump);
 	/*
 	 * Do any necessary pre-I/O processing.
@@ -10315,7 +10327,6 @@ softdep_disk_io_initiation(
 		}
 	}
 	FREE_LOCK(ump);
-	PRELE(curproc);			/* Allow swapout of kernel stack */
 }
 
 /*
@@ -14511,10 +14522,8 @@ getdirtybuf(struct buf *bp,
 		BUF_UNLOCK(bp);
 		if (waitfor != MNT_WAIT)
 			return (NULL);
-#ifdef DEBUG_VFS_LOCKS
 		if (bp->b_vp->v_type != VCHR)
 			ASSERT_BO_WLOCKED(bp->b_bufobj);
-#endif
 		bp->b_vflags |= BV_BKGRDWAIT;
 		rw_sleep(&bp->b_xflags, lock, PRIBIO, "getbuf", 0);
 		return (NULL);
@@ -14561,7 +14570,7 @@ softdep_check_suspend(struct mount *mp,
 		while (mp->mnt_secondary_writes != 0) {
 			BO_UNLOCK(bo);
 			msleep(&mp->mnt_secondary_writes, MNT_MTX(mp),
-			    (PUSER - 1) | PDROP, "secwr", 0);
+			    PRI_MAX_KERN | PDROP, "secwr", 0);
 			BO_LOCK(bo);
 			MNT_ILOCK(mp);
 		}
@@ -14601,7 +14610,7 @@ softdep_check_suspend(struct mount *mp,
 			BO_UNLOCK(bo);
 			msleep(&mp->mnt_secondary_writes,
 			       MNT_MTX(mp),
-			       (PUSER - 1) | PDROP, "secwr", 0);
+			       PRI_MAX_KERN | PDROP, "secwr", 0);
 			BO_LOCK(bo);
 			continue;
 		}

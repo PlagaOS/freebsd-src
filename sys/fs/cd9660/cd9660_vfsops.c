@@ -394,7 +394,7 @@ iso_mountfs(struct vnode *devvp, struct mount *mp)
 	isomp->im_mountp = mp;
 	isomp->im_dev = dev;
 	isomp->im_devvp = devvp;
-	isomp->im_fmask = isomp->im_dmask = ACCESSPERMS;
+	isomp->im_fmask = isomp->im_dmask = ALLPERMS;
 
 	vfs_flagopt(mp->mnt_optnew, "norrip", &isomp->im_flags, ISOFSMNT_NORRIP);
 	vfs_flagopt(mp->mnt_optnew, "gens", &isomp->im_flags, ISOFSMNT_GENS);
@@ -560,7 +560,7 @@ cd9660_root(struct mount *mp, int flags, struct vnode **vpp)
 	struct iso_mnt *imp = VFSTOISOFS(mp);
 	struct iso_directory_record *dp =
 	    (struct iso_directory_record *)imp->root;
-	cd_ino_t ino = isodirino(dp, imp);
+	ino_t ino = isodirino(dp, imp);
 
 	/*
 	 * With RRIP we must use the `.' entry of the root directory.
@@ -617,13 +617,13 @@ cd9660_fhtovp(struct mount *mp, struct fid *fhp, int flags, struct vnode **vpp)
 #endif
 
 	if ((error = VFS_VGET(mp, ifh.ifid_ino, LK_EXCLUSIVE, &nvp)) != 0) {
-		*vpp = NULLVP;
+		*vpp = NULL;
 		return (error);
 	}
 	ip = VTOI(nvp);
 	if (ip->inode.iso_mode == 0) {
 		vput(nvp);
-		*vpp = NULLVP;
+		*vpp = NULL;
 		return (ESTALE);
 	}
 	*vpp = nvp;
@@ -660,15 +660,15 @@ static int
 cd9660_vfs_hash_cmp(struct vnode *vp, void *pino)
 {
 	struct iso_node *ip;
-	cd_ino_t ino;
+	ino_t ino;
 
 	ip = VTOI(vp);
-	ino = *(cd_ino_t *)pino;
+	ino = *(ino_t *)pino;
 	return (ip->i_number != ino);
 }
 
 int
-cd9660_vget_internal(struct mount *mp, cd_ino_t ino, int flags,
+cd9660_vget_internal(struct mount *mp, ino_t ino, int flags,
     struct vnode **vpp, int relocated, struct iso_directory_record *isodir)
 {
 	struct iso_mnt *imp;
@@ -704,7 +704,7 @@ cd9660_vget_internal(struct mount *mp, cd_ino_t ino, int flags,
 
 	/* Allocate a new vnode/iso_node. */
 	if ((error = getnewvnode("isofs", mp, &cd9660_vnodeops, &vp)) != 0) {
-		*vpp = NULLVP;
+		*vpp = NULL;
 		return (error);
 	}
 	ip = malloc(sizeof(struct iso_node), M_ISOFSNODE,
@@ -717,7 +717,7 @@ cd9660_vget_internal(struct mount *mp, cd_ino_t ino, int flags,
 	error = insmntque(vp, mp);
 	if (error != 0) {
 		free(ip, M_ISOFSNODE);
-		*vpp = NULLVP;
+		*vpp = NULL;
 		return (error);
 	}
 	error = vfs_hash_insert(vp, ino, flags, td, vpp, cd9660_vfs_hash_cmp,

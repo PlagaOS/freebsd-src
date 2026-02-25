@@ -30,7 +30,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 /*
  * HID spec: https://www.usb.org/sites/default/files/documents/hid1_11.pdf
  */
@@ -77,7 +76,7 @@
 #include "hid_if.h"
 
 static SYSCTL_NODE(_hw_usb, OID_AUTO, usbhid, CTLFLAG_RW, 0, "USB usbhid");
-static int usbhid_enable = 0;
+static int usbhid_enable = 1;
 SYSCTL_INT(_hw_usb_usbhid, OID_AUTO, enable, CTLFLAG_RWTUN,
     &usbhid_enable, 0, "Enable usbhid and prefer it to other USB HID drivers");
 #ifdef USB_DEBUG
@@ -115,6 +114,7 @@ struct usbhid_xfer_ctx {
 	void *cb_ctx;
 	int waiters;
 	bool influx;
+	bool no_readahead;
 };
 
 struct usbhid_softc {
@@ -273,7 +273,7 @@ usbhid_intr_handler_cb(struct usbhid_xfer_ctx *xfer_ctx)
 	sc->sc_intr_handler(sc->sc_intr_ctx, xfer_ctx->buf,
 	    xfer_ctx->req.intr.actlen);
 
-	return (0);
+	return (xfer_ctx->no_readahead ? ECANCELED : 0);
 }
 
 static int
@@ -431,6 +431,7 @@ usbhid_intr_start(device_t dev, device_t child __unused)
 		.cb = usbhid_intr_handler_cb,
 		.cb_ctx = sc,
 		.buf = sc->sc_intr_buf,
+		.no_readahead = hid_test_quirk(&sc->sc_hw, HQ_NO_READAHEAD),
 	};
 	sc->sc_xfer_ctx[POLL_XFER(USBHID_INTR_IN_DT)] = (struct usbhid_xfer_ctx) {
 		.req.intr.maxlen =
@@ -706,6 +707,10 @@ usbhid_ioctl(device_t dev, device_t child __unused, unsigned long cmd,
 		if (error == 0)
 			ucr->ucr_actlen = UGETW(req.ctrl.wLength);
 		break;
+	case USB_GET_DEVICEINFO:
+		error = usbd_fill_deviceinfo(sc->sc_udev,
+		    (struct usb_device_info *)data);
+		break;
 	default:
 		error = EINVAL;
 	}
@@ -834,7 +839,7 @@ usbhid_attach(device_t dev)
 
 	mtx_init(&sc->sc_mtx, "usbhid lock", NULL, MTX_DEF);
 
-	child = device_add_child(dev, "hidbus", -1);
+	child = device_add_child(dev, "hidbus", DEVICE_UNIT_ANY);
 	if (child == NULL) {
 		device_printf(dev, "Could not add hidbus device\n");
 		usbhid_detach(dev);
@@ -842,12 +847,7 @@ usbhid_attach(device_t dev)
 	}
 
 	device_set_ivars(child, &sc->sc_hw);
-	error = bus_generic_attach(dev);
-	if (error) {
-		device_printf(dev, "failed to attach child: %d\n", error);
-		usbhid_detach(dev);
-		return (error);
-	}
+	bus_attach_children(dev);
 
 	return (0);			/* success */
 }
@@ -856,8 +856,12 @@ static int
 usbhid_detach(device_t dev)
 {
 	struct usbhid_softc *sc = device_get_softc(dev);
+	int error;
 
-	device_delete_children(dev);
+	error = bus_generic_detach(dev);
+	if (error != 0)
+		return (error);
+
 	mtx_destroy(&sc->sc_mtx);
 
 	return (0);

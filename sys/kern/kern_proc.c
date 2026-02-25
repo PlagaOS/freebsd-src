@@ -38,10 +38,12 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bitstring.h>
+#include <sys/conf.h>
 #include <sys/elf.h>
 #include <sys/eventhandler.h>
 #include <sys/exec.h>
 #include <sys/fcntl.h>
+#include <sys/ipc.h>
 #include <sys/jail.h>
 #include <sys/kernel.h>
 #include <sys/limits.h>
@@ -60,6 +62,7 @@
 #include <sys/sbuf.h>
 #include <sys/sysent.h>
 #include <sys/sched.h>
+#include <sys/shm.h>
 #include <sys/smp.h>
 #include <sys/stack.h>
 #include <sys/stat.h>
@@ -88,6 +91,8 @@
 #include <vm/vm_map.h>
 #include <vm/vm_object.h>
 #include <vm/vm_page.h>
+#include <vm/vm_pager.h>
+#include <vm/vm_radix.h>
 #include <vm/uma.h>
 
 #include <fs/devfs/devfs.h>
@@ -232,15 +237,12 @@ proc_dtor(void *mem, int size, void *arg)
 	struct proc *p;
 	struct thread *td;
 
-	/* INVARIANTS checks go here */
-	p = (struct proc *)mem;
+	p = mem;
 	td = FIRST_THREAD_IN_PROC(p);
 	if (td != NULL) {
-#ifdef INVARIANTS
-		KASSERT((p->p_numthreads == 1),
-		    ("bad number of threads in exiting process"));
-		KASSERT(STAILQ_EMPTY(&p->p_ktr), ("proc_dtor: non-empty p_ktr"));
-#endif
+		KASSERT(p->p_numthreads == 1,
+		    ("too many threads in exiting process"));
+
 		/* Free all OSD associated to this thread. */
 		osd_thread_exit(td);
 		ast_kclear(td);
@@ -248,12 +250,12 @@ proc_dtor(void *mem, int size, void *arg)
 		/* Make sure all thread destructors are executed */
 		EVENTHANDLER_DIRECT_INVOKE(thread_dtor, td);
 	}
+	KASSERT(STAILQ_EMPTY(&p->p_ktr), ("proc_dtor: non-empty p_ktr"));
 	EVENTHANDLER_DIRECT_INVOKE(process_dtor, p);
 #ifdef KDTRACE_HOOKS
 	kdtrace_proc_dtor(p);
 #endif
-	if (p->p_ksi != NULL)
-		KASSERT(! KSI_ONQ(p->p_ksi), ("SIGCHLD queue"));
+	KASSERT(p->p_ksi == NULL || !KSI_ONQ(p->p_ksi), ("SIGCHLD queue"));
 }
 
 /*
@@ -276,6 +278,7 @@ proc_init(void *mem, int size, int flags)
 	p->p_stats = pstats_alloc();
 	p->p_pgrp = NULL;
 	TAILQ_INIT(&p->p_kqtim_stop);
+	STAILQ_INIT(&p->p_ktr);
 	return (0);
 }
 
@@ -409,7 +412,7 @@ pidhash_sunlockall(void)
 }
 
 /*
- * Similar to pfind_any(), this function finds zombies.
+ * Similar to pfind(), this function locate a process by number.
  */
 struct proc *
 pfind_any_locked(pid_t pid)
@@ -722,7 +725,7 @@ jobc_parent(struct proc *p, struct proc *p_exiting)
 	return (jobc_reaper(pp));
 }
 
-static int
+int
 pgrp_calc_jobc(struct pgrp *pgrp)
 {
 	struct proc *q;
@@ -1107,13 +1110,14 @@ fill_kinfo_proc_only(struct proc *p, struct kinfo_proc *kp)
 		if (cred->cr_flags & CRED_FLAG_CAPMODE)
 			kp->ki_cr_flags |= KI_CRF_CAPABILITY_MODE;
 		/* XXX bde doesn't like KI_NGROUPS */
-		if (cred->cr_ngroups > KI_NGROUPS) {
+		if (1 + cred->cr_ngroups > KI_NGROUPS) {
 			kp->ki_ngroups = KI_NGROUPS;
 			kp->ki_cr_flags |= KI_CRF_GRP_OVERFLOW;
 		} else
-			kp->ki_ngroups = cred->cr_ngroups;
-		bcopy(cred->cr_groups, kp->ki_groups,
-		    kp->ki_ngroups * sizeof(gid_t));
+			kp->ki_ngroups = 1 + cred->cr_ngroups;
+		kp->ki_groups[0] = cred->cr_gid;
+		bcopy(cred->cr_groups, kp->ki_groups + 1,
+		    (kp->ki_ngroups - 1) * sizeof(gid_t));
 		kp->ki_rgid = cred->cr_rgid;
 		kp->ki_svgid = cred->cr_svgid;
 		/* If jailed(cred), emulate the old P_JAILED flag. */
@@ -1140,20 +1144,15 @@ fill_kinfo_proc_only(struct proc *p, struct kinfo_proc *kp)
 
 		kp->ki_size = vm->vm_map.size;
 		kp->ki_rssize = vmspace_resident_count(vm); /*XXX*/
-		FOREACH_THREAD_IN_PROC(p, td0) {
-			if (!TD_IS_SWAPPED(td0))
-				kp->ki_rssize += td0->td_kstack_pages;
-		}
+		FOREACH_THREAD_IN_PROC(p, td0)
+			kp->ki_rssize += td0->td_kstack_pages;
 		kp->ki_swrss = vm->vm_swrss;
 		kp->ki_tsize = vm->vm_tsize;
 		kp->ki_dsize = vm->vm_dsize;
 		kp->ki_ssize = vm->vm_ssize;
 	} else if (p->p_state == PRS_ZOMBIE)
 		kp->ki_stat = SZOMB;
-	if (kp->ki_flag & P_INMEM)
-		kp->ki_sflag = PS_INMEM;
-	else
-		kp->ki_sflag = 0;
+	kp->ki_sflag = PS_INMEM;
 	/* Calculate legacy swtime as seconds since 'swtick'. */
 	kp->ki_swtime = (ticks - p->p_swtick) / hz;
 	kp->ki_pid = p->p_pid;
@@ -1348,6 +1347,9 @@ fill_kinfo_thread(struct thread *td, struct kinfo_proc *kp, int preferthread)
 	thread_unlock(td);
 	if (preferthread)
 		PROC_STATUNLOCK(p);
+
+	if ((td->td_pflags & TDP2_UEXTERR) != 0)
+		kp->ki_uerrmsg = td->td_exterr_ptr;
 }
 
 /*
@@ -1435,7 +1437,7 @@ freebsd32_kinfo_proc_out(const struct kinfo_proc *ki, struct kinfo_proc32 *ki32)
 	CP(*ki, *ki32, ki_sid);
 	CP(*ki, *ki32, ki_tsid);
 	CP(*ki, *ki32, ki_jobc);
-	CP(*ki, *ki32, ki_tdev);
+	FU64_CP(*ki, *ki32, ki_tdev);
 	CP(*ki, *ki32, ki_tdev_freebsd11);
 	CP(*ki, *ki32, ki_siglist);
 	CP(*ki, *ki32, ki_sigmask);
@@ -1462,7 +1464,7 @@ freebsd32_kinfo_proc_out(const struct kinfo_proc *ki, struct kinfo_proc32 *ki32)
 	CP(*ki, *ki32, ki_slptime);
 	CP(*ki, *ki32, ki_swtime);
 	CP(*ki, *ki32, ki_cow);
-	CP(*ki, *ki32, ki_runtime);
+	FU64_CP(*ki, *ki32, ki_runtime);
 	TV_CP(*ki, *ki32, ki_start);
 	TV_CP(*ki, *ki32, ki_childtime);
 	CP(*ki, *ki32, ki_flag);
@@ -1501,8 +1503,10 @@ freebsd32_kinfo_proc_out(const struct kinfo_proc *ki, struct kinfo_proc32 *ki32)
 	PTRTRIM_CP(*ki, *ki32, ki_kstack);
 	PTRTRIM_CP(*ki, *ki32, ki_udata);
 	PTRTRIM_CP(*ki, *ki32, ki_tdaddr);
+	PTRTRIM_CP(*ki, *ki32, ki_pd);
 	CP(*ki, *ki32, ki_sflag);
 	CP(*ki, *ki32, ki_tdflags);
+	PTRTRIM_CP(*ki, *ki32, ki_uerrmsg);
 }
 #endif
 
@@ -2542,6 +2546,7 @@ kern_proc_vmmap_resident(vm_map_t map, vm_map_entry_t entry,
 	vm_offset_t addr;
 	vm_paddr_t pa;
 	vm_pindex_t pi, pi_adv, pindex;
+	int incore;
 
 	*super = false;
 	*resident_count = 0;
@@ -2560,7 +2565,7 @@ kern_proc_vmmap_resident(vm_map_t map, vm_map_entry_t entry,
 			pi_adv = atop(entry->end - addr);
 			pindex = pi;
 			for (tobj = obj;; tobj = tobj->backing_object) {
-				m = vm_page_find_least(tobj, pindex);
+				m = vm_radix_lookup_ge(&tobj->rtree, pindex);
 				if (m != NULL) {
 					if (m->pindex == pindex)
 						break;
@@ -2577,10 +2582,15 @@ kern_proc_vmmap_resident(vm_map_t map, vm_map_entry_t entry,
 		}
 		m_adv = NULL;
 		if (m->psind != 0 && addr + pagesizes[1] <= entry->end &&
-		    (addr & (pagesizes[1] - 1)) == 0 &&
-		    (pmap_mincore(map->pmap, addr, &pa) & MINCORE_SUPER) != 0) {
+		    (addr & (pagesizes[1] - 1)) == 0 && (incore =
+		    pmap_mincore(map->pmap, addr, &pa) & MINCORE_SUPER) != 0) {
 			*super = true;
-			pi_adv = atop(pagesizes[1]);
+			/*
+			 * The virtual page might be smaller than the physical
+			 * page, so we use the page size reported by the pmap
+			 * rather than m->psind.
+			 */
+			pi_adv = atop(pagesizes[incore >> MINCORE_PSIND_SHIFT]);
 		} else {
 			/*
 			 * We do not test the found page on validity.
@@ -2614,6 +2624,8 @@ kern_proc_vmmap_out(struct proc *p, struct sbuf *sb, ssize_t maxlen, int flags)
 	vm_offset_t addr;
 	unsigned int last_timestamp;
 	int error;
+	key_t key;
+	unsigned short seq;
 	bool guard, super;
 
 	PROC_LOCK_ASSERT(p, MA_OWNED);
@@ -2673,6 +2685,12 @@ kern_proc_vmmap_out(struct proc *p, struct sbuf *sb, ssize_t maxlen, int flags)
 			kve->kve_protection |= KVME_PROT_WRITE;
 		if (entry->protection & VM_PROT_EXECUTE)
 			kve->kve_protection |= KVME_PROT_EXEC;
+		if (entry->max_protection & VM_PROT_READ)
+			kve->kve_protection |= KVME_MAX_PROT_READ;
+		if (entry->max_protection & VM_PROT_WRITE)
+			kve->kve_protection |= KVME_MAX_PROT_WRITE;
+		if (entry->max_protection & VM_PROT_EXECUTE)
+			kve->kve_protection |= KVME_MAX_PROT_EXEC;
 
 		if (entry->eflags & MAP_ENTRY_COW)
 			kve->kve_flags |= KVME_FLAG_COW;
@@ -2680,8 +2698,6 @@ kern_proc_vmmap_out(struct proc *p, struct sbuf *sb, ssize_t maxlen, int flags)
 			kve->kve_flags |= KVME_FLAG_NEEDS_COPY;
 		if (entry->eflags & MAP_ENTRY_NOCOREDUMP)
 			kve->kve_flags |= KVME_FLAG_NOCOREDUMP;
-		if (entry->eflags & MAP_ENTRY_GROWS_UP)
-			kve->kve_flags |= KVME_FLAG_GROWS_UP;
 		if (entry->eflags & MAP_ENTRY_GROWS_DOWN)
 			kve->kve_flags |= KVME_FLAG_GROWS_DOWN;
 		if (entry->eflags & MAP_ENTRY_USER_WIRED)
@@ -2703,7 +2719,23 @@ kern_proc_vmmap_out(struct proc *p, struct sbuf *sb, ssize_t maxlen, int flags)
 
 			kve->kve_ref_count = obj->ref_count;
 			kve->kve_shadow_count = obj->shadow_count;
+			if (obj->type == OBJT_DEVICE ||
+			    obj->type == OBJT_MGTDEVICE) {
+				cdev_pager_get_path(obj, kve->kve_path,
+				    sizeof(kve->kve_path));
+			}
 			VM_OBJECT_RUNLOCK(obj);
+			if ((lobj->flags & OBJ_SYSVSHM) != 0) {
+				kve->kve_flags |= KVME_FLAG_SYSVSHM;
+				shmobjinfo(lobj, &key, &seq);
+				kve->kve_vn_fileid = key;
+				kve->kve_vn_fsid_freebsd11 = seq;
+			}
+			if ((lobj->flags & OBJ_POSIXSHM) != 0) {
+				kve->kve_flags |= KVME_FLAG_POSIXSHM;
+				shm_get_path(lobj, kve->kve_path,
+				    sizeof(kve->kve_path));
+			}
 			if (vp != NULL) {
 				vn_fullpath(vp, &fullpath, &freepath);
 				kve->kve_vn_type = vntype_to_kinfo(vp->v_type);
@@ -2723,6 +2755,9 @@ kern_proc_vmmap_out(struct proc *p, struct sbuf *sb, ssize_t maxlen, int flags)
 					kve->kve_status = KF_ATTR_VALID;
 				}
 				vput(vp);
+				strlcpy(kve->kve_path, fullpath, sizeof(
+				    kve->kve_path));
+				free(freepath, M_TEMP);
 			}
 		} else {
 			kve->kve_type = guard ? KVME_TYPE_GUARD :
@@ -2730,10 +2765,6 @@ kern_proc_vmmap_out(struct proc *p, struct sbuf *sb, ssize_t maxlen, int flags)
 			kve->kve_ref_count = 0;
 			kve->kve_shadow_count = 0;
 		}
-
-		strlcpy(kve->kve_path, fullpath, sizeof(kve->kve_path));
-		if (freepath != NULL)
-			free(freepath, M_TEMP);
 
 		/* Pack record size down */
 		if ((flags & KERN_VMMAP_PACK_KINFO) != 0)
@@ -2863,9 +2894,7 @@ sysctl_kern_proc_kstack(SYSCTL_HANDLER_ARGS)
 		    sizeof(kkstp->kkst_trace), SBUF_FIXEDLEN);
 		thread_lock(td);
 		kkstp->kkst_tid = td->td_tid;
-		if (TD_IS_SWAPPED(td))
-			kkstp->kkst_state = KKST_STATE_SWAPPED;
-		else if (stack_save_td(st, td) == 0)
+		if (stack_save_td(st, td) == 0)
 			kkstp->kkst_state = KKST_STATE_STACKOK;
 		else
 			kkstp->kkst_state = KKST_STATE_RUNNING;
@@ -2914,8 +2943,11 @@ sysctl_kern_proc_groups(SYSCTL_HANDLER_ARGS)
 	cred = crhold(p->p_ucred);
 	PROC_UNLOCK(p);
 
-	error = SYSCTL_OUT(req, cred->cr_groups,
-	    cred->cr_ngroups * sizeof(gid_t));
+	error = SYSCTL_OUT(req, &cred->cr_gid, sizeof(gid_t));
+	if (error == 0)
+		error = SYSCTL_OUT(req, cred->cr_groups,
+		    cred->cr_ngroups * sizeof(gid_t));
+
 	crfree(cred);
 	return (error);
 }
@@ -3477,7 +3509,8 @@ allproc_loop:
 		LIST_REMOVE(cp, p_list);
 		LIST_INSERT_AFTER(p, cp, p_list);
 		PROC_LOCK(p);
-		if ((p->p_flag & (P_KPROC | P_SYSTEM | P_TOTAL_STOP)) != 0) {
+		if ((p->p_flag & (P_KPROC | P_SYSTEM | P_TOTAL_STOP |
+		    P_STOPPED_SIG)) != 0) {
 			PROC_UNLOCK(p);
 			continue;
 		}
@@ -3495,6 +3528,16 @@ allproc_loop:
 			 * thread running.
 			 */
 			seen_stopped = true;
+			PROC_UNLOCK(p);
+			continue;
+		}
+		if ((p->p_flag & P_TRACED) != 0) {
+			/*
+			 * thread_single() below cannot stop traced p,
+			 * so skip it.  OTOH, we cannot require
+			 * restart because debugger might be either
+			 * already stopped or traced as well.
+			 */
 			PROC_UNLOCK(p);
 			continue;
 		}

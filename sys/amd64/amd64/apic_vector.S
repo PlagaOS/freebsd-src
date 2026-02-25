@@ -49,12 +49,6 @@
 #include <machine/specialreg.h>
 #include <x86/apicreg.h>
 
-#ifdef SMP
-#define LK	lock ;
-#else
-#define LK
-#endif
-
 	.text
 	SUPERALIGN_TEXT
 	/* End Of Interrupt to APIC */
@@ -163,7 +157,6 @@ IDTVEC(spuriousint)
 	jmp	doreti
 #endif
 
-#ifdef SMP
 /*
  * Global address space TLB shootdown.
  */
@@ -206,6 +199,17 @@ IDTVEC(spuriousint)
 	INTR_HANDLER cpususpend
 	KMSAN_ENTER
 	call	cpususpend_handler
+	call	as_lapic_eoi
+	KMSAN_LEAVE
+	jmp	doreti
+
+/*
+ * Executed by a CPU when it receives an IPI_OFF from another CPU.
+ * Should never return
+ */
+	INTR_HANDLER cpuoff
+	KMSAN_ENTER
+	call	cpuoff_handler
 	call	as_lapic_eoi
 	KMSAN_LEAVE
 	jmp	doreti
@@ -270,5 +274,3 @@ IDTVEC(justreturn)
 	INTR_HANDLER	justreturn1
 	call	as_lapic_eoi
 	jmp	doreti
-
-#endif /* SMP */

@@ -81,8 +81,6 @@
 #include <isa/isareg.h>
 #endif
 
-#define	ELF_KERN_STR	("elf"__XSTRING(__ELF_WORD_SIZE)" kernel")
-
 static MALLOC_DEFINE(M_NEXUSDEV, "nexusdev", "Nexus device");
 
 #define DEVTONX(dev)	((struct nexus_device *)device_get_ivars(dev))
@@ -262,7 +260,7 @@ nexus_attach(device_t dev)
 {
 
 	nexus_init_resources();
-	bus_generic_probe(dev);
+	bus_identify_children(dev);
 
 	/*
 	 * Explicitly add the legacy0 device here.  Other platform
@@ -271,7 +269,7 @@ nexus_attach(device_t dev)
 	 */
 	if (BUS_ADD_CHILD(dev, 10, "legacy", 0) == NULL)
 		panic("legacy: could not attach");
-	bus_generic_attach(dev);
+	bus_attach_children(dev);
 	return (0);
 }
 
@@ -347,7 +345,7 @@ nexus_get_rman(device_t bus, int type, u_int flags)
  * child of one of our descendants, not a direct child of nexus0.
  */
 static struct resource *
-nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
+nexus_alloc_resource(device_t bus, device_t child, int type, int rid,
 		     rman_res_t start, rman_res_t end, rman_res_t count,
 		     u_int flags)
 {
@@ -363,7 +361,7 @@ nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
 	if (RMAN_IS_DEFAULT_RANGE(start, end) && (count == 1)) {
 		if (device_get_parent(child) != bus || ndev == NULL)
 			return (NULL);
-		rle = resource_list_find(&ndev->nx_resources, type, *rid);
+		rle = resource_list_find(&ndev->nx_resources, type, rid);
 		if (rle == NULL)
 			return (NULL);
 		start = rle->start;
@@ -458,6 +456,7 @@ nexus_setup_intr(device_t bus, device_t child, struct resource *irq,
 		 void *arg, void **cookiep)
 {
 	int		error, domain;
+	struct intsrc	*isrc;
 
 	/* somebody tried to setup an irq that failed to allocate! */
 	if (irq == NULL)
@@ -476,8 +475,11 @@ nexus_setup_intr(device_t bus, device_t child, struct resource *irq,
 	if (bus_get_domain(child, &domain) != 0)
 		domain = 0;
 
-	error = intr_add_handler(device_get_nameunit(child),
-	    rman_get_start(irq), filter, ihand, arg, flags, cookiep, domain);
+	isrc = intr_lookup_source(rman_get_start(irq));
+	if (isrc == NULL)
+		return (EINVAL);
+	error = intr_add_handler(isrc, device_get_nameunit(child),
+	    filter, ihand, arg, flags, cookiep, domain);
 	if (error == 0)
 		rman_set_irq_cookie(irq, *cookiep);
 
@@ -524,15 +526,24 @@ static int
 nexus_config_intr(device_t dev, int irq, enum intr_trigger trig,
     enum intr_polarity pol)
 {
-	return (intr_config_intr(irq, trig, pol));
+	struct intsrc *isrc;
+
+	isrc = intr_lookup_source(irq);
+	if (isrc == NULL)
+		return (EINVAL);
+	return (intr_config_intr(isrc, trig, pol));
 }
 
 static int
 nexus_describe_intr(device_t dev, device_t child, struct resource *irq,
     void *cookie, const char *descr)
 {
+	struct intsrc *isrc;
 
-	return (intr_describe(rman_get_start(irq), cookie, descr));
+	isrc = intr_lookup_source(rman_get_start(irq));
+	if (isrc == NULL)
+		return (EINVAL);
+	return (intr_describe(isrc, cookie, descr));
 }
 
 static struct resource_list *
@@ -634,15 +645,11 @@ ram_attach(device_t dev)
 	struct resource *res;
 	rman_res_t length;
 	vm_paddr_t *p;
-	caddr_t kmdp;
 	uint32_t smapsize;
 	int error, rid;
 
 	/* Retrieve the system memory map from the loader. */
-	kmdp = preload_search_by_type("elf kernel");
-	if (kmdp == NULL)
-		kmdp = preload_search_by_type(ELF_KERN_STR);
-	smapbase = (struct bios_smap *)preload_search_info(kmdp,
+	smapbase = (struct bios_smap *)preload_search_info(preload_kmdp,
 	    MODINFO_METADATA | MODINFOMD_SMAP);
 	if (smapbase != NULL) {
 		smapsize = *((u_int32_t *)smapbase - 1);
@@ -748,10 +755,6 @@ static device_method_t sysresource_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		sysresource_probe),
 	DEVMETHOD(device_attach,	sysresource_attach),
-	DEVMETHOD(device_detach,	bus_generic_detach),
-	DEVMETHOD(device_shutdown,	bus_generic_shutdown),
-	DEVMETHOD(device_suspend,	bus_generic_suspend),
-	DEVMETHOD(device_resume,	bus_generic_resume),
 
 	DEVMETHOD_END
 };

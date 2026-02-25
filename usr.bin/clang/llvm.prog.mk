@@ -10,18 +10,27 @@ CFLAGS+=	-I${OBJTOP}/lib/clang/libllvm
     (${PROG_CXX} == "clang-tblgen" || ${PROG_CXX} == "lldb-tblgen" || \
      ${PROG_CXX} == "llvm-min-tblgen" || ${PROG_CXX} == "llvm-tblgen")
 LIBDEPS+=	llvmminimal
+LIBPRIV=
+LIBEXT=		a
 .else
 LIBDEPS+=	llvm
+.if ${MK_LLVM_LINK_STATIC_LIBRARIES} == "yes"
+LIBPRIV=
+LIBEXT=		a
+.else
+LIBPRIV=	private
+LIBEXT=		so
+.endif
 LIBADD+=	z
 LIBADD+=	zstd
 .endif
 
 .for lib in ${LIBDEPS}
-DPADD+=		${OBJTOP}/lib/clang/lib${lib}/lib${lib}.a
-LDADD+=		${OBJTOP}/lib/clang/lib${lib}/lib${lib}.a
+DPADD+=		${OBJTOP}/lib/clang/lib${lib}/lib${LIBPRIV}${lib}.${LIBEXT}
+LDADD+=		${OBJTOP}/lib/clang/lib${lib}/lib${LIBPRIV}${lib}.${LIBEXT}
 .endfor
 
-PACKAGE=	clang
+PACKAGE?=	clang
 
 .if ${.MAKE.OS} == "FreeBSD" || !defined(BOOTSTRAPPING)
 LIBADD+=	execinfo

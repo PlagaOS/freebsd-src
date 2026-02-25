@@ -69,15 +69,15 @@ static int
 pci_hostb_attach(device_t dev)
 {
 
-	bus_generic_probe(dev);
+	bus_identify_children(dev);
 
 	/*
 	 * If AGP capabilities are present on this device, then create
 	 * an AGP child.
 	 */
 	if (pci_find_cap(dev, PCIY_AGP, NULL) == 0)
-		device_add_child(dev, "agp", -1);
-	bus_generic_attach(dev);
+		device_add_child(dev, "agp", DEVICE_UNIT_ANY);
+	bus_attach_children(dev);
 	return (0);
 }
 
@@ -98,7 +98,7 @@ pci_hostb_write_ivar(device_t dev, device_t child, int which, uintptr_t value)
 }
 
 static struct resource *
-pci_hostb_alloc_resource(device_t dev, device_t child, int type, int *rid,
+pci_hostb_alloc_resource(device_t dev, device_t child, int type, int rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 
@@ -275,7 +275,7 @@ static device_method_t pci_hostb_methods[] = {
 	DEVMETHOD(pci_find_next_extcap,	pci_hostb_find_next_extcap),
 	DEVMETHOD(pci_find_htcap,	pci_hostb_find_htcap),
 	DEVMETHOD(pci_find_next_htcap,	pci_hostb_find_next_htcap),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t pci_hostb_driver = {

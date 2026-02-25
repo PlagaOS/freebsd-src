@@ -459,8 +459,7 @@ enetc_detach(if_ctx_t ctx)
 	for (i = 0; i < sc->rx_num_queues; i++)
 		iflib_irq_free(ctx, &sc->rx_queues[i].irq);
 
-	if (sc->miibus != NULL)
-		device_delete_child(sc->dev, sc->miibus);
+	bus_generic_detach(sc->dev);
 
 	if (sc->regs != NULL)
 		error = bus_release_resource(sc->dev, SYS_RES_MEMORY,
@@ -849,7 +848,7 @@ enetc_hash_vid(uint16_t vid)
 	bool bit;
 	int i;
 
-	for (i = 0;i < 6;i++) {
+	for (i = 0; i < 6; i++) {
 		bit = vid & BIT(i);
 		bit ^= !!(vid & BIT(i + 6));
 		hash |= bit << i;
@@ -1021,7 +1020,7 @@ enetc_msix_intr_assign(if_ctx_t ctx, int msix)
 		    ENETC_RBICR0_ICEN | ENETC_RBICR0_SET_ICPT(ENETC_RX_INTR_PKT_THR));
 	}
 	vector = 0;
-	for (i = 0;i < sc->tx_num_queues; i++, vector++) {
+	for (i = 0; i < sc->tx_num_queues; i++, vector++) {
 		tx_queue = &sc->tx_queues[i];
 		snprintf(irq_name, sizeof(irq_name), "txq%d", i);
 		iflib_softirq_alloc_generic(ctx, &tx_queue->irq,
@@ -1131,7 +1130,7 @@ enetc_isc_txd_encap(void *data, if_pkt_info_t ipi)
 	}
 
 	/* Now add remaining descriptors. */
-	for (;i < ipi->ipi_nsegs; i++) {
+	for (; i < ipi->ipi_nsegs; i++) {
 		desc = &queue->ring[pidx];
 		bzero(desc, sizeof(*desc));
 		desc->addr = segs[i].ds_addr;
@@ -1344,7 +1343,8 @@ enetc_get_counter(if_ctx_t ctx, ift_counter cnt)
 	case IFCOUNTER_IERRORS:
 		return (ENETC_PORT_RD8(sc, ENETC_PM0_RERR));
 	case IFCOUNTER_OERRORS:
-		return (ENETC_PORT_RD8(sc, ENETC_PM0_TERR));
+		return (if_get_counter_default(ifp, cnt) +
+		    ENETC_PORT_RD8(sc, ENETC_PM0_TERR));
 	default:
 		return (if_get_counter_default(ifp, cnt));
 	}

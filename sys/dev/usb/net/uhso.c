@@ -484,7 +484,7 @@ static device_method_t uhso_methods[] = {
 	DEVMETHOD(device_probe,		uhso_probe),
 	DEVMETHOD(device_attach,	uhso_attach),
 	DEVMETHOD(device_detach,	uhso_detach),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t uhso_driver = {
@@ -1566,10 +1566,6 @@ uhso_attach_ifnet(struct uhso_softc *sc, struct usb_interface *iface, int type)
 	}
 
 	sc->sc_ifp = ifp = if_alloc(IFT_OTHER);
-	if (sc->sc_ifp == NULL) {
-		device_printf(sc->sc_dev, "if_alloc() failed\n");
-		return (-1);
-	}
 
 	callout_init_mtx(&sc->sc_c, &sc->sc_mtx, 0);
 	mtx_lock(&sc->sc_mtx);

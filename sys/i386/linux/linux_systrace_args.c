@@ -1,8 +1,9 @@
 /*
- * System call argument to DTrace register array converstion.
+ * System call argument to DTrace register array conversion.
+ *
+ * This file is part of the DTrace syscall provider.
  *
  * DO NOT EDIT-- this file is automatically @generated.
- * This file is part of the DTrace syscall provider.
  */
 
 static void
@@ -1828,7 +1829,7 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 	case 259: {
 		struct linux_timer_create_args *p = params;
 		iarg[a++] = p->clock_id; /* clockid_t */
-		uarg[a++] = (intptr_t)p->evp; /* struct sigevent * */
+		uarg[a++] = (intptr_t)p->evp; /* struct l_sigevent * */
 		uarg[a++] = (intptr_t)p->timerid; /* l_timer_t * */
 		*n_args = 3;
 		break;
@@ -2002,7 +2003,7 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 	case 281: {
 		struct linux_mq_notify_args *p = params;
 		iarg[a++] = p->mqd; /* l_mqd_t */
-		uarg[a++] = (intptr_t)p->abs_timeout; /* const struct l_timespec * */
+		uarg[a++] = (intptr_t)p->sevp; /* const struct l_sigevent * */
 		*n_args = 2;
 		break;
 	}
@@ -2070,12 +2071,19 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 	}
 	/* linux_inotify_add_watch */
 	case 292: {
-		*n_args = 0;
+		struct linux_inotify_add_watch_args *p = params;
+		iarg[a++] = p->fd; /* l_int */
+		uarg[a++] = (intptr_t)p->pathname; /* const char * */
+		uarg[a++] = p->mask; /* uint32_t */
+		*n_args = 3;
 		break;
 	}
 	/* linux_inotify_rm_watch */
 	case 293: {
-		*n_args = 0;
+		struct linux_inotify_rm_watch_args *p = params;
+		iarg[a++] = p->fd; /* l_int */
+		uarg[a++] = p->wd; /* uint32_t */
+		*n_args = 2;
 		break;
 	}
 	/* linux_migrate_pages */
@@ -2409,7 +2417,9 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 	}
 	/* linux_inotify_init1 */
 	case 332: {
-		*n_args = 0;
+		struct linux_inotify_init1_args *p = params;
+		iarg[a++] = p->flags; /* l_int */
+		*n_args = 1;
 		break;
 	}
 	/* linux_preadv */
@@ -6225,7 +6235,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			p = "clockid_t";
 			break;
 		case 1:
-			p = "userland struct sigevent *";
+			p = "userland struct l_sigevent *";
 			break;
 		case 2:
 			p = "userland l_timer_t *";
@@ -6513,7 +6523,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			p = "l_mqd_t";
 			break;
 		case 1:
-			p = "userland const struct l_timespec *";
+			p = "userland const struct l_sigevent *";
 			break;
 		default:
 			break;
@@ -6603,9 +6613,32 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* linux_inotify_add_watch */
 	case 292:
+		switch (ndx) {
+		case 0:
+			p = "l_int";
+			break;
+		case 1:
+			p = "userland const char *";
+			break;
+		case 2:
+			p = "uint32_t";
+			break;
+		default:
+			break;
+		};
 		break;
 	/* linux_inotify_rm_watch */
 	case 293:
+		switch (ndx) {
+		case 0:
+			p = "l_int";
+			break;
+		case 1:
+			p = "uint32_t";
+			break;
+		default:
+			break;
+		};
 		break;
 	/* linux_migrate_pages */
 	case 294:
@@ -7171,6 +7204,13 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* linux_inotify_init1 */
 	case 332:
+		switch (ndx) {
+		case 0:
+			p = "l_int";
+			break;
+		default:
+			break;
+		};
 		break;
 	/* linux_preadv */
 	case 333:
@@ -9888,8 +9928,14 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 	case 291:
 	/* linux_inotify_add_watch */
 	case 292:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
 	/* linux_inotify_rm_watch */
 	case 293:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
 	/* linux_migrate_pages */
 	case 294:
 	/* linux_openat */
@@ -10061,6 +10107,9 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* linux_inotify_init1 */
 	case 332:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
 	/* linux_preadv */
 	case 333:
 		if (ndx == 0 || ndx == 1)

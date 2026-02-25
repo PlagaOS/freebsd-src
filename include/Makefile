@@ -4,7 +4,7 @@
 
 PACKAGE=clibs
 CLEANFILES= osreldate.h version
-SUBDIR= arpa protocols rpcsvc rpc xlocale
+SUBDIR= arpa protocols rpcsvc rpc ssp xlocale
 .if ${MACHINE_CPUARCH} == "amd64"
 SUBDIR+=		i386
 INCLUDE_SUBDIRS+=	i386
@@ -17,7 +17,8 @@ SUBDIR_PARALLEL=
 INCS=	a.out.h ar.h assert.h bitstring.h byteswap.h \
 	complex.h cpio.h _ctype.h ctype.h \
 	db.h \
-	dirent.h dlfcn.h elf.h elf-hints.h endian.h err.h fmtmsg.h fnmatch.h \
+	dirent.h dlfcn.h elf.h elf-hints.h endian.h err.h exterr.h \
+	fmtmsg.h fnmatch.h \
 	fstab.h fts.h ftw.h getopt.h glob.h grp.h \
 	ieeefp.h ifaddrs.h \
 	inttypes.h iso646.h kenv.h langinfo.h libgen.h limits.h link.h \
@@ -28,8 +29,8 @@ INCS=	a.out.h ar.h assert.h bitstring.h byteswap.h \
 	pthread_np.h pwd.h ranlib.h readpassphrase.h regex.h \
 	res_update.h resolv.h runetype.h sched.h \
 	search.h semaphore.h setjmp.h \
-	signal.h spawn.h stab.h stdalign.h stdbool.h stdckdint.h stddef.h \
-	stdnoreturn.h stdio.h stdlib.h string.h stringlist.h \
+	signal.h spawn.h stab.h stdalign.h stdbit.h stdbool.h stdckdint.h \
+	stddef.h stdnoreturn.h stdio.h stdlib.h string.h stringlist.h \
 	strings.h sysexits.h tar.h termios.h tgmath.h \
 	time.h timeconv.h timers.h ttyent.h \
 	uchar.h ulimit.h unistd.h utime.h utmpx.h uuid.h varargs.h \
@@ -38,9 +39,9 @@ INCS=	a.out.h ar.h assert.h bitstring.h byteswap.h \
 .PATH: ${SRCTOP}/contrib/libc-vis
 INCS+=	vis.h
 
-MHDRS=	float.h floatingpoint.h stdarg.h
+MHDRS=	float.h floatingpoint.h
 
-PHDRS=	_semaphore.h
+PHDRS=	_semaphore.h stdarg.h
 
 LHDRS=	aio.h errno.h fcntl.h linker_set.h poll.h stdatomic.h stdint.h \
 	syslog.h ucontext.h
@@ -93,14 +94,14 @@ BSM=		audit.h \
 		audit_fcntl.h \
 		audit_kevents.h \
 		audit_socket_type.h
-BSMPACKAGE=	libbsm
+BSMPACKAGE=	audit
 BSMDIR=		${INCLUDEDIR}/bsm
 
-.PATH: ${SRCTOP}/sys/security/audit
-SECAUDIT=	audit.h \
-		audit_ioctl.h \
-		audit_private.h
-SECAUDITPACKAGE=	libbsm
+.PATH: ${SRCTOP}/sys/security
+SECAUDIT=	audit/audit.h \
+		audit/audit_ioctl.h \
+		audit/audit_private.h
+SECAUDITPACKAGE=	audit
 SECAUDITDIR=	${INCLUDEDIR}/security/audit
 
 .PATH:	${SRCTOP}/sys/cam
@@ -182,6 +183,11 @@ OPENCRYPTODIR=	${INCLUDEDIR}/crypto
 NVME=		nvme.h
 NVMEDIR=	${INCLUDEDIR}/dev/nvme
 
+.PATH: ${SRCTOP}/sys/dev/nvmf
+NVMF=		nvmf.h \
+		nvmf_proto.h
+NVMFDIR=	${INCLUDEDIR}/dev/nvmf
+
 .PATH: ${SRCTOP}/sys/dev/pci
 PCI=		pcireg.h
 PCIDIR=		${INCLUDEDIR}/dev/pci
@@ -227,7 +233,7 @@ RPCDIR=		${INCLUDEDIR}/rpc
 TEKEN=		teken.h
 TEKENDIR=	${INCLUDEDIR}/teken
 
-.PATH: ${SRCTOP}/sys/contrib/openzfs/include/sys
+.PATH: ${ZFSTOP}/include/sys
 NVPAIR=		nvpair.h
 NVPAIRDIR=	${INCLUDEDIR}/sys
 
@@ -255,6 +261,7 @@ INCSGROUPS=	INCS \
 		HYPERV \
 		OPENCRYPTO \
 		NVME \
+		NVMF \
 		PCI \
 		RPC \
 		SECAUDIT \
@@ -286,7 +293,7 @@ LSUBSUBDIRS+=	netgraph/bluetooth/include
 LSUBDIRS+=	fs/cuse
 .endif
 
-.if ${MK_GSSAPI} != "no"
+.if ${MK_KERBEROS} != "no" && ${MK_MITKRB5} == "no"
 SUBDIR+=	gssapi
 INCS+=		gssapi.h
 .endif
@@ -304,7 +311,14 @@ INCS+=		iconv.h
 LSUBDIRS+=	dev/usb
 .endif
 
-.if ${MACHINE_CPUARCH} == "powerpc" && ${MACHINE_ARCH} != "powerpcspe"
+.if ${MACHINE_CPUARCH} == "amd64" || ${MACHINE_CPUARCH} == "aarch64" || \
+    ${MACHINE_CPUARCH} == "riscv"
+.if ${MK_BHYVE} != "no"
+LSUBDIRS+=	dev/vmm
+.endif
+.endif
+
+.if ${MACHINE_CPUARCH} == "powerpc"
 _dev_powermac_nvram=	dev/powermac_nvram
 .endif
 

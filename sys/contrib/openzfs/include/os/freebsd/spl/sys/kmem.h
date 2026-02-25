@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BSD-2-Clause
 /*
  * Copyright (c) 2007 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  * All rights reserved.
@@ -49,13 +50,14 @@ MALLOC_DECLARE(M_SOLARIS);
 #define	KM_NOSLEEP		M_NOWAIT
 #define	KM_NORMALPRI		0
 #define	KMC_NODEBUG		UMA_ZONE_NODUMP
+#define	KMC_RECLAIMABLE		0x0
 
 typedef struct vmem vmem_t;
 
 extern char	*kmem_asprintf(const char *, ...)
-    __attribute__((format(printf, 1, 2)));
+    __attribute__((format(__printf__, 1, 2)));
 extern char *kmem_vasprintf(const char *fmt, va_list ap)
-    __attribute__((format(printf, 1, 0)));
+    __attribute__((format(__printf__, 1, 0)));
 
 extern int kmem_scnprintf(char *restrict str, size_t size,
     const char *restrict fmt, ...);

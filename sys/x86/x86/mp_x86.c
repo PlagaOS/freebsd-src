@@ -124,7 +124,7 @@ volatile cpuset_t resuming_cpus;
 volatile cpuset_t toresume_cpus;
 
 /* used to hold the AP's until we are ready to release them */
-struct mtx ap_boot_mtx;
+static int ap_boot_lock;
 
 /* Set to 1 once we're ready to let the APs out of the pen. */
 volatile int aps_ready = 0;
@@ -183,15 +183,13 @@ mem_range_AP_init(void)
 }
 
 /*
- * Round up to the next power of two, if necessary, and then
- * take log2.
- * Returns -1 if argument is zero.
+ * Compute ceil(log2(x)).  Returns -1 if x is zero.
  */
 static __inline int
 mask_width(u_int x)
 {
 
-	return (fls(x << (1 - powerof2(x))) - 1);
+	return (x == 0 ? -1 : order_base_2(x));
 }
 
 /*
@@ -1088,8 +1086,6 @@ init_secondary_tail(void)
 	PCPU_SET(curthread, PCPU_GET(idlethread));
 	schedinit_ap();
 
-	mtx_lock_spin(&ap_boot_mtx);
-
 	mca_init();
 
 	/* Init local apic for irq's */
@@ -1097,6 +1093,15 @@ init_secondary_tail(void)
 
 	/* Set memory range attributes for this CPU to match the BSP */
 	mem_range_AP_init();
+
+	/*
+	 * Use naive spinning lock instead of the real spinlock, since
+	 * printfs() below might take a very long time and trigger
+	 * spinlock timeout panics.  This is the only use of the
+	 * ap_boot_lock anyway.
+	 */
+	while (atomic_cmpset_acq_int(&ap_boot_lock, 0, 1) == 0)
+		ia32_pause();
 
 	smp_cpus++;
 
@@ -1119,6 +1124,8 @@ init_secondary_tail(void)
 		atomic_store_rel_int(&smp_started, 1);
 	}
 
+	atomic_store_rel_int(&ap_boot_lock, 0);
+
 #ifdef __amd64__
 	if (pmap_pcid_enabled)
 		load_cr4(rcr4() | CR4_PCIDE);
@@ -1126,8 +1133,6 @@ init_secondary_tail(void)
 	load_es(_udatasel);
 	load_fs(_ufssel);
 #endif
-
-	mtx_unlock_spin(&ap_boot_mtx);
 
 	/* Wait until all the AP's are up. */
 	while (atomic_load_acq_int(&smp_started) == 0)
@@ -1427,6 +1432,9 @@ ipi_all_but_self(u_int ipi)
 	cpuset_t other_cpus;
 	int cpu, c;
 
+	if (mp_ncpus == 1)
+		return;
+
 	/*
 	 * IPI_STOP_HARD maps to a NMI and the trap handler needs a bit
 	 * of help in order to understand what is the source.
@@ -1593,6 +1601,11 @@ cpususpend_handler(void)
 
 	mtx_assert(&smp_ipi_mtx, MA_NOTOWNED);
 
+#ifdef __amd64__
+	if (vmm_suspend_p)
+		vmm_suspend_p();
+#endif
+
 	cpu = PCPU_GET(cpuid);
 
 #ifdef XENHVM
@@ -1688,6 +1701,28 @@ cpususpend_handler(void)
 	CPU_CLR_ATOMIC(cpu, &resuming_cpus);
 	CPU_CLR_ATOMIC(cpu, &suspended_cpus);
 	CPU_CLR_ATOMIC(cpu, &toresume_cpus);
+}
+
+void
+cpuoff_handler(void)
+{
+	u_int cpu;
+
+	cpu = PCPU_GET(cpuid);
+
+	/* Time to go catatonic.  A reset will be required to leave. */
+	disable_intr();
+	lapic_disable();
+	CPU_SET_ATOMIC(cpu, &suspended_cpus);
+
+	/*
+	 * There technically should be no need for the `while` here, since it
+	 * cannot be interrupted (interrupts are disabled).  Be safe anyway.
+	 * Any interrupt at this point will likely be fatal, as the page tables
+	 * are likely going away shortly.
+	 */
+	while (1)
+		halt();
 }
 
 /*

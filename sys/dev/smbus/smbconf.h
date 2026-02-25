@@ -30,7 +30,7 @@
 
 #include <sys/queue.h>
 
-#define SMBPRI (PZERO+8)		/* XXX sleep/wakeup queue priority */
+#define SMBPRI (PWAIT)		/* XXX sleep/wakeup queue priority */
 
 #define n(flags) (~(flags) & (flags))
 
@@ -75,7 +75,7 @@
  * ivars codes
  */
 enum smbus_ivars {
-    SMBUS_IVAR_ADDR,	/* slave address of the device */
+	SMBUS_IVAR_ADDR = BUS_IVARS_PRIVATE, /* slave address of the device */
 };
 
 int	smbus_request_bus(device_t, device_t, int);

@@ -32,7 +32,6 @@
  *	$KAME: in6_gif.c,v 1.49 2001/05/14 14:02:17 itojun Exp $
  */
 
-#include <sys/cdefs.h>
 #include "opt_inet.h"
 #include "opt_inet6.h"
 
@@ -194,6 +193,11 @@ in6_gif_setopts(struct gif_softc *sc, u_int options)
 		sc->gif_options = options;
 		in6_gif_attach(sc);
 	}
+
+	if ((options & GIF_NOCLAMP) !=
+	    (sc->gif_options & GIF_NOCLAMP)) {
+		sc->gif_options = options;
+	}
 	return (0);
 }
 
@@ -289,6 +293,7 @@ in6_gif_output(struct ifnet *ifp, struct mbuf *m, int proto, uint8_t ecn)
 {
 	struct gif_softc *sc = ifp->if_softc;
 	struct ip6_hdr *ip6;
+	u_long mtu;
 
 	/* prepend new IP header */
 	NET_EPOCH_ASSERT();
@@ -304,11 +309,15 @@ in6_gif_output(struct ifnet *ifp, struct mbuf *m, int proto, uint8_t ecn)
 	ip6->ip6_nxt	= proto;
 	ip6->ip6_hlim	= V_ip6_gif_hlim;
 	/*
-	 * force fragmentation to minimum MTU, to avoid path MTU discovery.
-	 * it is too painful to ask for resend of inner packet, to achieve
-	 * path MTU discovery for encapsulated packets.
+	 * Enforce fragmentation to minimum MTU, even if the interface MTU
+	 * is larger, to avoid path MTU discovery when NOCLAMP is not
+	 * set (default).  IPv6 does not allow fragmentation on intermediate
+	 * router nodes, so it is too painful to ask for resend of inner
+	 * packet, to achieve path MTU discovery for encapsulated packets.
 	 */
-	return (ip6_output(m, 0, NULL, IPV6_MINMTU, 0, NULL, NULL));
+	mtu = ((sc->gif_options & GIF_NOCLAMP) == 0) ? IPV6_MINMTU : 0;
+
+	return (ip6_output(m, 0, NULL, mtu, 0, NULL, NULL));
 }
 
 static int

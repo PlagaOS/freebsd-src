@@ -53,6 +53,7 @@ __KERNEL_RCSID(0, "$NetBSD: subr_msan.c,v 1.14 2020/09/09 16:29:59 maxv Exp $");
 #include <sys/msan.h>
 #include <sys/proc.h>
 #include <sys/stack.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <sys/uio.h>
 
@@ -60,7 +61,6 @@ __KERNEL_RCSID(0, "$NetBSD: subr_msan.c,v 1.14 2020/09/09 16:29:59 maxv Exp $");
 #include <vm/pmap.h>
 
 #include <machine/msan.h>
-#include <machine/stdarg.h>
 
 void kmsan_init_arg(size_t);
 void kmsan_init_ret(size_t);
@@ -179,6 +179,9 @@ kmsan_report_hook(const void *addr, msan_orig_t *orig, size_t size, size_t off,
 
 	if (__predict_false(KERNEL_PANICKED() || kdb_active || kmsan_reporting))
 		return;
+	if (__predict_false(curthread != NULL &&
+	    (curthread->td_pflags2 & TDP2_SAN_QUIET) != 0))
+		return;
 
 	kmsan_reporting = true;
 	__compiler_membar();
@@ -231,6 +234,9 @@ kmsan_report_inline(msan_orig_t orig, unsigned long pc)
 	int type;
 
 	if (__predict_false(KERNEL_PANICKED() || kdb_active || kmsan_reporting))
+		return;
+	if (__predict_false(curthread != NULL &&
+	    (curthread->td_pflags2 & TDP2_SAN_QUIET) != 0))
 		return;
 
 	kmsan_reporting = true;
@@ -656,6 +662,7 @@ void __msan_poison_alloca(const void *, uint64_t, const char *);
 void __msan_unpoison_alloca(const void *, uint64_t);
 void __msan_warning(msan_orig_t);
 msan_tls_t *__msan_get_context_state(void);
+intptr_t __msan_test_shadow(const void *, size_t);
 
 void
 __msan_instrument_asm_store(const void *addr, size_t size)
@@ -718,6 +725,23 @@ __msan_get_context_state(void)
 		return (&dummy_tls);
 	mtd = curthread->td_kmsan;
 	return (&mtd->tls[mtd->ctx]);
+}
+
+intptr_t
+__msan_test_shadow(const void *addr, size_t len)
+{
+	uint8_t *shad;
+
+	if (__predict_false(!kmsan_enabled))
+		return (-1);
+	if (__predict_false(kmsan_md_unsupported((vm_offset_t)addr)))
+		return (-1);
+
+	shad = (uint8_t *)kmsan_md_addr_to_shad((vm_offset_t)addr);
+	for (size_t i = 0; i < len; i++)
+		if (shad[i] != 0)
+			return (i);
+	return (-1);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1214,7 +1238,7 @@ kmsan_casueword(volatile u_long *base, u_long oldval, u_long *oldvalp,
 	}
 
 #define	_MSAN_ATOMIC_FUNC_LOAD(name, type)				\
-	type kmsan_atomic_load_##name(volatile type *ptr)		\
+	type kmsan_atomic_load_##name(const volatile type *ptr)		\
 	{								\
 		kmsan_check_arg(sizeof(ptr),				\
 		    "atomic_load_" #name "():args");			\
@@ -1289,11 +1313,14 @@ MSAN_ATOMIC_FUNC_TESTANDCLEAR(32, uint32_t);
 MSAN_ATOMIC_FUNC_TESTANDCLEAR(64, uint64_t);
 MSAN_ATOMIC_FUNC_TESTANDCLEAR(int, u_int);
 MSAN_ATOMIC_FUNC_TESTANDCLEAR(long, u_long);
+MSAN_ATOMIC_FUNC_TESTANDCLEAR(ptr, uintptr_t);
 
 MSAN_ATOMIC_FUNC_TESTANDSET(32, uint32_t);
 MSAN_ATOMIC_FUNC_TESTANDSET(64, uint64_t);
 MSAN_ATOMIC_FUNC_TESTANDSET(int, u_int);
 MSAN_ATOMIC_FUNC_TESTANDSET(long, u_long);
+MSAN_ATOMIC_FUNC_TESTANDSET(acq_long, u_long);
+MSAN_ATOMIC_FUNC_TESTANDSET(ptr, uintptr_t);
 
 MSAN_ATOMIC_FUNC_SWAP(32, uint32_t);
 MSAN_ATOMIC_FUNC_SWAP(64, uint64_t);

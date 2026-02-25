@@ -31,6 +31,7 @@
 #include <sys/cons.h>
 #include <sys/time.h>
 #include <sys/systm.h>
+#include <sys/stdarg.h>
 
 #include <sys/stat.h>
 #include <sys/malloc.h>
@@ -49,7 +50,6 @@
 
 #include <machine/resource.h>
 #include <machine/bus.h>
-#include <machine/stdarg.h>
 #include <sys/rman.h>
 
 #include <vm/vm.h>
@@ -1728,7 +1728,7 @@ static device_method_t driver_methods[] = {
 	DEVMETHOD(device_attach,    hptiop_attach),
 	DEVMETHOD(device_detach,    hptiop_detach),
 	DEVMETHOD(device_shutdown,  hptiop_shutdown),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static struct hptiop_adapter_ops hptiop_itl_ops = {
@@ -1798,7 +1798,6 @@ static int hptiop_probe(device_t dev)
 {
 	struct hpt_iop_hba *hba;
 	u_int32_t id;
-	static char buf[256];
 	int sas = 0;
 	struct hptiop_adapter_ops *ops;
 
@@ -1851,9 +1850,8 @@ static int hptiop_probe(device_t dev)
 		pci_get_bus(dev), pci_get_slot(dev),
 		pci_get_function(dev), pci_get_irq(dev));
 
-	sprintf(buf, "RocketRAID %x %s Controller\n",
-				id, sas ? "SAS" : "SATA");
-	device_set_desc_copy(dev, buf);
+	device_set_descf(dev, "RocketRAID %x %s Controller",
+	    id, sas ? "SAS" : "SATA");
 
 	hba = (struct hpt_iop_hba *)device_get_softc(dev);
 	bzero(hba, sizeof(struct hpt_iop_hba));

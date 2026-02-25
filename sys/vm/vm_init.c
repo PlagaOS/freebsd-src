@@ -100,8 +100,26 @@ long physmem;
 static void vm_mem_init(void *);
 SYSINIT(vm_mem, SI_SUB_VM, SI_ORDER_FIRST, vm_mem_init, NULL);
 
+#ifdef INVARIANTS
 /*
- *	vm_init initializes the virtual memory system.
+ * Ensure that pmap_init() correctly initialized pagesizes[].
+ */
+static void
+vm_check_pagesizes(void)
+{
+	int i;
+
+	KASSERT(pagesizes[0] == PAGE_SIZE, ("pagesizes[0] != PAGE_SIZE"));
+	for (i = 1; i < MAXPAGESIZES; i++) {
+		KASSERT((pagesizes[i - 1] != 0 &&
+		    pagesizes[i - 1] < pagesizes[i]) || pagesizes[i] == 0,
+		    ("pagesizes[%d ... %d] are misconfigured", i - 1, i));
+	}
+}
+#endif
+
+/*
+ *	vm_mem_init() initializes the virtual memory system.
  *	This is done only by the first cpu up.
  */
 static void
@@ -140,6 +158,18 @@ vm_mem_init(void *dummy)
 	kmem_init_zero_region();
 	pmap_init();
 	vm_pager_init();
+
+	/*
+	 * Now we can properly handle calls into vm_fault() from
+	 * kernel page faults during initialization, typically to
+	 * panic.  Clear the nofaulting flag set for thread0 in the
+	 * image, see kern/init_main.c
+	 */
+	curthread->td_pflags &= ~TDP_NOFAULTING;
+
+#ifdef INVARIANTS
+	vm_check_pagesizes();
+#endif
 }
 
 void

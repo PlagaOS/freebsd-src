@@ -1,4 +1,3 @@
-
 PACKAGE=	vt-data
 
 .PATH:	${SRCTOP}/contrib/spleen
@@ -22,7 +21,7 @@ FILES=	${FONTS} INDEX.fonts
 
 CLEANFILES+=	${FONTS}
 
-.SUFFIXES: .bdf .fnt .fnt.uu .hex
+.SUFFIXES: .bdf .fnt .hex
 .bdf.fnt .hex.fnt:
 	vtfontcvt -o ${.TARGET} ${.IMPSRC}
 

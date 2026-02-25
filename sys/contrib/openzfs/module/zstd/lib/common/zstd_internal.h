@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0-only
 /*
  * Copyright (c) 2016-2020, Yann Collet, Facebook, Inc.
  * All rights reserved.
@@ -10,6 +11,15 @@
 
 #ifndef ZSTD_CCOMMON_H_MODULE
 #define ZSTD_CCOMMON_H_MODULE
+
+/*
+ * Disable the aarch64 NEON SIMD intrinsics for kernel builds.  Safely
+ * using them in the kernel context requires saving/restoring the FPU
+ * registers which is not currently done.
+ */
+#ifdef _KERNEL
+#define ZSTD_NO_INTRINSICS
+#endif
 
 /* this module contains definitions which must be identical
  * across compression, decompression and dictBuilder.

@@ -132,6 +132,26 @@ and
 may write fewer bytes than requested;
 the return value must be noted,
 and the remainder of the operation should be retried when possible.
+.Sh ATOMICITY OF WRITES
+When operating on regular files on local file systems, the effects of
+.Fn write
+are atomic.
+As required by the POSIX standard,
+the
+.Fn read ,
+.Fn write ,
+and
+.Fn ftruncate
+functions and their variations are atomic with respect to
+each other on the file data and metadata for regular files.
+See for instance
+.St -p1003.1-2024
+Volume 2, Section 2.9.7 for more information.
+.Pp
+.Fx
+implements the requirement by taking
+a read/write range lock on the file byte range
+affected by the corresponding function.
 .Sh RETURN VALUES
 Upon successful completion the number of bytes which were written
 is returned.
@@ -185,13 +205,6 @@ A signal interrupted the write before it could be completed.
 .It Bq Er EAGAIN
 The file was marked for non-blocking I/O,
 and no data could be written immediately.
-.It Bq Er EROFS
-An attempt was made to write over a disk label area at the beginning
-of a slice.
-Use
-.Xr disklabel 8
-.Fl W
-to enable writing on the disk label area.
 .It Bq Er EINVAL
 The value
 .Fa nbytes
@@ -202,6 +215,9 @@ is greater than
 if the sysctl
 .Va debug.iosize_max_clamp
 is non-zero).
+.It Bq Er EINVAL
+The file descriptor refers to a raw device, and the write
+offset or size is not a multiple of the device's block size.
 .It Bq Er EINTEGRITY
 The backing store for
 .Fa fd

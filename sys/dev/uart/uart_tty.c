@@ -36,11 +36,11 @@
 #include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/reboot.h>
+#include <sys/stdarg.h>
 #include <machine/bus.h>
 #include <sys/rman.h>
 #include <sys/tty.h>
 #include <machine/resource.h>
-#include <machine/stdarg.h>
 
 #include <dev/uart/uart.h>
 #include <dev/uart/uart_bus.h>
@@ -447,8 +447,9 @@ uart_tty_detach(struct uart_softc *sc)
 
 	tp = sc->sc_u.u_tty.tp;
 
-	tty_lock(tp);
 	swi_remove(sc->sc_softih);
+
+	tty_lock(tp);
 	tty_rel_gone(tp);
 
 	return (0);

@@ -25,7 +25,7 @@
 #include "tpm_ppi.h"
 
 #define TPM_PPI_ADDRESS 0xFED45000
-#define TPM_PPI_SIZE 0x1000
+#define TPM_PPI_SIZE 0x400
 
 #define TPM_PPI_FWCFG_FILE "etc/tpm/config"
 
@@ -100,7 +100,7 @@ tpm_ppi_init(void **sc)
 	struct tpm_ppi_fwcfg *fwcfg = NULL;
 	int error;
 
-	ppi = calloc(1, sizeof(*ppi));
+	ppi = calloc(1, TPM_PPI_SIZE);
 	if (ppi == NULL) {
 		warnx("%s: failed to allocate acpi region for ppi", __func__);
 		error = ENOMEM;
@@ -161,7 +161,7 @@ tpm_ppi_deinit(void *sc)
 	ppi = sc;
 
 	error = unregister_mem(&ppi_mmio);
-	assert(error = 0);
+	assert(error == 0);
 
 	free(ppi);
 }
@@ -207,7 +207,7 @@ tpm_ppi_write_dsdt_regions(void *sc __unused)
 	 * Used for TCG Platform Reset Attack Mitigation
 	 */
 	dsdt_line("OperationRegion(TPP3, SystemMemory, 0x%8x, 1)",
-	    TPM_PPI_ADDRESS + sizeof(struct tpm_ppi_qemu));
+	    TPM_PPI_ADDRESS + (uint32_t)sizeof(struct tpm_ppi_qemu));
 	dsdt_line("Field(TPP3, ByteAcc, NoLock, Preserve)");
 	dsdt_line("{");
 	dsdt_line("  MOVV, 8,");

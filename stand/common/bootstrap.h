@@ -54,7 +54,8 @@ bool	interp_has_builtin_cmd(const char *cmd);
 
 /* Called by interp.c for interp_*.c embedded interpreters */
 int	interp_include(const char *);	/* Execute commands from filename */
-void	interp_init(void);		/* Initialize interpreater */
+void	interp_preinit(void);		/* Initialize interpreater execution engine */
+void	interp_init(void);		/* Initialize interpreater and run main script */
 int	interp_run(const char *);	/* Run a single command */
 
 /* interp_backslash.c */
@@ -229,7 +230,7 @@ struct kernel_module
 struct preloaded_file
 {
 	char *f_name;	/* file name */
-	char *f_type; /* verbose file type, eg 'ELF kernel', 'pnptable', etc. */
+	char *f_type; /* verbose file type, eg 'elf kernel', 'pnptable', etc. */
 	char *f_args;	/* arguments for the file */
 	/* metadata that will be placed in the module directory */
 	struct file_metadata *f_metadata;
@@ -238,10 +239,10 @@ struct preloaded_file
 	size_t f_size;		/* file size */
 	struct kernel_module	*f_modules;	/* list of modules if any */
 	struct preloaded_file	*f_next;	/* next file */
-#ifdef __amd64__
+#if defined(__amd64__) || (defined(__i386__) && defined(EFI))
 	bool			f_kernphys_relocatable;
 #endif
-#if defined(__i386__)
+#if defined(__i386__) && !defined(EFI)
 	bool			f_tg_kernel_support;
 #endif
 };
@@ -270,7 +271,7 @@ void unload(void);
 struct preloaded_file *file_alloc(void);
 struct preloaded_file *file_findfile(const char *name, const char *type);
 struct file_metadata *file_findmetadata(struct preloaded_file *fp, int type);
-struct preloaded_file *file_loadraw(const char *name, char *type, int insert);
+struct preloaded_file *file_loadraw(const char *name, const char *type, int insert);
 void file_discard(struct preloaded_file *fp);
 void file_addmetadata(struct preloaded_file *, int, size_t, void *);
 int file_addmodule(struct preloaded_file *, char *, int,
@@ -281,6 +282,7 @@ int tslog_init(void);
 int tslog_publish(void);
 
 vm_offset_t build_font_module(vm_offset_t);
+vm_offset_t build_splash_module(vm_offset_t);
 
 /* MI module loaders */
 #ifdef __elfN
@@ -324,7 +326,8 @@ SET_DECLARE(Xcommand_set, struct bootblk_command);
  * The intention of the architecture switch is to provide a convenient
  * encapsulation of the interface between the bootstrap MI and MD code.
  * MD code may selectively populate the switch at runtime based on the
- * actual configuration of the target system.
+ * actual configuration of the target system, though some routines are
+ * mandatory.
  */
 struct arch_switch
 {
@@ -349,14 +352,6 @@ struct arch_switch
 	void (*arch_isaoutb)(int port, int value);
 
 	/*
-	 * Interface to adjust the load address according to the "object"
-	 * being loaded.
-	 */
-	uint64_t (*arch_loadaddr)(u_int type, void *data, uint64_t addr);
-#define	LOAD_ELF	1	/* data points to the ELF header. */
-#define	LOAD_RAW	2	/* data points to the file name. */
-
-	/*
 	 * Interface to inform MD code about a loaded (ELF) segment. This
 	 * can be used to flush caches and/or set up translations.
 	 */
@@ -376,6 +371,8 @@ extern struct arch_switch archsw;
 
 /* This must be provided by the MD code, but should it be in the archsw? */
 void	delay(int delay);
+
+int setprint_delay(struct env_var *ev, int flags, const void *value);
 
 /* common code to set currdev variable. */
 int gen_setcurrdev(struct env_var *ev, int flags, const void *value);

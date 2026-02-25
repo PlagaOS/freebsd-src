@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2021-2023 Alfonso Sabato Siciliano
+ * Copyright (c) 2021-2025 Alfonso Sabato Siciliano
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -48,8 +48,8 @@ drawsquare(struct bsddialog_conf *conf, WINDOW *win, unsigned int value,
 	draw_borders(conf, win, LOWERED);
 	if (focus) {
 		wattron(win, t.dialog.arrowcolor);
-		mvwhline(win, 0, 1, conf->ascii_lines ? '^' : ACS_UARROW, 2);
-		mvwhline(win, 2, 1, conf->ascii_lines ? 'v' : ACS_DARROW, 2);
+		mvwhline(win, 0, 1, UARROW(conf), 2);
+		mvwhline(win, 2, 1, DARROW(conf), 2);
 		wattroff(win, t.dialog.arrowcolor);
 	}
 
@@ -62,19 +62,19 @@ drawsquare(struct bsddialog_conf *conf, WINDOW *win, unsigned int value,
 	wnoutrefresh(win);
 }
 
-static int timebox_redraw(struct dialog *d, struct clock *c)
+static int timebox_draw(struct dialog *d, bool redraw, struct clock *c)
 {
 	int y, x;
 
-	if (d->built) {
+	if (redraw) {
 		hide_dialog(d);
 		refresh(); /* Important for decreasing screen */
 	}
 	if (dialog_size_position(d, HBOX, MINWTIME, NULL) != 0)
 		return (BSDDIALOG_ERROR);
-	if (draw_dialog(d) != 0)
+	if (draw_dialog(d) != 0) /* doupdate() in mail loop */
 		return (BSDDIALOG_ERROR);
-	if (d->built)
+	if (redraw)
 		refresh(); /* Important to fix grey lines expanding screen */
 	TEXTPAD(d, HBOX + HBUTTONS);
 
@@ -117,7 +117,7 @@ bsddialog_timebox(struct bsddialog_conf *conf, const char* text, int rows,
 		wbkgd(c[i].win, t.dialog.color);
 		c[i].value = MIN(c[i].value, c[i].max);
 	}
-	if (timebox_redraw(&d, c) != 0)
+	if (timebox_draw(&d, false, c) != 0)
 		return (BSDDIALOG_ERROR);
 
 	sel = -1;
@@ -142,8 +142,9 @@ bsddialog_timebox(struct bsddialog_conf *conf, const char* text, int rows,
 				loop = false;
 			}
 			break;
-		case KEY_RIGHT:
 		case '\t': /* TAB */
+		case KEY_CTRL('n'):
+		case KEY_RIGHT:
 			if (focusbuttons) {
 				d.bs.curr++;
 				focusbuttons = d.bs.curr < (int)d.bs.nbuttons ?
@@ -162,6 +163,7 @@ bsddialog_timebox(struct bsddialog_conf *conf, const char* text, int rows,
 			}
 			DRAW_BUTTONS(d);
 			break;
+		case KEY_CTRL('p'):
 		case KEY_LEFT:
 			if (focusbuttons) {
 				d.bs.curr--;
@@ -179,6 +181,11 @@ bsddialog_timebox(struct bsddialog_conf *conf, const char* text, int rows,
 			}
 			DRAW_BUTTONS(d);
 			break;
+		case '-':
+			if (focusbuttons == false)
+				c[sel].value = c[sel].value > 0 ?
+				    c[sel].value - 1 : c[sel].max;
+			break;
 		case KEY_UP:
 			if (focusbuttons) {
 				sel = 0;
@@ -190,6 +197,7 @@ bsddialog_timebox(struct bsddialog_conf *conf, const char* text, int rows,
 				    c[sel].value - 1 : c[sel].max;
 			}
 			break;
+		case '+':
 		case KEY_DOWN:
 			if (focusbuttons)
 				break;
@@ -202,11 +210,12 @@ bsddialog_timebox(struct bsddialog_conf *conf, const char* text, int rows,
 				break;
 			if (f1help_dialog(conf) != 0)
 				return (BSDDIALOG_ERROR);
-			if (timebox_redraw(&d, c) != 0)
+			if (timebox_draw(&d, true, c) != 0)
 				return (BSDDIALOG_ERROR);
 			break;
+		case KEY_CTRL('l'):
 		case KEY_RESIZE:
-			if (timebox_redraw(&d, c) != 0)
+			if (timebox_draw(&d, true, c) != 0)
 				return (BSDDIALOG_ERROR);
 			break;
 		default:

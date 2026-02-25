@@ -231,11 +231,6 @@ et_attach(device_t dev)
 	callout_init_mtx(&sc->sc_tick, &sc->sc_mtx, 0);
 
 	ifp = sc->ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		device_printf(dev, "can not if_alloc()\n");
-		error = ENOSPC;
-		goto fail;
-	}
 
 	/*
 	 * Initialize tunables
@@ -375,8 +370,6 @@ et_detach(device_t dev)
 		callout_drain(&sc->sc_tick);
 	}
 
-	if (sc->sc_miibus != NULL)
-		device_delete_child(dev, sc->sc_miibus);
 	bus_generic_detach(dev);
 
 	if (sc->sc_irq_handle != NULL)

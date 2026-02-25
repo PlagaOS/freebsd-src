@@ -29,7 +29,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_rss.h"
@@ -74,39 +73,33 @@
 #include <netinet/tcpip.h>
 
 int    tcp_persmin;
-SYSCTL_PROC(_net_inet_tcp, OID_AUTO, persmin,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, persmin, CTLTYPE_INT | CTLFLAG_RW,
     &tcp_persmin, 0, sysctl_msec_to_ticks, "I",
     "minimum persistence interval");
 
 int    tcp_persmax;
-SYSCTL_PROC(_net_inet_tcp, OID_AUTO, persmax,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, persmax, CTLTYPE_INT | CTLFLAG_RW,
     &tcp_persmax, 0, sysctl_msec_to_ticks, "I",
     "maximum persistence interval");
 
 int	tcp_keepinit;
-SYSCTL_PROC(_net_inet_tcp, TCPCTL_KEEPINIT, keepinit,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+SYSCTL_PROC(_net_inet_tcp, TCPCTL_KEEPINIT, keepinit, CTLTYPE_INT | CTLFLAG_RW,
     &tcp_keepinit, 0, sysctl_msec_to_ticks, "I",
     "time to establish connection");
 
 int	tcp_keepidle;
-SYSCTL_PROC(_net_inet_tcp, TCPCTL_KEEPIDLE, keepidle,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+SYSCTL_PROC(_net_inet_tcp, TCPCTL_KEEPIDLE, keepidle, CTLTYPE_INT | CTLFLAG_RW,
     &tcp_keepidle, 0, sysctl_msec_to_ticks, "I",
     "time before keepalive probes begin");
 
 int	tcp_keepintvl;
 SYSCTL_PROC(_net_inet_tcp, TCPCTL_KEEPINTVL, keepintvl,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
-    &tcp_keepintvl, 0, sysctl_msec_to_ticks, "I",
+    CTLTYPE_INT | CTLFLAG_RW, &tcp_keepintvl, 0, sysctl_msec_to_ticks, "I",
     "time between keepalive probes");
 
 int	tcp_delacktime;
 SYSCTL_PROC(_net_inet_tcp, TCPCTL_DELACKTIME, delacktime,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
-    &tcp_delacktime, 0, sysctl_msec_to_ticks, "I",
+    CTLTYPE_INT | CTLFLAG_RW, &tcp_delacktime, 0, sysctl_msec_to_ticks, "I",
     "Time before a delayed ACK is sent");
 
 VNET_DEFINE(int, tcp_msl);
@@ -115,21 +108,29 @@ SYSCTL_PROC(_net_inet_tcp, OID_AUTO, msl,
     &VNET_NAME(tcp_msl), 0, sysctl_msec_to_ticks, "I",
     "Maximum segment lifetime");
 
+VNET_DEFINE(int, tcp_msl_local);
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, msl_local,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_VNET,
+    &VNET_NAME(tcp_msl_local), 0, sysctl_msec_to_ticks, "I",
+    "Maximum segment lifetime for local communication");
+
 int	tcp_rexmit_initial;
-SYSCTL_PROC(_net_inet_tcp, OID_AUTO, rexmit_initial,
-   CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, rexmit_initial, CTLTYPE_INT | CTLFLAG_RW,
     &tcp_rexmit_initial, 0, sysctl_msec_to_ticks, "I",
     "Initial Retransmission Timeout");
 
 int	tcp_rexmit_min;
-SYSCTL_PROC(_net_inet_tcp, OID_AUTO, rexmit_min,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, rexmit_min, CTLTYPE_INT | CTLFLAG_RW,
     &tcp_rexmit_min, 0, sysctl_msec_to_ticks, "I",
     "Minimum Retransmission Timeout");
 
+int	tcp_rexmit_max;
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, rexmit_max, CTLTYPE_INT | CTLFLAG_RW,
+    &tcp_rexmit_max, 0, sysctl_msec_to_ticks, "I",
+    "Maximum Retransmission Timeout");
+
 int	tcp_rexmit_slop;
-SYSCTL_PROC(_net_inet_tcp, OID_AUTO, rexmit_slop,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, rexmit_slop, CTLTYPE_INT | CTLFLAG_RW,
     &tcp_rexmit_slop, 0, sysctl_msec_to_ticks, "I",
     "Retransmission Timer Slop");
 
@@ -144,8 +145,7 @@ SYSCTL_INT(_net_inet_tcp, OID_AUTO, fast_finwait2_recycle, CTLFLAG_RW,
     "Recycle closed FIN_WAIT_2 connections faster");
 
 int    tcp_finwait2_timeout;
-SYSCTL_PROC(_net_inet_tcp, OID_AUTO, finwait2_timeout,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, finwait2_timeout, CTLTYPE_INT | CTLFLAG_RW,
     &tcp_finwait2_timeout, 0, sysctl_msec_to_ticks, "I",
     "FIN-WAIT2 timeout");
 
@@ -162,8 +162,7 @@ SYSCTL_INT(_net_inet_tcp, OID_AUTO, rexmit_drop_options, CTLFLAG_RW,
     "Drop TCP options from 3rd and later retransmitted SYN");
 
 int	tcp_maxunacktime = TCPTV_MAXUNACKTIME;
-SYSCTL_PROC(_net_inet_tcp, OID_AUTO, maxunacktime,
-    CTLTYPE_INT|CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+SYSCTL_PROC(_net_inet_tcp, OID_AUTO, maxunacktime, CTLTYPE_INT | CTLFLAG_RW,
     &tcp_maxunacktime, 0, sysctl_msec_to_ticks, "I",
     "Maximum time (in ms) that a session can linger without making progress");
 
@@ -513,9 +512,12 @@ tcp_timer_persist(struct tcpcb *tp)
 	if (progdrop || (tp->t_rxtshift >= V_tcp_retries &&
 	    (ticks - tp->t_rcvtime >= tcp_maxpersistidle ||
 	     ticks - tp->t_rcvtime >= TCP_REXMTVAL(tp) * tcp_totbackoff))) {
-		if (!progdrop)
+		if (progdrop) {
+			tcp_log_end_status(tp, TCP_EI_STATUS_PROGRESS);
+		} else {
 			TCPSTAT_INC(tcps_persistdrop);
-		tcp_log_end_status(tp, TCP_EI_STATUS_PERSIST_MAX);
+			tcp_log_end_status(tp, TCP_EI_STATUS_PERSIST_MAX);
+		}
 		goto dropit;
 	}
 	/*
@@ -629,8 +631,7 @@ tcp_timer_rexmt(struct tcpcb *tp)
 		rexmt = tcp_rexmit_initial * tcp_backoff[tp->t_rxtshift];
 	else
 		rexmt = TCP_REXMTVAL(tp) * tcp_backoff[tp->t_rxtshift];
-	TCPT_RANGESET(tp->t_rxtcur, rexmt,
-		      tp->t_rttmin, TCPTV_REXMTMAX);
+	TCPT_RANGESET(tp->t_rxtcur, rexmt, tp->t_rttmin, tcp_rexmit_max);
 
 	/*
 	 * We enter the path for PLMTUD if connection is established or, if
@@ -756,6 +757,16 @@ tcp_timer_rexmt(struct tcpcb *tp)
 				tp->t_flags2 |= TF2_PLPMTU_PMTUD;
 				tp->t_flags2 &= ~TF2_PLPMTU_BLACKHOLE;
 				tp->t_maxseg = tp->t_pmtud_saved_maxseg;
+				if (tp->t_maxseg < V_tcp_mssdflt) {
+					/*
+					 * The MSS is so small we should not
+					 * process incoming SACK's since we are
+					 * subject to attack in such a case.
+					 */
+					tp->t_flags2 |= TF2_PROC_SACK_PROHIBIT;
+				} else {
+					tp->t_flags2 &= ~TF2_PROC_SACK_PROHIBIT;
+				}
 				TCPSTAT_INC(tcps_pmtud_blackhole_failed);
 				/*
 				 * Reset the slow-start flight size as it
@@ -800,7 +811,9 @@ tcp_timer_rexmt(struct tcpcb *tp)
 	 */
 	tp->t_rtttime = 0;
 
-	cc_cong_signal(tp, NULL, CC_RTO);
+	/* Do not overwrite the snd_cwnd on SYN retransmissions. */
+	if (tp->t_state != TCPS_SYN_SENT)
+		cc_cong_signal(tp, NULL, CC_RTO);
 	NET_EPOCH_ENTER(et);
 	rv = tcp_output_locked(tp);
 	NET_EPOCH_EXIT(et);
@@ -864,12 +877,8 @@ tcp_timer_enter(void *xtp)
 	struct inpcb *inp = tptoinpcb(tp);
 	sbintime_t precision;
 	tt_which which;
-	bool tp_valid;
 
 	INP_WLOCK_ASSERT(inp);
-	MPASS((curthread->td_pflags & TDP_INTCPCALLOUT) == 0);
-
-	curthread->td_pflags |= TDP_INTCPCALLOUT;
 
 	which = tcp_timer_next(tp, NULL);
 	MPASS(which < TT_N);
@@ -877,8 +886,7 @@ tcp_timer_enter(void *xtp)
 	tp->t_precisions[which] = 0;
 
 	tcp_bblog_timer(tp, which, TT_PROCESSING, 0);
-	tp_valid = tcp_timersw[which](tp);
-	if (tp_valid) {
+	if (tcp_timersw[which](tp)) {
 		tcp_bblog_timer(tp, which, TT_PROCESSED, 0);
 		if ((which = tcp_timer_next(tp, &precision)) != TT_N) {
 			MPASS(tp->t_state > TCPS_CLOSED);
@@ -888,8 +896,6 @@ tcp_timer_enter(void *xtp)
 		}
 		INP_WUNLOCK(inp);
 	}
-
-	curthread->td_pflags &= ~TDP_INTCPCALLOUT;
 }
 
 /*
@@ -939,35 +945,26 @@ tcp_timer_active(struct tcpcb *tp, tt_which which)
 
 /*
  * Stop all timers associated with tcpcb.
- *
  * Called when tcpcb moves to TCPS_CLOSED.
- *
- * XXXGL: unfortunately our callout(9) is not able to fully stop a locked
- * callout even when only two threads are involved: the callout itself and the
- * thread that does callout_stop().  See where softclock_call_cc() swaps the
- * callwheel lock to callout lock and then checks cc_exec_cancel().  This is
- * the race window.  If it happens, the tcp_timer_enter() won't be executed,
- * however pcb lock will be locked and released, hence we can't free memory.
- * Until callout(9) is improved, just keep retrying.  In my profiling I've seen
- * such event happening less than 1 time per hour with 20-30 Gbit/s of traffic.
  */
 void
 tcp_timer_stop(struct tcpcb *tp)
 {
-	struct inpcb *inp = tptoinpcb(tp);
 
-	INP_WLOCK_ASSERT(inp);
+	INP_WLOCK_ASSERT(tptoinpcb(tp));
 
-	if (curthread->td_pflags & TDP_INTCPCALLOUT) {
-		int stopped __diagused;
-
-		stopped = callout_stop(&tp->t_callout);
-		MPASS(stopped == 0);
-		for (tt_which i = 0; i < TT_N; i++)
-			tp->t_timers[i] = SBT_MAX;
-	} else while(__predict_false(callout_stop(&tp->t_callout) == 0)) {
-		INP_WUNLOCK(inp);
-		kern_yield(PRI_UNCHANGED);
-		INP_WLOCK(inp);
-	}
+	/*
+	 * We don't check return value from callout_stop().  There are two
+	 * reasons why it can return 0.  First, a legitimate one: we could have
+	 * been called from the callout itself.  Second, callout(9) has a bug.
+	 * It can race internally in softclock_call_cc(), when callout has
+	 * already completed, but cc_exec_curr still points at the callout.
+	 */
+	(void )callout_stop(&tp->t_callout);
+	/*
+	 * In case of being called from callout itself, we must make sure that
+	 * we don't reschedule.
+	 */
+	for (tt_which i = 0; i < TT_N; i++)
+		tp->t_timers[i] = SBT_MAX;
 }

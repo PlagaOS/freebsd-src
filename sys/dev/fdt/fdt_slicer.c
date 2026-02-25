@@ -45,7 +45,7 @@
 
 static int fill_slices(device_t dev, const char *provider,
     struct flash_slice *slices, int *slices_num);
-static void fdt_slicer_init(void);
+static void fdt_slicer_init(void *);
 
 static int
 fill_slices_from_node(phandle_t node, struct flash_slice *slices, int *count)
@@ -138,7 +138,7 @@ fill_slices(device_t dev, const char *provider __unused,
 }
 
 static void
-fdt_slicer_init(void)
+fdt_slicer_init(void *dummy __unused)
 {
 
 	flash_register_slicer(fill_slices, FLASH_SLICES_TYPE_NAND, false);
@@ -147,7 +147,7 @@ fdt_slicer_init(void)
 }
 
 static void
-fdt_slicer_cleanup(void)
+fdt_slicer_cleanup(void *dummy __unused)
 {
 
 	flash_register_slicer(NULL, FLASH_SLICES_TYPE_NAND, true);
@@ -156,12 +156,12 @@ fdt_slicer_cleanup(void)
 }
 
 /*
- * Must be initialized after GEOM classes (SI_SUB_DRIVERS/SI_ORDER_SECOND),
+ * Must be initialized after GEOM classes (SI_SUB_DRIVERS/SI_ORDER_THIRD),
  * i. e. after g_init() is called, due to the use of the GEOM topology_lock
  * in flash_register_slicer().  However, must be before SI_SUB_CONFIGURE.
  */
-SYSINIT(fdt_slicer, SI_SUB_DRIVERS, SI_ORDER_THIRD, fdt_slicer_init, NULL);
-SYSUNINIT(fdt_slicer, SI_SUB_DRIVERS, SI_ORDER_THIRD, fdt_slicer_cleanup, NULL);
+SYSINIT(fdt_slicer, SI_SUB_DRIVERS, SI_ORDER_FOURTH, fdt_slicer_init, NULL);
+SYSUNINIT(fdt_slicer, SI_SUB_DRIVERS, SI_ORDER_FOURTH, fdt_slicer_cleanup, NULL);
 
 static int
 mod_handler(module_t mod, int type, void *data)
@@ -178,6 +178,6 @@ static moduledata_t fdt_slicer_mod = {
 	"fdt_slicer", mod_handler, NULL
 };
 
-DECLARE_MODULE(fdt_slicer, fdt_slicer_mod, SI_SUB_DRIVERS, SI_ORDER_THIRD);
-MODULE_DEPEND(fdt_slicer, g_flashmap, 0, 0, 0);
+DECLARE_MODULE(fdt_slicer, fdt_slicer_mod, SI_SUB_DRIVERS, SI_ORDER_FOURTH);
+MODULE_DEPEND(fdt_slicer, geom_flashmap, 0, 0, 0);
 MODULE_VERSION(fdt_slicer, 1);

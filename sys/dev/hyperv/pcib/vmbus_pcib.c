@@ -25,7 +25,6 @@
  */
 
 #include <sys/cdefs.h>
-#ifdef NEW_PCIB
 #include "opt_acpi.h"
 
 #include <sys/param.h>
@@ -1565,14 +1564,14 @@ vmbus_pcib_attach(device_t dev)
 
 	vmbus_pcib_prepopulate_bars(hbus);
 
-	hbus->pci_bus = device_add_child(dev, "pci", -1);
+	hbus->pci_bus = device_add_child(dev, "pci", DEVICE_UNIT_ANY);
 	if (!hbus->pci_bus) {
 		device_printf(dev, "failed to create pci bus\n");
 		ret = ENXIO;
 		goto vmbus_close;
 	}
 
-	bus_generic_attach(dev);
+	bus_attach_children(dev);
 
 	hbus->state = hv_pcibus_installed;
 
@@ -1664,7 +1663,7 @@ vmbus_pcib_write_ivar(device_t dev, device_t child, int which, uintptr_t val)
 }
 
 static struct resource *
-vmbus_pcib_alloc_resource(device_t dev, device_t child, int type, int *rid,
+vmbus_pcib_alloc_resource(device_t dev, device_t child, int type, int rid,
 	rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	unsigned int bar_no;
@@ -1688,7 +1687,7 @@ vmbus_pcib_alloc_resource(device_t dev, device_t child, int type, int *rid,
 		if (!hpdev)
 			return (NULL);
 
-		bar_no = PCI_RID2BAR(*rid);
+		bar_no = PCI_RID2BAR(rid);
 		if (bar_no >= MAX_NUM_BARS)
 			return (NULL);
 
@@ -2042,5 +2041,3 @@ DEFINE_CLASS_0(pcib, vmbus_pcib_driver, vmbus_pcib_methods,
 DRIVER_MODULE(vmbus_pcib, vmbus, vmbus_pcib_driver, 0, 0);
 MODULE_DEPEND(vmbus_pcib, vmbus, 1, 1, 1);
 MODULE_DEPEND(vmbus_pcib, pci, 1, 1, 1);
-
-#endif /* NEW_PCIB */

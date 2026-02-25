@@ -1,15 +1,24 @@
+.include <kmod.opts.mk>
+
+.PATH: ${COMMONDIR}
 
 KMOD=	mt76_core
 
 # Basic stuff.
 SRCS=	mac80211.c mmio.c util.c dma.c  eeprom.c tx.c agg-rx.c mcu.c
+SRCS+=	channel.c scan.c wed.c
 #SRCS+=	trace.c
 
 # Bus stuff.
+# PCI parts; PCI needs to be compiled into the kernel and cannot be loaded.
+.if defined(WITH_PCI) && ${WITH_PCI} > 0 && ${KERN_OPTS:MDEV_PCI}
 SRCS+=	pci.c
+.endif
+
 .if defined(WITH_USB) && ${WITH_USB} > 0
 SRCS+=	usb.c	# usb_trace.c
 .endif
+
 #SRCS+=	sdio.c sdio_txrx.c
 
 # Connac-Lib stuff.
@@ -37,5 +46,7 @@ SRCS+=	debugfs.c
 
 CFLAGS+=	-DKBUILD_MODNAME='"mt76_core"'
 CFLAGS+=	-DCONFIG_MAC80211_DEBUGFS=${WITH_DEBUGFS}
+
+EXPORT_SYMS=	YES
 
 .include <bsd.kmod.mk>

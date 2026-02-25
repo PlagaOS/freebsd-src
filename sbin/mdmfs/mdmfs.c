@@ -343,8 +343,7 @@ main(int argc, char **argv)
 	
 		if (!have_mdtype)
 			mdtype = MD_SWAP;
-		if (softdep)
-			argappend(&newfs_arg, "-U");
+		argappend(&newfs_arg, softdep ? "-U" : "-u");
 		if (mdtype != MD_VNODE && !newfs)
 			errx(1, "-P requires a vnode-backed disk");
 	

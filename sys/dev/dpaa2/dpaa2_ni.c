@@ -138,8 +138,9 @@ MALLOC_DEFINE(M_DPAA2_TXB, "dpaa2_txb", "DPAA2 DMA-mapped buffer (Tx)");
 #define DPNI_IRQ_LINK_CHANGED	1 /* Link state changed */
 #define DPNI_IRQ_EP_CHANGED	2 /* DPAA2 endpoint dis/connected */
 
-/* Default maximum frame length. */
-#define DPAA2_ETH_MFL		(ETHER_MAX_LEN - ETHER_CRC_LEN)
+/* Default maximum RX frame length w/o CRC. */
+#define	DPAA2_ETH_MFL		(ETHER_MAX_LEN_JUMBO + ETHER_VLAN_ENCAP_LEN - \
+    ETHER_CRC_LEN)
 
 /* Minimally supported version of the DPNI API. */
 #define DPNI_VER_MAJOR		7
@@ -218,6 +219,9 @@ MALLOC_DEFINE(M_DPAA2_TXB, "dpaa2_txb", "DPAA2 DMA-mapped buffer (Tx)");
 #define	RXH_L4_B_0_1		(1 << 6) /* src port in case of TCP/UDP/SCTP */
 #define	RXH_L4_B_2_3		(1 << 7) /* dst port in case of TCP/UDP/SCTP */
 #define	RXH_DISCARD		(1 << 31)
+
+/* Transmit checksum offload */
+#define DPAA2_CSUM_TX_OFFLOAD	(CSUM_IP | CSUM_DELAY_DATA | CSUM_DELAY_DATA_IPV6)
 
 /* Default Rx hash options, set during attaching. */
 #define DPAA2_RXH_DEFAULT	(RXH_IP_SRC | RXH_IP_DST | RXH_L4_B_0_1 | RXH_L4_B_2_3)
@@ -548,11 +552,6 @@ dpaa2_ni_attach(device_t dev)
 
 	/* Allocate network interface */
 	ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		device_printf(dev, "%s: failed to allocate network interface\n",
-		    __func__);
-		goto err_exit;
-	}
 	sc->ifp = ifp;
 	if_initname(ifp, DPAA2_NI_IFNAME, device_get_unit(sc->dev));
 
@@ -563,7 +562,9 @@ dpaa2_ni_attach(device_t dev)
 	if_settransmitfn(ifp, dpaa2_ni_transmit);
 	if_setqflushfn(ifp, dpaa2_ni_qflush);
 
-	if_setcapabilities(ifp, IFCAP_VLAN_MTU | IFCAP_HWCSUM | IFCAP_JUMBO_MTU);
+	if_sethwassist(sc->ifp, DPAA2_CSUM_TX_OFFLOAD);
+	if_setcapabilities(ifp, IFCAP_VLAN_MTU | IFCAP_HWCSUM |
+	    IFCAP_HWCSUM_IPV6 | IFCAP_JUMBO_MTU);
 	if_setcapenable(ifp, if_getcapabilities(ifp));
 
 	DPAA2_CMD_INIT(&cmd);
@@ -593,11 +594,6 @@ dpaa2_ni_attach(device_t dev)
 	/* Create a taskqueue thread to release new buffers to the pool. */
 	sc->bp_taskq = taskqueue_create(tq_name, M_WAITOK,
 	    taskqueue_thread_enqueue, &sc->bp_taskq);
-	if (sc->bp_taskq == NULL) {
-		device_printf(dev, "%s: failed to allocate task queue: %s\n",
-		    __func__, tq_name);
-		goto close_ni;
-	}
 	taskqueue_start_threads(&sc->bp_taskq, 1, PI_NET, "%s", tq_name);
 
 	/* sc->cleanup_taskq = taskqueue_create("dpaa2_ch cleanup", M_WAITOK, */
@@ -634,6 +630,12 @@ dpaa2_ni_attach(device_t dev)
 	if (error) {
 		device_printf(dev, "%s: failed to setup sysctls: error=%d\n",
 		    __func__, error);
+		goto close_ni;
+	}
+	error = dpaa2_ni_setup_if_caps(sc);
+	if (error) {
+		device_printf(dev, "%s: failed to setup interface capabilities: "
+		    "error=%d\n", __func__, error);
 		goto close_ni;
 	}
 
@@ -1344,21 +1346,11 @@ dpaa2_ni_setup_tx_flow(device_t dev, struct dpaa2_ni_fq *fq)
 		for (uint64_t j = 0; j < DPAA2_NI_BUFS_PER_TX; j++) {
 			buf = malloc(sizeof(struct dpaa2_buf), M_DPAA2_TXB,
 			    M_WAITOK);
-			if (buf == NULL) {
-				device_printf(dev, "%s: malloc() failed (buf)\n",
-				    __func__);
-				return (ENOMEM);
-			}
 			/* Keep DMA tag and Tx ring linked to the buffer */
 			DPAA2_BUF_INIT_TAGOPT(buf, ch->tx_dmat, tx);
 
 			buf->sgt = malloc(sizeof(struct dpaa2_buf), M_DPAA2_TXB,
 			    M_WAITOK);
-			if (buf->sgt == NULL) {
-				device_printf(dev, "%s: malloc() failed (sgt)\n",
-				    __func__);
-				return (ENOMEM);
-			}
 			/* Link SGT to DMA tag and back to its Tx buffer */
 			DPAA2_BUF_INIT_TAGOPT(buf->sgt, ch->sgt_dmat, buf);
 
@@ -1588,8 +1580,7 @@ dpaa2_ni_setup_msi(struct dpaa2_ni_softc *sc)
 static int
 dpaa2_ni_setup_if_caps(struct dpaa2_ni_softc *sc)
 {
-	const bool en_rxcsum = if_getcapenable(sc->ifp) & IFCAP_RXCSUM;
-	const bool en_txcsum = if_getcapenable(sc->ifp) & IFCAP_TXCSUM;
+	bool en_rxcsum, en_txcsum;
 	device_t pdev = device_get_parent(sc->dev);
 	device_t dev = sc->dev;
 	device_t child = dev;
@@ -1600,6 +1591,17 @@ dpaa2_ni_setup_if_caps(struct dpaa2_ni_softc *sc)
 	int error;
 
 	DPAA2_CMD_INIT(&cmd);
+
+	/*
+	 * XXX-DSL: DPAA2 allows to validate L3/L4 checksums on reception and/or
+	 *          generate L3/L4 checksums on transmission without
+	 *          differentiating between IPv4/v6, i.e. enable for both
+	 *          protocols if requested.
+	 */
+	en_rxcsum = if_getcapenable(sc->ifp) &
+	    (IFCAP_RXCSUM | IFCAP_RXCSUM_IPV6);
+	en_txcsum = if_getcapenable(sc->ifp) &
+	    (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6);
 
 	error = DPAA2_CMD_RC_OPEN(dev, child, &cmd, rcinfo->id, &rc_token);
 	if (error) {
@@ -1644,6 +1646,13 @@ dpaa2_ni_setup_if_caps(struct dpaa2_ni_softc *sc)
 		device_printf(dev, "%s: failed to %s L4 checksum generation\n",
 		    __func__, en_txcsum ? "enable" : "disable");
 		goto close_ni;
+	}
+
+	if (bootverbose) {
+		device_printf(dev, "%s: L3/L4 checksum validation %s\n",
+		    __func__, en_rxcsum ? "enabled" : "disabled");
+		device_printf(dev, "%s: L3/L4 checksum generation %s\n",
+		    __func__, en_txcsum ? "enabled" : "disabled");
 	}
 
 	(void)DPAA2_CMD_NI_CLOSE(dev, child, &cmd);
@@ -2523,6 +2532,7 @@ dpaa2_ni_transmit(if_t ifp, struct mbuf *m)
 	ch = sc->channels[chidx];
 	error = buf_ring_enqueue(ch->xmit_br, m);
 	if (__predict_false(error != 0)) {
+		if_inc_counter(ifp, IFCOUNTER_OQDROPS, 1);
 		m_freem(m);
 	} else {
 		taskqueue_enqueue(ch->cleanup_tq, &ch->cleanup_task);
@@ -2581,8 +2591,10 @@ dpaa2_ni_ioctl(if_t ifp, u_long c, caddr_t data)
 		DPNI_UNLOCK(sc);
 
 		/* Update maximum frame length. */
-		error = DPAA2_CMD_NI_SET_MFL(dev, child, &cmd,
-		    mtu + ETHER_HDR_LEN + ETHER_VLAN_ENCAP_LEN);
+		mtu += ETHER_HDR_LEN;
+		if (if_getcapenable(ifp) & IFCAP_VLAN_MTU)
+			mtu += ETHER_VLAN_ENCAP_LEN;
+		error = DPAA2_CMD_NI_SET_MFL(dev, child, &cmd, mtu);
 		if (error) {
 			device_printf(dev, "%s: failed to update maximum frame "
 			    "length: error=%d\n", __func__, error);
@@ -2591,13 +2603,13 @@ dpaa2_ni_ioctl(if_t ifp, u_long c, caddr_t data)
 		break;
 	case SIOCSIFCAP:
 		changed = if_getcapenable(ifp) ^ ifr->ifr_reqcap;
-		if (changed & IFCAP_HWCSUM) {
-			if ((ifr->ifr_reqcap & changed) & IFCAP_HWCSUM) {
-				if_setcapenablebit(ifp, IFCAP_HWCSUM, 0);
-			} else {
-				if_setcapenablebit(ifp, 0, IFCAP_HWCSUM);
-			}
+		if ((changed & (IFCAP_RXCSUM | IFCAP_RXCSUM_IPV6)) != 0)
+			if_togglecapenable(ifp, IFCAP_RXCSUM | IFCAP_RXCSUM_IPV6);
+		if ((changed & (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6)) != 0) {
+			if_togglecapenable(ifp, IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6);
+			if_togglehwassist(ifp, DPAA2_CSUM_TX_OFFLOAD);
 		}
+
 		rc = dpaa2_ni_setup_if_caps(sc);
 		if (rc) {
 			printf("%s: failed to update iface capabilities: "
@@ -2932,6 +2944,8 @@ dpaa2_ni_tx(struct dpaa2_ni_softc *sc, struct dpaa2_channel *ch,
 	bus_dma_segment_t segs[DPAA2_TX_SEGLIMIT];
 	int rc, nsegs;
 	int error;
+	int len;
+	bool mcast;
 
 	mtx_assert(&tx->lock, MA_NOTOWNED);
 	mtx_lock(&tx->lock);
@@ -2946,12 +2960,16 @@ dpaa2_ni_tx(struct dpaa2_ni_softc *sc, struct dpaa2_channel *ch,
 		buf->m = m;
 		sgt = buf->sgt;
 	}
+	len = m->m_pkthdr.len;
+	mcast = (m->m_flags & M_MCAST) != 0;
 
 #if defined(INVARIANTS)
 	struct dpaa2_ni_tx_ring *btx = (struct dpaa2_ni_tx_ring *)buf->opt;
 	KASSERT(buf->opt == tx, ("%s: unexpected Tx ring", __func__));
 	KASSERT(btx->fq->chan == ch, ("%s: unexpected channel", __func__));
 #endif /* INVARIANTS */
+
+	BPF_MTAP(sc->ifp, m);
 
 	error = bus_dmamap_load_mbuf_sg(buf->dmat, buf->dmap, m, segs, &nsegs,
 	    BUS_DMA_NOWAIT);
@@ -2961,6 +2979,7 @@ dpaa2_ni_tx(struct dpaa2_ni_softc *sc, struct dpaa2_channel *ch,
 		if (md == NULL) {
 			device_printf(dev, "%s: m_collapse() failed\n", __func__);
 			fq->chan->tx_dropped++;
+			if_inc_counter(sc->ifp, IFCOUNTER_OERRORS, 1);
 			goto err;
 		}
 
@@ -2971,6 +2990,7 @@ dpaa2_ni_tx(struct dpaa2_ni_softc *sc, struct dpaa2_channel *ch,
 			device_printf(dev, "%s: bus_dmamap_load_mbuf_sg() "
 			    "failed: error=%d\n", __func__, error);
 			fq->chan->tx_dropped++;
+			if_inc_counter(sc->ifp, IFCOUNTER_OERRORS, 1);
 			goto err;
 		}
 	}
@@ -2980,6 +3000,7 @@ dpaa2_ni_tx(struct dpaa2_ni_softc *sc, struct dpaa2_channel *ch,
 		device_printf(dev, "%s: failed to build frame descriptor: "
 		    "error=%d\n", __func__, error);
 		fq->chan->tx_dropped++;
+		if_inc_counter(sc->ifp, IFCOUNTER_OERRORS, 1);
 		goto err_unload;
 	}
 
@@ -2997,8 +3018,13 @@ dpaa2_ni_tx(struct dpaa2_ni_softc *sc, struct dpaa2_channel *ch,
 
 	if (rc != 1) {
 		fq->chan->tx_dropped++;
+		if_inc_counter(sc->ifp, IFCOUNTER_OERRORS, 1);
 		goto err_unload;
 	} else {
+		if (mcast)
+			if_inc_counter(sc->ifp, IFCOUNTER_OMCASTS, 1);
+		if_inc_counter(sc->ifp, IFCOUNTER_OPACKETS, 1);
+		if_inc_counter(sc->ifp, IFCOUNTER_OBYTES, len);
 		fq->chan->tx_frames++;
 	}
 	return;
@@ -3177,6 +3203,7 @@ dpaa2_ni_rx(struct dpaa2_channel *ch, struct dpaa2_ni_fq *fq, struct dpaa2_fd *f
 	m->m_pkthdr.rcvif = sc->ifp;
 	m->m_pkthdr.flowid = fq->fqid;
 	M_HASHTYPE_SET(m, M_HASHTYPE_OPAQUE);
+	if_inc_counter(sc->ifp, IFCOUNTER_IPACKETS, 1);
 
 	if (ctx->head == NULL) {
 		KASSERT(ctx->tail == NULL, ("%s: tail already given?", __func__));

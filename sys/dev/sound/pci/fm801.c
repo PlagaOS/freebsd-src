@@ -440,7 +440,7 @@ fm801ch_trigger(kobj_t obj, void *data, int go)
 {
 	struct fm801_chinfo *ch = data;
 	struct fm801_info *fm801 = ch->parent;
-	u_int32_t baseaddr = sndbuf_getbufaddr(ch->buffer);
+	u_int32_t baseaddr = ch->buffer->buf_addr;
 	u_int32_t k1;
 
 	DPRINT("fm801ch_trigger go %d , ", go);
@@ -642,13 +642,14 @@ fm801_pci_attach(device_t dev)
 		device_get_nameunit(device_get_parent(dev)));
 
 #define FM801_MAXPLAYCH	1
-	if (pcm_register(dev, fm801, FM801_MAXPLAYCH, 1)) goto oops;
+	pcm_init(dev, fm801);
 	pcm_addchan(dev, PCMDIR_PLAY, &fm801ch_class, fm801);
 	pcm_addchan(dev, PCMDIR_REC, &fm801ch_class, fm801);
-	pcm_setstatus(dev, status);
+	if (pcm_register(dev, status))
+		goto oops;
 
-	fm801->radio = device_add_child(dev, "radio", -1);
-	bus_generic_attach(dev);
+	fm801->radio = device_add_child(dev, "radio", DEVICE_UNIT_ANY);
+	bus_attach_children(dev);
 
 	return 0;
 
@@ -675,12 +676,6 @@ fm801_pci_detach(device_t dev)
 	r = bus_generic_detach(dev);
 	if (r)
 		return r;
-	if (fm801->radio != NULL) {
-		r = device_delete_child(dev, fm801->radio);
-		if (r)
-			return r;
-		fm801->radio = NULL;
-	}
 
 	r = pcm_unregister(dev);
 	if (r)
@@ -713,7 +708,7 @@ fm801_pci_probe( device_t dev )
 }
 
 static struct resource *
-fm801_alloc_resource(device_t bus, device_t child, int type, int *rid,
+fm801_alloc_resource(device_t bus, device_t child, int type, int rid,
 		     rman_res_t start, rman_res_t end, rman_res_t count,
 		     u_int flags)
 {
@@ -721,7 +716,7 @@ fm801_alloc_resource(device_t bus, device_t child, int type, int *rid,
 
 	fm801 = pcm_getdevinfo(bus);
 
-	if (type == SYS_RES_IOPORT && *rid == PCIR_BAR(0))
+	if (type == SYS_RES_IOPORT && rid == PCIR_BAR(0))
 		return (fm801->reg);
 
 	return (NULL);

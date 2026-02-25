@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010-2011 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed at the Centre for Advanced Internet
  * Architectures, Swinburne University of Technology, Melbourne, Australia by
@@ -46,6 +45,8 @@
 #include <sys/socket.h>
 #include <sys/socketvar.h>
 
+#include <netinet/in.h>
+#include <netinet/in_pcb.h>
 #include <netinet/tcp_var.h>
 
 #include <vm/uma.h>

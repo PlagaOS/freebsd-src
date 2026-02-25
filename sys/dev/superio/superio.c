@@ -37,11 +37,11 @@
 #include <sys/proc.h>
 #include <sys/rman.h>
 #include <sys/sbuf.h>
+#include <sys/stdarg.h>
 #include <sys/time.h>
 
 #include <machine/bus.h>
 #include <machine/resource.h>
-#include <machine/stdarg.h>
 
 #include <isa/isavar.h>
 
@@ -615,12 +615,9 @@ superio_detect(device_t dev, bool claim, struct siosc *sc)
 	if (superio_table[i].descr != NULL) {
 		device_set_desc(dev, superio_table[i].descr);
 	} else if (sc->vendor == SUPERIO_VENDOR_ITE) {
-		char descr[64];
-
-		snprintf(descr, sizeof(descr),
+		device_set_descf(dev,
 		    "ITE IT%4x SuperIO (revision 0x%02x)",
 		    sc->devid, sc->revid);
-		device_set_desc_copy(dev, descr);
 	}
 	return (0);
 }
@@ -636,7 +633,7 @@ superio_identify(driver_t *driver, device_t parent)
 	 * Those could be created via isa hints or if this
 	 * driver is loaded, unloaded and then loaded again.
 	 */
-	if (device_find_child(parent, "superio", -1)) {
+	if (device_find_child(parent, "superio", DEVICE_UNIT_ANY)) {
 		if (bootverbose)
 			printf("superio: device(s) already created\n");
 		return;
@@ -688,7 +685,7 @@ superio_add_known_child(device_t dev, superio_dev_type_t type, uint8_t ldn)
 	struct superio_devinfo *dinfo;
 	device_t child;
 
-	child = BUS_ADD_CHILD(dev, 0, NULL, -1);
+	child = BUS_ADD_CHILD(dev, 0, NULL, DEVICE_UNIT_ANY);
 	if (child == NULL) {
 		device_printf(dev, "failed to add child for ldn %d, type %s\n",
 		    ldn, devtype_to_str(type));
@@ -720,8 +717,8 @@ superio_attach(device_t dev)
 		    sc->known_devices[i].ldn);
 	}
 
-	bus_generic_probe(dev);
-	bus_generic_attach(dev);
+	bus_identify_children(dev);
+	bus_attach_children(dev);
 
 	sc->chardev = make_dev(&superio_cdevsw, device_get_unit(dev),
 	    UID_ROOT, GID_WHEEL, 0600, "superio%d", device_get_unit(dev));
@@ -743,7 +740,6 @@ superio_detach(device_t dev)
 		return (error);
 	if (sc->chardev != NULL)
 		destroy_dev(sc->chardev);
-	device_delete_children(dev);
 	bus_release_resource(dev, SYS_RES_IOPORT, sc->io_rid, sc->io_res);
 	mtx_destroy(&sc->conf_lock);
 	return (0);
@@ -769,6 +765,18 @@ superio_add_child(device_t dev, u_int order, const char *name, int unit)
 	resource_list_init(&dinfo->resources);
 	device_set_ivars(child, dinfo);
 	return (child);
+}
+
+static void
+superio_child_deleted(device_t dev, device_t child)
+{
+	struct superio_devinfo *dinfo;
+
+	dinfo = device_get_ivars(child);
+	if (dinfo == NULL)
+		return;
+	resource_list_free(&dinfo->resources);
+	free(dinfo, M_DEVBUF);
 }
 
 static int
@@ -1081,6 +1089,7 @@ static device_method_t superio_methods[] = {
 	DEVMETHOD(device_resume,	bus_generic_resume),
 
 	DEVMETHOD(bus_add_child,	superio_add_child),
+	DEVMETHOD(bus_child_deleted,	superio_child_deleted),
 	DEVMETHOD(bus_child_detached,	superio_child_detached),
 	DEVMETHOD(bus_child_location,	superio_child_location),
 	DEVMETHOD(bus_child_pnpinfo,	superio_child_pnp),

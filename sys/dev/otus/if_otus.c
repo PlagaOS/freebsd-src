@@ -728,6 +728,12 @@ otus_attachhook(struct otus_softc *sc)
 	    IEEE80211_C_SWAMSDUTX |	/* Do software A-MSDU TX */
 	    IEEE80211_C_WPA;		/* WPA/RSN. */
 
+	/*
+	 * Although A-MPDU RX is fine, A-MPDU TX apparently has some
+	 * hardware bugs.  Looking at Linux carl9170, it has a work-around
+	 * that forces all frames into the AC_BE queue regardless of
+	 * the actual QoS queue.
+	 */
 	ic->ic_htcaps =
 	    IEEE80211_HTC_HT |
 #if 0
@@ -736,6 +742,8 @@ otus_attachhook(struct otus_softc *sc)
 	    IEEE80211_HTC_AMSDU |
 	    IEEE80211_HTCAP_MAXAMSDU_3839 |
 	    IEEE80211_HTCAP_SMPS_OFF;
+
+	ic->ic_flags_ext |= IEEE80211_FEXT_SEQNO_OFFLOAD;
 
 	otus_getradiocaps(ic, IEEE80211_CHAN_MAX, &ic->ic_nchans,
 	    ic->ic_channels);
@@ -1686,8 +1694,7 @@ otus_sub_rxeof(struct otus_softc *sc, uint8_t *buf, int len, struct mbufq *rxq)
 	 * with invalid frame control values here.  Just toss them
 	 * rather than letting net80211 get angry and log.
 	 */
-	if ((wh->i_fc[0] & IEEE80211_FC0_VERSION_MASK) !=
-	    IEEE80211_FC0_VERSION_0) {
+	if (!IEEE80211_IS_FC0_CHECK_VER(wh, IEEE80211_FC0_VERSION_0)) {
 		OTUS_DPRINTF(sc, OTUS_DEBUG_RXDONE,
 		    "%s: invalid 802.11 fc version (firmware bug?)\n",
 		        __func__);
@@ -2233,6 +2240,9 @@ otus_tx(struct otus_softc *sc, struct ieee80211_node *ni, struct mbuf *m,
 	int hasqos, xferlen, type, ismcast;
 
 	wh = mtod(m, struct ieee80211_frame *);
+
+	ieee80211_output_seqno_assign(ni, -1, m);
+
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
 		k = ieee80211_crypto_encap(ni, m);
 		if (k == NULL) {
@@ -2282,7 +2292,8 @@ otus_tx(struct otus_softc *sc, struct ieee80211_node *ni, struct mbuf *m,
 		rate = otus_rate_to_hw_rate(sc, tp->ucastrate);
 	else {
 		(void) ieee80211_ratectl_rate(ni, NULL, 0);
-		rate = otus_rate_to_hw_rate(sc, ni->ni_txrate);
+		rate = otus_rate_to_hw_rate(sc,
+		    ieee80211_node_get_txrate_dot11rate(ni));
 	}
 
 	phyctl = 0;
@@ -2347,9 +2358,11 @@ otus_tx(struct otus_softc *sc, struct ieee80211_node *ni, struct mbuf *m,
 	data->m = m;
 
 	OTUS_DPRINTF(sc, OTUS_DEBUG_XMIT,
-	    "%s: tx: m=%p; data=%p; len=%d mac=0x%04x phy=0x%08x rate=0x%02x, ni_txrate=%d\n",
+	    "%s: tx: m=%p; data=%p; len=%d mac=0x%04x phy=0x%08x "
+	    "rate=0x%02x, dot11rate=%d\n",
 	    __func__, m, data, le16toh(head->len), macctl, phyctl,
-	    (int) rate, (int) ni->ni_txrate);
+	    (int) rate,
+	    (int) ieee80211_node_get_txrate_dot11rate(ni));
 
 	/* Submit transfer */
 	STAILQ_INSERT_TAIL(&sc->sc_tx_pending[OTUS_BULK_TX], data, next);

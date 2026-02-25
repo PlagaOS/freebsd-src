@@ -34,12 +34,9 @@
 #include <unistd.h>
 #include "libc_private.h"
 
-__weak_reference(__sys_write, __write);
-
 #pragma weak write
 ssize_t
 write(int fd, const void *buf, size_t nbytes)
 {
-	return (((ssize_t (*)(int, const void *, size_t))
-	    *(__libc_interposing_slot(INTERPOS_write)))(fd, buf, nbytes));
+	return (INTERPOS_SYS(write, fd, buf, nbytes));
 }

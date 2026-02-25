@@ -1,5 +1,3 @@
-
-PACKAGE=	clibs
 SHLIBDIR?=	/lib
 
 .include <src.opts.mk>
@@ -8,8 +6,6 @@ SHLIBDIR?=	/lib
 
 LIB=		ncursesw
 SHLIB_MAJOR=	9
-
-NO_LINT=
 
 GENSRCS=	\
 	expanded.c \
@@ -160,12 +156,6 @@ SYMLINKS+=	libncursesw.so ${LIBDIR}/libcursesw.so
 # backward compat
 SYMLINKS+=	libncursesw.so ${LIBDIR}/libncurses.so
 SYMLINKS+=	libncursesw.so ${LIBDIR}/libcurses.so
-.endif
-.if ${MK_PROFILE} != "no"
-SYMLINKS+=	libncursesw_p.a ${LIBDIR}/libcursesw_p.a
-# backward compat
-SYMLINKS+=	libncursesw_p.a ${LIBDIR}/libncurses_p.a
-SYMLINKS+=	libncursesw_p.a ${LIBDIR}/libcurses_p.a
 .endif
 
 LIBADD+=	tinfow

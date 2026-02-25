@@ -286,7 +286,7 @@ cesa_alloc_tdesc(struct cesa_softc *sc)
 	CESA_GENERIC_ALLOC_LOCKED(sc, ctd, tdesc);
 
 	if (!ctd)
-		device_printf(sc->sc_dev, "TDMA descriptors pool exhaused. "
+		device_printf(sc->sc_dev, "TDMA descriptors pool exhausted. "
 		    "Consider increasing CESA_TDMA_DESCRIPTORS.\n");
 
 	return (ctd);
@@ -299,7 +299,7 @@ cesa_alloc_sdesc(struct cesa_softc *sc, struct cesa_request *cr)
 
 	CESA_GENERIC_ALLOC_LOCKED(sc, csd, sdesc);
 	if (!csd) {
-		device_printf(sc->sc_dev, "SA descriptors pool exhaused. "
+		device_printf(sc->sc_dev, "SA descriptors pool exhausted. "
 		    "Consider increasing CESA_SA_DESCRIPTORS.\n");
 		return (NULL);
 	}
@@ -1183,30 +1183,10 @@ cesa_attach_late(device_t dev)
 	soc_id(&d, &r);
 
 	switch (d) {
-	case MV_DEV_88F6281:
-	case MV_DEV_88F6282:
-		/* Check if CESA peripheral device has power turned on */
-		if (soc_power_ctrl_get(CPU_PM_CTRL_CRYPTO) ==
-		    CPU_PM_CTRL_CRYPTO) {
-			device_printf(dev, "not powered on\n");
-			return (ENXIO);
-		}
-		sc->sc_tperr = 0;
-		break;
 	case MV_DEV_88F6828:
 	case MV_DEV_88F6820:
 	case MV_DEV_88F6810:
 		sc->sc_tperr = 0;
-		break;
-	case MV_DEV_MV78100:
-	case MV_DEV_MV78100_Z0:
-		/* Check if CESA peripheral device has power turned on */
-		if (soc_power_ctrl_get(CPU_PM_CTRL_CRYPTO) !=
-		    CPU_PM_CTRL_CRYPTO) {
-			device_printf(dev, "not powered on\n");
-			return (ENXIO);
-		}
-		sc->sc_tperr = CESA_ICR_TPERR;
 		break;
 	default:
 		return (ENXIO);

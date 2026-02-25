@@ -34,7 +34,6 @@
 
 #include <dev/sound/pcm/sound.h>
 #include <dev/sound/pci/hdspe.h>
-#include <dev/sound/chip.h>
 
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcivar.h>
@@ -115,10 +114,8 @@ hdspe_port_first_row(uint32_t ports)
 	uint32_t ends;
 
 	/* Restrict ports to one set with contiguous slots. */
-	if (ports & HDSPE_CHAN_AIO_LINE)
-		ports = HDSPE_CHAN_AIO_LINE;	/* Gap in the AIO slots here. */
-	else if (ports & HDSPE_CHAN_AIO_ALL)
-		ports &= HDSPE_CHAN_AIO_ALL;	/* Rest of the AIO slots. */
+	if (ports & HDSPE_CHAN_AIO_ALL)
+		ports &= HDSPE_CHAN_AIO_ALL;	/* All AIO slots. */
 	else if (ports & HDSPE_CHAN_RAY_ALL)
 		ports &= HDSPE_CHAN_RAY_ALL;	/* All RayDAT slots. */
 
@@ -137,6 +134,8 @@ hdspe_channel_count(uint32_t ports, uint32_t adat_width)
 		/* AIO ports. */
 		if (ports & HDSPE_CHAN_AIO_LINE)
 			count += 2;
+		if (ports & HDSPE_CHAN_AIO_EXT)
+			count += 4;
 		if (ports & HDSPE_CHAN_AIO_PHONE)
 			count += 2;
 		if (ports & HDSPE_CHAN_AIO_AES)
@@ -190,6 +189,8 @@ hdspe_port_slot_offset(uint32_t port, unsigned int adat_width)
 	/* AIO ports */
 	case HDSPE_CHAN_AIO_LINE:
 		return (0);
+	case HDSPE_CHAN_AIO_EXT:
+		return (2);
 	case HDSPE_CHAN_AIO_PHONE:
 		return (6);
 	case HDSPE_CHAN_AIO_AES:
@@ -304,10 +305,10 @@ hdspemixer_init(struct snd_mixer *m)
 	if (hdspe_channel_rec_ports(scp->hc))
 		mask |= SOUND_MASK_RECLEV;
 
-	snd_mtxlock(sc->lock);
+	mtx_lock(&sc->lock);
 	pcm_setflags(scp->dev, pcm_getflags(scp->dev) | SD_F_SOFTPCMVOL);
 	mix_setdevs(m, mask);
-	snd_mtxunlock(sc->lock);
+	mtx_unlock(&sc->lock);
 
 	return (0);
 }
@@ -473,7 +474,7 @@ buffer_mux_port(uint32_t *dma, uint32_t *pcm, uint32_t subset, uint32_t ports,
 	channels = hdspe_channel_count(ports, pcm_width);
 
 	/* Only copy as much as supported by both hardware and pcm channel. */
-	slots = hdspe_port_slot_width(subset, MIN(adat_width, pcm_width));
+	slots = hdspe_port_slot_width(subset, min(adat_width, pcm_width));
 
 	/* Let the compiler inline and loop unroll common cases. */
 	if (slots == 2)
@@ -519,7 +520,7 @@ buffer_demux_port(uint32_t *dma, uint32_t *pcm, uint32_t subset, uint32_t ports,
 	channels = hdspe_channel_count(ports, pcm_width);
 
 	/* Only copy as much as supported by both hardware and pcm channel. */
-	slots = hdspe_port_slot_width(subset, MIN(adat_width, pcm_width));
+	slots = hdspe_port_slot_width(subset, min(adat_width, pcm_width));
 
 	/* Let the compiler inline and loop unroll common cases. */
 	if (slots == 2)
@@ -540,7 +541,8 @@ buffer_copy(struct sc_chinfo *ch)
 	struct sc_pcminfo *scp;
 	struct sc_info *sc;
 	uint32_t row, ports;
-	unsigned int pos;
+	uint32_t dma_pos;
+	unsigned int pos, length, offset;
 	unsigned int n;
 	unsigned int adat_width, pcm_width;
 
@@ -558,13 +560,35 @@ buffer_copy(struct sc_chinfo *ch)
 	else
 		pcm_width = 8;
 
-	if (ch->dir == PCMDIR_PLAY)
-		pos = sndbuf_getreadyptr(ch->buffer);
-	else
-		pos = sndbuf_getfreeptr(ch->buffer);
+	/* Derive buffer position and length to be copied. */
+	if (ch->dir == PCMDIR_PLAY) {
+		/* Position per channel is n times smaller than PCM. */
+		pos = sndbuf_getreadyptr(ch->buffer) / n;
+		length = sndbuf_getready(ch->buffer) / n;
+		/* Copy no more than 2 periods in advance. */
+		if (length > (sc->period * 4 * 2))
+			length = (sc->period * 4 * 2);
+		/* Skip what was already copied last time. */
+		offset = (ch->position + HDSPE_CHANBUF_SIZE) - pos;
+		offset %= HDSPE_CHANBUF_SIZE;
+		if (offset <= length) {
+			pos = (pos + offset) % HDSPE_CHANBUF_SIZE;
+			length -= offset;
+		}
+	} else {
+		/* Position per channel is n times smaller than PCM. */
+		pos = sndbuf_getfreeptr(ch->buffer) / n;
+		/* Get DMA buffer write position. */
+		dma_pos = hdspe_read_2(sc, HDSPE_STATUS_REG);
+		dma_pos &= HDSPE_BUF_POSITION_MASK;
+		/* Copy what is newly available. */
+		length = (dma_pos + HDSPE_CHANBUF_SIZE) - pos;
+		length %= HDSPE_CHANBUF_SIZE;
+	}
 
-	pos /= 4; /* Bytes per sample. */
-	pos /= n; /* Destination buffer n-times smaller. */
+	/* Position and length in samples (4 bytes). */
+	pos /= 4;
+	length /= 4;
 
 	/* Iterate through rows of ports with contiguous slots. */
 	ports = ch->ports;
@@ -576,10 +600,10 @@ buffer_copy(struct sc_chinfo *ch)
 	while (row != 0) {
 		if (ch->dir == PCMDIR_PLAY)
 			buffer_mux_port(sc->pbuf, ch->data, row, ch->ports, pos,
-			    sc->period * 2, adat_width, pcm_width);
+			    length, adat_width, pcm_width);
 		else
 			buffer_demux_port(sc->rbuf, ch->data, row, ch->ports,
-			    pos, sc->period * 2, adat_width, pcm_width);
+			    pos, length, adat_width, pcm_width);
 
 		ports &= ~row;
 		if (pcm_width == adat_width)
@@ -587,6 +611,8 @@ buffer_copy(struct sc_chinfo *ch)
 		else
 			row = hdspe_port_first(ports);
 	}
+
+	ch->position = ((pos + length) * 4) % HDSPE_CHANBUF_SIZE;
 }
 
 static int
@@ -620,10 +646,37 @@ clean(struct sc_chinfo *ch)
 		row = hdspe_port_first_row(ports);
 	}
 
+	ch->position = 0;
+
 	return (0);
 }
 
 /* Channel interface. */
+static int
+hdspechan_free(kobj_t obj, void *data)
+{
+	struct sc_pcminfo *scp;
+	struct sc_chinfo *ch;
+	struct sc_info *sc;
+
+	ch = data;
+	scp = ch->parent;
+	sc = scp->sc;
+
+#if 0
+	device_printf(scp->dev, "hdspechan_free()\n");
+#endif
+
+	mtx_lock(&sc->lock);
+	free(ch->data, M_HDSPE);
+	ch->data = NULL;
+	free(ch->caps, M_HDSPE);
+	ch->caps = NULL;
+	mtx_unlock(&sc->lock);
+
+	return (0);
+}
+
 static void *
 hdspechan_init(kobj_t obj, void *devinfo, struct snd_dbuf *b,
     struct pcm_channel *c, int dir)
@@ -636,7 +689,7 @@ hdspechan_init(kobj_t obj, void *devinfo, struct snd_dbuf *b,
 	scp = devinfo;
 	sc = scp->sc;
 
-	snd_mtxlock(sc->lock);
+	mtx_lock(&sc->lock);
 	num = scp->chnum;
 
 	ch = &scp->chan[num];
@@ -664,6 +717,7 @@ hdspechan_init(kobj_t obj, void *devinfo, struct snd_dbuf *b,
 	/* Allocate maximum buffer size. */
 	ch->size = HDSPE_CHANBUF_SIZE * hdspe_channel_count(ch->ports, 8);
 	ch->data = malloc(ch->size, M_HDSPE, M_NOWAIT);
+	ch->position = 0;
 
 	ch->buffer = b;
 	ch->channel = c;
@@ -671,10 +725,11 @@ hdspechan_init(kobj_t obj, void *devinfo, struct snd_dbuf *b,
 
 	ch->dir = dir;
 
-	snd_mtxunlock(sc->lock);
+	mtx_unlock(&sc->lock);
 
 	if (sndbuf_setup(ch->buffer, ch->data, ch->size) != 0) {
 		device_printf(scp->dev, "Can't setup sndbuf.\n");
+		hdspechan_free(obj, ch);
 		return (NULL);
 	}
 
@@ -692,7 +747,7 @@ hdspechan_trigger(kobj_t obj, void *data, int go)
 	scp = ch->parent;
 	sc = scp->sc;
 
-	snd_mtxlock(sc->lock);
+	mtx_lock(&sc->lock);
 	switch (go) {
 	case PCMTRIG_START:
 #if 0
@@ -720,7 +775,7 @@ hdspechan_trigger(kobj_t obj, void *data, int go)
 		break;
 	}
 
-	snd_mtxunlock(sc->lock);
+	mtx_unlock(&sc->lock);
 
 	return (0);
 }
@@ -737,43 +792,14 @@ hdspechan_getptr(kobj_t obj, void *data)
 	scp = ch->parent;
 	sc = scp->sc;
 
-	snd_mtxlock(sc->lock);
+	mtx_lock(&sc->lock);
 	ret = hdspe_read_2(sc, HDSPE_STATUS_REG);
-	snd_mtxunlock(sc->lock);
+	mtx_unlock(&sc->lock);
 
 	pos = ret & HDSPE_BUF_POSITION_MASK;
 	pos *= AFMT_CHANNEL(ch->format); /* Hardbuf with multiple channels. */
 
 	return (pos);
-}
-
-static int
-hdspechan_free(kobj_t obj, void *data)
-{
-	struct sc_pcminfo *scp;
-	struct sc_chinfo *ch;
-	struct sc_info *sc;
-
-	ch = data;
-	scp = ch->parent;
-	sc = scp->sc;
-
-#if 0
-	device_printf(scp->dev, "hdspechan_free()\n");
-#endif
-
-	snd_mtxlock(sc->lock);
-	if (ch->data != NULL) {
-		free(ch->data, M_HDSPE);
-		ch->data = NULL;
-	}
-	if (ch->caps != NULL) {
-		free(ch->caps, M_HDSPE);
-		ch->caps = NULL;
-	}
-	snd_mtxunlock(sc->lock);
-
-	return (0);
 }
 
 static int
@@ -916,12 +942,12 @@ hdspechan_setblocksize(kobj_t obj, void *data, uint32_t blocksize)
 		}
 	}
 
-	snd_mtxlock(sc->lock);
+	mtx_lock(&sc->lock);
 	sc->ctrl_register &= ~HDSPE_LAT_MASK;
 	sc->ctrl_register |= hdspe_encode_latency(hl->n);
 	hdspe_write_4(sc, HDSPE_CONTROL_REG, sc->ctrl_register);
 	sc->period = hl->period;
-	snd_mtxunlock(sc->lock);
+	mtx_unlock(&sc->lock);
 
 #if 0
 	device_printf(scp->dev, "New period=%d\n", sc->period);
@@ -932,7 +958,7 @@ hdspechan_setblocksize(kobj_t obj, void *data, uint32_t blocksize)
 	    (sc->period * 4));
 end:
 
-	return (sndbuf_getblksz(ch->buffer));
+	return (ch->buffer->blksz);
 }
 
 static uint32_t hdspe_bkp_fmt[] = {
@@ -995,9 +1021,9 @@ hdspe_pcm_intr(struct sc_pcminfo *scp)
 
 	for (i = 0; i < scp->chnum; i++) {
 		ch = &scp->chan[i];
-		snd_mtxunlock(sc->lock);
+		mtx_unlock(&sc->lock);
 		chn_intr(ch->channel);
-		snd_mtxlock(sc->lock);
+		mtx_lock(&sc->lock);
 	}
 
 	return (0);
@@ -1034,13 +1060,10 @@ hdspe_pcm_attach(device_t dev)
 		pcm_flags |= SD_F_BITPERFECT;
 	pcm_setflags(dev, pcm_flags);
 
+	pcm_init(dev, scp);
+
 	play = (hdspe_channel_play_ports(scp->hc)) ? 1 : 0;
 	rec = (hdspe_channel_rec_ports(scp->hc)) ? 1 : 0;
-	err = pcm_register(dev, scp, play, rec);
-	if (err) {
-		device_printf(dev, "Can't register pcm.\n");
-		return (ENXIO);
-	}
 
 	scp->chnum = 0;
 	if (play) {
@@ -1057,7 +1080,11 @@ hdspe_pcm_attach(device_t dev)
 	    rman_get_start(scp->sc->cs),
 	    rman_get_start(scp->sc->irq),
 	    device_get_nameunit(device_get_parent(dev)));
-	pcm_setstatus(dev, status);
+	err = pcm_register(dev, status);
+	if (err) {
+		device_printf(dev, "Can't register pcm.\n");
+		return (ENXIO);
+	}
 
 	mixer_init(dev, &hdspemixer_class, scp);
 
@@ -1082,7 +1109,7 @@ static device_method_t hdspe_pcm_methods[] = {
 	DEVMETHOD(device_probe,     hdspe_pcm_probe),
 	DEVMETHOD(device_attach,    hdspe_pcm_attach),
 	DEVMETHOD(device_detach,    hdspe_pcm_detach),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t hdspe_pcm_driver = {

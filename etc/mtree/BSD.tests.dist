@@ -31,6 +31,8 @@
         ..
         echo
         ..
+        ed
+        ..
         expr
         ..
         hostname
@@ -48,6 +50,8 @@
         pkill
         ..
         pwait
+        ..
+        pwd
         ..
         rm
         ..
@@ -91,6 +95,10 @@
         ..
         usr.sbin
             dtrace
+                amd64
+                    arrays
+                    ..
+                ..
                 common
                     aggs
                     ..
@@ -269,10 +277,6 @@
                     ustack
                     ..
                 ..
-                amd64
-                    arrays
-                    ..
-                ..
             ..
             zfsd
             ..
@@ -315,6 +319,8 @@
             dynamiclib
             ..
             dynamicpie
+            ..
+            errno
             ..
             static
             ..
@@ -372,13 +378,19 @@
             ..
             rpc
             ..
+            secure
+            ..
             setjmp
             ..
             ssp
             ..
+            stdbit
+            ..
             stdio
             ..
             stdlib
+            ..
+            stdtime
             ..
             string
             ..
@@ -419,9 +431,13 @@
         ..
         libdevdctl
         ..
+        libdiff
+        ..
         libexecinfo
         ..
         libkvm
+        ..
+        libmd
         ..
         libmp
         ..
@@ -499,11 +515,17 @@
         ..
         route
         ..
+        savecore
+        ..
+        swapon
+        ..
         sysctl
         ..
     ..
     secure
         lib
+            libcrypto
+            ..
         ..
         libexec
         ..
@@ -536,6 +558,10 @@
         audit
         ..
         auditpipe
+        ..
+        cam
+            ctl
+            ..
         ..
         capsicum
         ..
@@ -802,6 +828,8 @@
             ..
             tmpfs
             ..
+            unionfs
+            ..
         ..
         geom
             class
@@ -812,6 +840,8 @@
                 gate
                 ..
                 gpt
+                ..
+                label
                 ..
                 mirror
                 ..
@@ -833,6 +863,8 @@
                     etalon
                     ..
                 ..
+                virstor
+                ..
             ..
         ..
         kern
@@ -841,6 +873,8 @@
             execve
             ..
             pipe
+            ..
+            tty
             ..
         ..
         kqueue
@@ -858,6 +892,8 @@
         mqueue
         ..
         net
+            bpf
+                ..
             if_ovpn
                 ccd
                 ..
@@ -932,6 +968,8 @@
         posixshm
         ..
         ses
+        ..
+        sound
         ..
         sys
         ..
@@ -1065,6 +1103,8 @@
         ..
         col
         ..
+        column
+        ..
         comm
         ..
         compress
@@ -1075,8 +1115,6 @@
         ..
         cut
         ..
-        dc
-        ..
         diff
         ..
         diff3
@@ -1084,6 +1122,8 @@
         dirname
         ..
         du
+        ..
+        env
         ..
         factor
         ..
@@ -1131,6 +1171,8 @@
         ..
         jot
         ..
+        lam
+        ..
         lastcomm
         ..
         limits
@@ -1142,6 +1184,8 @@
         lorder
         ..
         m4
+        ..
+        mail
         ..
         mkimg
         ..
@@ -1173,6 +1217,8 @@
         ..
         seq
         ..
+        sockstat
+        ..
         soelim
         ..
         sort
@@ -1185,6 +1231,8 @@
         ..
         tar
         ..
+        tee
+        ..
         tftp
         ..
         touch
@@ -1195,11 +1243,11 @@
         ..
         tsort
         ..
-        units
-        ..
         unifdef
         ..
         uniq
+        ..
+        units
         ..
         unzip
         ..
@@ -1219,7 +1267,11 @@
         ..
     ..
     usr.sbin
+        certctl
+        ..
         chown
+        ..
+        ctladm
         ..
         daemon
         ..
@@ -1233,6 +1285,8 @@
         ..
         makefs
         ..
+        mixer
+        ..
         newsyslog
         ..
         nmtree
@@ -1241,11 +1295,17 @@
         ..
         pw
         ..
+        quot
+        ..
         rpcbind
         ..
         sa
         ..
         syslogd
+        ..
+        sysrc
+        ..
+        traceroute
         ..
     ..
 ..

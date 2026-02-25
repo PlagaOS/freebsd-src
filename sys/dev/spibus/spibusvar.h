@@ -48,7 +48,7 @@ struct spibus_ivar
 #define	SPIBUS_CS_HIGH	(1U << 31)
 
 enum {
-	SPIBUS_IVAR_CS,		/* chip select that we're on */
+	SPIBUS_IVAR_CS = BUS_IVARS_PRIVATE,	/* chip select that we're on */
 	SPIBUS_IVAR_MODE,	/* SPI mode (0-3) */
 	SPIBUS_IVAR_CLOCK,	/* maximum clock freq for device */
 	SPIBUS_IVAR_CS_DELAY,	/* delay in microseconds after toggling chip select */
@@ -77,8 +77,8 @@ extern driver_t spibus_driver;
 extern driver_t ofw_spibus_driver;
 
 int spibus_attach(device_t);
-int spibus_detach(device_t);
 device_t spibus_add_child_common(device_t, u_int, const char *, int, size_t);
+void spibus_child_deleted(device_t, device_t);
 void spibus_probe_nomatch(device_t, device_t);
 int spibus_child_location(device_t, device_t, struct sbuf *);
 int spibus_read_ivar(device_t, device_t, int, uintptr_t *);

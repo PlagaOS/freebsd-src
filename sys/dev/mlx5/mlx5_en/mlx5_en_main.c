@@ -24,17 +24,22 @@
  * SUCH DAMAGE.
  */
 
+#include "opt_ipsec.h"
 #include "opt_kern_tls.h"
 #include "opt_rss.h"
 #include "opt_ratelimit.h"
 
 #include <dev/mlx5/mlx5_en/en.h>
+#include <dev/mlx5/mlx5_accel/ipsec.h>
 
 #include <sys/eventhandler.h>
 #include <sys/sockio.h>
 #include <machine/atomic.h>
 
 #include <net/debugnet.h>
+#include <netinet/tcp_ratelimit.h>
+#include <netipsec/keydb.h>
+#include <netipsec/ipsec_offload.h>
 
 static int mlx5e_get_wqe_sz(struct mlx5e_priv *priv, u32 *wqe_sz, u32 *nsegs);
 static if_snd_tag_query_t mlx5e_ul_snd_tag_query;
@@ -164,186 +169,186 @@ static const struct media mlx5e_mode_table[MLX5E_LINK_SPEEDS_NUMBER] =
 	},
 };
 
-static const struct media mlx5e_ext_mode_table[MLX5E_EXT_LINK_SPEEDS_NUMBER][MLX5E_CABLE_TYPE_NUMBER] =
+static const struct media mlx5e_ext_mode_table[MLX5E_EXT_LINK_SPEEDS_NUMBER][MLX5E_CONNECTOR_TYPE_NUMBER] =
 {
 	/**/
-	[MLX5E_SGMII_100M][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_SGMII_100M][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_100_SGMII,
 		.baudrate = IF_Mbps(100),
 	},
 
 	/**/
-	[MLX5E_1000BASE_X_SGMII][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_1000BASE_X_SGMII][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_1000_CX,
 		.baudrate = IF_Mbps(1000),
 	},
-	[MLX5E_1000BASE_X_SGMII][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_1000BASE_X_SGMII][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_1000_SX,
 		.baudrate = IF_Mbps(1000),
 	},
 
 	/**/
-	[MLX5E_5GBASE_R][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_5GBASE_R][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_5000_KR,
 		.baudrate = IF_Mbps(5000),
 	},
-	[MLX5E_5GBASE_R][MLX5E_CABLE_TYPE_TWISTED_PAIR] = {
+	[MLX5E_5GBASE_R][MLX5E_PORT_TP] = {
 		.subtype = IFM_5000_T,
 		.baudrate = IF_Mbps(5000),
 	},
 
 	/**/
-	[MLX5E_10GBASE_XFI_XAUI_1][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_10GBASE_XFI_XAUI_1][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_10G_KR,
 		.baudrate = IF_Gbps(10ULL),
 	},
-	[MLX5E_10GBASE_XFI_XAUI_1][MLX5E_CABLE_TYPE_PASSIVE_COPPER] = {
+	[MLX5E_10GBASE_XFI_XAUI_1][MLX5E_PORT_DA] = {
 		.subtype = IFM_10G_CR1,
 		.baudrate = IF_Gbps(10ULL),
 	},
-	[MLX5E_10GBASE_XFI_XAUI_1][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_10GBASE_XFI_XAUI_1][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_10G_SR,
 		.baudrate = IF_Gbps(10ULL),
 	},
 
 	/**/
-	[MLX5E_40GBASE_XLAUI_4_XLPPI_4][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_40GBASE_XLAUI_4_XLPPI_4][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_40G_KR4,
 		.baudrate = IF_Gbps(40ULL),
 	},
-	[MLX5E_40GBASE_XLAUI_4_XLPPI_4][MLX5E_CABLE_TYPE_PASSIVE_COPPER] = {
+	[MLX5E_40GBASE_XLAUI_4_XLPPI_4][MLX5E_PORT_DA] = {
 		.subtype = IFM_40G_CR4,
 		.baudrate = IF_Gbps(40ULL),
 	},
-	[MLX5E_40GBASE_XLAUI_4_XLPPI_4][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_40GBASE_XLAUI_4_XLPPI_4][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_40G_SR4,
 		.baudrate = IF_Gbps(40ULL),
 	},
 
 	/**/
-	[MLX5E_25GAUI_1_25GBASE_CR_KR][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_25GAUI_1_25GBASE_CR_KR][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_25G_KR,
 		.baudrate = IF_Gbps(25ULL),
 	},
-	[MLX5E_25GAUI_1_25GBASE_CR_KR][MLX5E_CABLE_TYPE_PASSIVE_COPPER] = {
+	[MLX5E_25GAUI_1_25GBASE_CR_KR][MLX5E_PORT_DA] = {
 		.subtype = IFM_25G_CR,
 		.baudrate = IF_Gbps(25ULL),
 	},
-	[MLX5E_25GAUI_1_25GBASE_CR_KR][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_25GAUI_1_25GBASE_CR_KR][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_25G_SR,
 		.baudrate = IF_Gbps(25ULL),
 	},
-	[MLX5E_25GAUI_1_25GBASE_CR_KR][MLX5E_CABLE_TYPE_TWISTED_PAIR] = {
+	[MLX5E_25GAUI_1_25GBASE_CR_KR][MLX5E_PORT_TP] = {
 		.subtype = IFM_25G_T,
 		.baudrate = IF_Gbps(25ULL),
 	},
 
 	/**/
-	[MLX5E_50GAUI_2_LAUI_2_50GBASE_CR2_KR2][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_50GAUI_2_LAUI_2_50GBASE_CR2_KR2][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_50G_KR2,
 		.baudrate = IF_Gbps(50ULL),
 	},
-	[MLX5E_50GAUI_2_LAUI_2_50GBASE_CR2_KR2][MLX5E_CABLE_TYPE_PASSIVE_COPPER] = {
+	[MLX5E_50GAUI_2_LAUI_2_50GBASE_CR2_KR2][MLX5E_PORT_DA] = {
 		.subtype = IFM_50G_CR2,
 		.baudrate = IF_Gbps(50ULL),
 	},
-	[MLX5E_50GAUI_2_LAUI_2_50GBASE_CR2_KR2][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_50GAUI_2_LAUI_2_50GBASE_CR2_KR2][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_50G_SR2,
 		.baudrate = IF_Gbps(50ULL),
 	},
 
 	/**/
-	[MLX5E_50GAUI_1_LAUI_1_50GBASE_CR_KR][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_50GAUI_1_LAUI_1_50GBASE_CR_KR][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_50G_KR_PAM4,
 		.baudrate = IF_Gbps(50ULL),
 	},
-	[MLX5E_50GAUI_1_LAUI_1_50GBASE_CR_KR][MLX5E_CABLE_TYPE_PASSIVE_COPPER] = {
+	[MLX5E_50GAUI_1_LAUI_1_50GBASE_CR_KR][MLX5E_PORT_DA] = {
 		.subtype = IFM_50G_CP,
 		.baudrate = IF_Gbps(50ULL),
 	},
-	[MLX5E_50GAUI_1_LAUI_1_50GBASE_CR_KR][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_50GAUI_1_LAUI_1_50GBASE_CR_KR][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_50G_SR,
 		.baudrate = IF_Gbps(50ULL),
 	},
 
 	/**/
-	[MLX5E_CAUI_4_100GBASE_CR4_KR4][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_CAUI_4_100GBASE_CR4_KR4][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_100G_KR4,
 		.baudrate = IF_Gbps(100ULL),
 	},
-	[MLX5E_CAUI_4_100GBASE_CR4_KR4][MLX5E_CABLE_TYPE_PASSIVE_COPPER] = {
+	[MLX5E_CAUI_4_100GBASE_CR4_KR4][MLX5E_PORT_DA] = {
 		.subtype = IFM_100G_CR4,
 		.baudrate = IF_Gbps(100ULL),
 	},
-	[MLX5E_CAUI_4_100GBASE_CR4_KR4][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_CAUI_4_100GBASE_CR4_KR4][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_100G_SR4,
 		.baudrate = IF_Gbps(100ULL),
 	},
 
 	/**/
-	[MLX5E_100GAUI_1_100GBASE_CR_KR][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_100GAUI_1_100GBASE_CR_KR][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_100G_KR_PAM4,
 		.baudrate = IF_Gbps(100ULL),
 	},
-	[MLX5E_100GAUI_1_100GBASE_CR_KR][MLX5E_CABLE_TYPE_PASSIVE_COPPER] = {
+	[MLX5E_100GAUI_1_100GBASE_CR_KR][MLX5E_PORT_DA] = {
 		.subtype = IFM_100G_CR_PAM4,
 		.baudrate = IF_Gbps(100ULL),
 	},
-	[MLX5E_100GAUI_1_100GBASE_CR_KR][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_100GAUI_1_100GBASE_CR_KR][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_100G_SR2,	/* XXX */
 		.baudrate = IF_Gbps(100ULL),
 	},
 
 	/**/
-	[MLX5E_100GAUI_2_100GBASE_CR2_KR2][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_100GAUI_2_100GBASE_CR2_KR2][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_100G_KR4,
 		.baudrate = IF_Gbps(100ULL),
 	},
-	[MLX5E_100GAUI_2_100GBASE_CR2_KR2][MLX5E_CABLE_TYPE_PASSIVE_COPPER] = {
+	[MLX5E_100GAUI_2_100GBASE_CR2_KR2][MLX5E_PORT_DA] = {
 		.subtype = IFM_100G_CP2,
 		.baudrate = IF_Gbps(100ULL),
 	},
-	[MLX5E_100GAUI_2_100GBASE_CR2_KR2][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_100GAUI_2_100GBASE_CR2_KR2][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_100G_SR2,
 		.baudrate = IF_Gbps(100ULL),
 	},
 
 	/**/
-	[MLX5E_200GAUI_2_200GBASE_CR2_KR2][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_200GAUI_2_200GBASE_CR2_KR2][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_200G_KR4_PAM4,	/* XXX */
 		.baudrate = IF_Gbps(200ULL),
 	},
-	[MLX5E_200GAUI_2_200GBASE_CR2_KR2][MLX5E_CABLE_TYPE_PASSIVE_COPPER] = {
+	[MLX5E_200GAUI_2_200GBASE_CR2_KR2][MLX5E_PORT_DA] = {
 		.subtype = IFM_200G_CR4_PAM4,	/* XXX */
 		.baudrate = IF_Gbps(200ULL),
 	},
-	[MLX5E_200GAUI_2_200GBASE_CR2_KR2][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_200GAUI_2_200GBASE_CR2_KR2][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_200G_SR4,	/* XXX */
 		.baudrate = IF_Gbps(200ULL),
 	},
 
 	/**/
-	[MLX5E_200GAUI_4_200GBASE_CR4_KR4][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_200GAUI_4_200GBASE_CR4_KR4][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_200G_KR4_PAM4,
 		.baudrate = IF_Gbps(200ULL),
 	},
-	[MLX5E_200GAUI_4_200GBASE_CR4_KR4][MLX5E_CABLE_TYPE_PASSIVE_COPPER] = {
+	[MLX5E_200GAUI_4_200GBASE_CR4_KR4][MLX5E_PORT_DA] = {
 		.subtype = IFM_200G_CR4_PAM4,
 		.baudrate = IF_Gbps(200ULL),
 	},
-	[MLX5E_200GAUI_4_200GBASE_CR4_KR4][MLX5E_CABLE_TYPE_OPTICAL_MODULE] = {
+	[MLX5E_200GAUI_4_200GBASE_CR4_KR4][MLX5E_PORT_FIBRE] = {
 		.subtype = IFM_200G_SR4,
 		.baudrate = IF_Gbps(200ULL),
 	},
 
 	/**/
-	[MLX5E_400GAUI_8][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_400GAUI_8][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_400G_LR8,	/* XXX */
 		.baudrate = IF_Gbps(400ULL),
 	},
 
 	/**/
-	[MLX5E_400GAUI_4_400GBASE_CR4_KR4][MLX5E_CABLE_TYPE_UNKNOWN] = {
+	[MLX5E_400GAUI_4_400GBASE_CR4_KR4][MLX5E_PORT_UNKNOWN] = {
 		.subtype = IFM_400G_LR8,	/* XXX */
 		.baudrate = IF_Gbps(400ULL),
 	},
@@ -367,7 +372,7 @@ mlx5e_update_carrier(struct mlx5e_priv *priv)
 	u32 eth_proto_oper;
 	int error;
 	u8 i;
-	u8 cable_type;
+	u8 connector_type;
 	u8 port_state;
 	u8 is_er_type;
 	bool ext;
@@ -398,24 +403,14 @@ mlx5e_update_carrier(struct mlx5e_priv *priv)
 	ext = MLX5_CAP_PCAM_FEATURE(mdev, ptys_extended_ethernet);
 	eth_proto_oper = MLX5_GET_ETH_PROTO(ptys_reg, out, ext,
 	    eth_proto_oper);
-
+	connector_type = MLX5_GET(ptys_reg, out, connector_type);
 	i = ilog2(eth_proto_oper);
 
 	if (ext) {
-		error = mlx5_query_pddr_cable_type(mdev, 1, &cable_type);
-		if (error != 0) {
-			/* use fallback entry */
-			media_entry = mlx5e_ext_mode_table[i][MLX5E_CABLE_TYPE_UNKNOWN];
-
-			mlx5_en_err(priv->ifp,
-			    "query port pddr failed: %d\n", error);
-		} else {
-			media_entry = mlx5e_ext_mode_table[i][cable_type];
-
+		media_entry = mlx5e_ext_mode_table[i][connector_type];
 			/* check if we should use fallback entry */
-			if (media_entry.subtype == 0)
-				media_entry = mlx5e_ext_mode_table[i][MLX5E_CABLE_TYPE_UNKNOWN];
-		}
+		if (media_entry.subtype == 0)
+			media_entry = mlx5e_ext_mode_table[i][MLX5E_PORT_UNKNOWN];
 	} else {
 		media_entry = mlx5e_mode_table[i];
 	}
@@ -1221,9 +1216,9 @@ mlx5e_create_rq(struct mlx5e_channel *c,
 	    BUS_SPACE_MAXADDR,		/* lowaddr */
 	    BUS_SPACE_MAXADDR,		/* highaddr */
 	    NULL, NULL,			/* filter, filterarg */
-	    nsegs * MLX5E_MAX_RX_BYTES,	/* maxsize */
+	    nsegs * wqe_sz,		/* maxsize */
 	    nsegs,			/* nsegments */
-	    nsegs * MLX5E_MAX_RX_BYTES,	/* maxsegsize */
+	    nsegs * wqe_sz,		/* maxsegsize */
 	    0,				/* flags */
 	    NULL, NULL,			/* lockfunc, lockfuncarg */
 	    &rq->dma_tag)))
@@ -1320,6 +1315,8 @@ mlx5e_destroy_rq(struct mlx5e_rq *rq)
 	wq_sz = mlx5_wq_ll_get_size(&rq->wq);
 	for (i = 0; i != wq_sz; i++) {
 		if (rq->mbuf[i].mbuf != NULL) {
+			if (rq->mbuf[i].ipsec_mtag != NULL)
+				m_tag_free(&rq->mbuf[i].ipsec_mtag->tag);
 			bus_dmamap_unload(rq->dma_tag, rq->mbuf[i].dma_map);
 			m_freem(rq->mbuf[i].mbuf);
 		}
@@ -1463,6 +1460,17 @@ static void
 mlx5e_close_rq_wait(struct mlx5e_rq *rq)
 {
 
+	mtx_lock(&rq->mtx);
+	MPASS(rq->enabled == 0);
+	while (rq->processing > 0) {
+		/*
+		 * No wakeup, relying on timeout.
+		 * Use msleep_sbt() since msleep() conflicts with linuxkpi.
+		 */
+		msleep_sbt(&rq->processing, &rq->mtx, 0, "mlx5ecrq",
+		    tick_sbt * hz, 0, C_HARDCLOCK);
+	}
+	mtx_unlock(&rq->mtx);
 	mlx5e_disable_rq(rq);
 	mlx5e_close_cq(&rq->cq);
 	cancel_work_sync(&rq->dim.work);
@@ -2310,30 +2318,18 @@ mlx5e_close_channel_wait(struct mlx5e_channel *c)
 static int
 mlx5e_get_wqe_sz(struct mlx5e_priv *priv, u32 *wqe_sz, u32 *nsegs)
 {
-	u32 r, n;
+	u32 r, n, maxs;
 
-	r = priv->params.hw_lro_en ? priv->params.lro_wqe_sz :
+	maxs = priv->params.hw_lro_en ? priv->params.lro_wqe_sz :
 	    MLX5E_SW2MB_MTU(if_getmtu(priv->ifp));
-	if (r > MJUM16BYTES)
-		return (-ENOMEM);
-
-	if (r > MJUM9BYTES)
-		r = MJUM16BYTES;
-	else if (r > MJUMPAGESIZE)
-		r = MJUM9BYTES;
-	else if (r > MCLBYTES)
-		r = MJUMPAGESIZE;
-	else
-		r = MCLBYTES;
+	r = maxs > MCLBYTES ? MJUMPAGESIZE : MCLBYTES;
 
 	/*
 	 * n + 1 must be a power of two, because stride size must be.
 	 * Stride size is 16 * (n + 1), as the first segment is
 	 * control.
 	 */
-	for (n = howmany(r, MLX5E_MAX_RX_BYTES); !powerof2(n + 1); n++)
-		;
-
+	n = roundup_pow_of_two(1 + howmany(maxs, r)) - 1;
 	if (n > MLX5E_MAX_BUSDMA_RX_SEGS)
 		return (-ENOMEM);
 
@@ -2919,24 +2915,72 @@ err_modify:
 static void
 mlx5e_get_rss_key(void *key_ptr)
 {
-#ifdef RSS
 	rss_getkey(key_ptr);
-#else
-	static const u32 rsskey[] = {
-	    cpu_to_be32(0xD181C62C),
-	    cpu_to_be32(0xF7F4DB5B),
-	    cpu_to_be32(0x1983A2FC),
-	    cpu_to_be32(0x943E1ADB),
-	    cpu_to_be32(0xD9389E6B),
-	    cpu_to_be32(0xD1039C2C),
-	    cpu_to_be32(0xA74499AD),
-	    cpu_to_be32(0x593D56D9),
-	    cpu_to_be32(0xF3253C06),
-	    cpu_to_be32(0x2ADC1FFC),
-	};
-	CTASSERT(sizeof(rsskey) == MLX5E_RSS_KEY_SIZE);
-	memcpy(key_ptr, rsskey, MLX5E_RSS_KEY_SIZE);
-#endif
+}
+
+static void
+mlx5e_hw_lro_set_tir_ctx_lro_max_msg_sz(struct mlx5e_priv *priv, u32 *tirc)
+{
+	MLX5_SET(tirc, tirc, lro_max_msg_sz, (priv->params.lro_wqe_sz >> 8) -
+	    (MLX5_CAP_ETH(priv->mdev, lro_max_msg_sz_mode) == 0 ? 1 : 0));
+}
+
+static void
+mlx5e_hw_lro_set_tir_ctx(struct mlx5e_priv *priv, u32 *tirc)
+{
+	MLX5_SET(tirc, tirc, lro_enable_mask,
+	    MLX5_TIRC_LRO_ENABLE_MASK_IPV4_LRO |
+	    MLX5_TIRC_LRO_ENABLE_MASK_IPV6_LRO);
+	/* TODO: add the option to choose timer value dynamically */
+	MLX5_SET(tirc, tirc, lro_timeout_period_usecs,
+	    MLX5_CAP_ETH(priv->mdev, lro_timer_supported_periods[2]));
+	mlx5e_hw_lro_set_tir_ctx_lro_max_msg_sz(priv, tirc);
+}
+
+static int
+mlx5e_hw_lro_update_tir(struct mlx5e_priv *priv, int tt, bool inner_vxlan)
+{
+	struct mlx5_core_dev *mdev = priv->mdev;
+	u32 *in;
+	void *tirc;
+	int inlen;
+	int err;
+
+	inlen = MLX5_ST_SZ_BYTES(modify_tir_in);
+	in = mlx5_vzalloc(inlen);
+	if (in == NULL)
+		return (-ENOMEM);
+	tirc = MLX5_ADDR_OF(modify_tir_in, in, tir_context);
+
+	/* fill the command part */
+	MLX5_SET(modify_tir_in, in, tirn, inner_vxlan ?
+	    priv->tirn_inner_vxlan[tt] : priv->tirn[tt]);
+	MLX5_SET64(modify_tir_in, in, modify_bitmask,
+	    (1 << MLX5_MODIFY_TIR_BITMASK_LRO));
+
+	/* fill the context */
+	if (priv->params.hw_lro_en)
+		mlx5e_hw_lro_set_tir_ctx(priv, tirc);
+
+	err = mlx5_core_modify_tir(mdev, in, inlen);
+
+	kvfree(in);
+	return (err);
+}
+
+int
+mlx5e_hw_lro_update_tirs(struct mlx5e_priv *priv)
+{
+	int err, err1, i;
+
+	err = 0;
+	for (i = 0; i != 2 * MLX5E_NUM_TT; i++) {
+		err1 = mlx5e_hw_lro_update_tir(priv, i / 2, (i % 2) ? true :
+		    false);
+		if (err1 != 0 && err == 0)
+			err = err1;
+	}
+	return (-err);
 }
 
 static void
@@ -2948,8 +2992,6 @@ mlx5e_build_tir_ctx(struct mlx5e_priv *priv, u32 * tirc, int tt, bool inner_vxla
 	__be32 *hkey;
 
 	MLX5_SET(tirc, tirc, transport_domain, priv->tdn);
-
-#define	ROUGH_MAX_L2_L3_HDR_SZ 256
 
 #define	MLX5_HASH_IP     (MLX5_HASH_FIELD_SEL_SRC_IP   |\
 			  MLX5_HASH_FIELD_SEL_DST_IP)
@@ -2963,18 +3005,8 @@ mlx5e_build_tir_ctx(struct mlx5e_priv *priv, u32 * tirc, int tt, bool inner_vxla
 				 MLX5_HASH_FIELD_SEL_DST_IP   |\
 				 MLX5_HASH_FIELD_SEL_IPSEC_SPI)
 
-	if (priv->params.hw_lro_en) {
-		MLX5_SET(tirc, tirc, lro_enable_mask,
-		    MLX5_TIRC_LRO_ENABLE_MASK_IPV4_LRO |
-		    MLX5_TIRC_LRO_ENABLE_MASK_IPV6_LRO);
-		MLX5_SET(tirc, tirc, lro_max_msg_sz,
-		    (priv->params.lro_wqe_sz -
-		    ROUGH_MAX_L2_L3_HDR_SZ) >> 8);
-		/* TODO: add the option to choose timer value dynamically */
-		MLX5_SET(tirc, tirc, lro_timeout_period_usecs,
-		    MLX5_CAP_ETH(priv->mdev,
-		    lro_timer_supported_periods[2]));
-	}
+	if (priv->params.hw_lro_en)
+		mlx5e_hw_lro_set_tir_ctx(priv, tirc);
 
 	if (inner_vxlan)
 		MLX5_SET(tirc, tirc, tunneled_offload_en, 1);
@@ -2995,15 +3027,12 @@ mlx5e_build_tir_ctx(struct mlx5e_priv *priv, u32 * tirc, int tt, bool inner_vxla
 
 	CTASSERT(MLX5_FLD_SZ_BYTES(tirc, rx_hash_toeplitz_key) >=
 		 MLX5E_RSS_KEY_SIZE);
-#ifdef RSS
+
 	/*
 	 * The FreeBSD RSS implementation does currently not
 	 * support symmetric Toeplitz hashes:
 	 */
 	MLX5_SET(tirc, tirc, rx_hash_symmetric, 0);
-#else
-	MLX5_SET(tirc, tirc, rx_hash_symmetric, 1);
-#endif
 	mlx5e_get_rss_key(hkey);
 
 	switch (tt) {
@@ -3012,12 +3041,10 @@ mlx5e_build_tir_ctx(struct mlx5e_priv *priv, u32 * tirc, int tt, bool inner_vxla
 		    MLX5_L3_PROT_TYPE_IPV4);
 		MLX5_SET(rx_hash_field_select, hfs, l4_prot_type,
 		    MLX5_L4_PROT_TYPE_TCP);
-#ifdef RSS
 		if (!(rss_gethashconfig() & RSS_HASHTYPE_RSS_TCP_IPV4)) {
 			MLX5_SET(rx_hash_field_select, hfs, selected_fields,
 			    MLX5_HASH_IP);
 		} else
-#endif
 		MLX5_SET(rx_hash_field_select, hfs, selected_fields,
 		    MLX5_HASH_ALL);
 		break;
@@ -3027,12 +3054,10 @@ mlx5e_build_tir_ctx(struct mlx5e_priv *priv, u32 * tirc, int tt, bool inner_vxla
 		    MLX5_L3_PROT_TYPE_IPV6);
 		MLX5_SET(rx_hash_field_select, hfs, l4_prot_type,
 		    MLX5_L4_PROT_TYPE_TCP);
-#ifdef RSS
 		if (!(rss_gethashconfig() & RSS_HASHTYPE_RSS_TCP_IPV6)) {
 			MLX5_SET(rx_hash_field_select, hfs, selected_fields,
 			    MLX5_HASH_IP);
 		} else
-#endif
 		MLX5_SET(rx_hash_field_select, hfs, selected_fields,
 		    MLX5_HASH_ALL);
 		break;
@@ -3042,12 +3067,10 @@ mlx5e_build_tir_ctx(struct mlx5e_priv *priv, u32 * tirc, int tt, bool inner_vxla
 		    MLX5_L3_PROT_TYPE_IPV4);
 		MLX5_SET(rx_hash_field_select, hfs, l4_prot_type,
 		    MLX5_L4_PROT_TYPE_UDP);
-#ifdef RSS
 		if (!(rss_gethashconfig() & RSS_HASHTYPE_RSS_UDP_IPV4)) {
 			MLX5_SET(rx_hash_field_select, hfs, selected_fields,
 			    MLX5_HASH_IP);
 		} else
-#endif
 		MLX5_SET(rx_hash_field_select, hfs, selected_fields,
 		    MLX5_HASH_ALL);
 		break;
@@ -3057,12 +3080,10 @@ mlx5e_build_tir_ctx(struct mlx5e_priv *priv, u32 * tirc, int tt, bool inner_vxla
 		    MLX5_L3_PROT_TYPE_IPV6);
 		MLX5_SET(rx_hash_field_select, hfs, l4_prot_type,
 		    MLX5_L4_PROT_TYPE_UDP);
-#ifdef RSS
 		if (!(rss_gethashconfig() & RSS_HASHTYPE_RSS_UDP_IPV6)) {
 			MLX5_SET(rx_hash_field_select, hfs, selected_fields,
 			    MLX5_HASH_IP);
 		} else
-#endif
 		MLX5_SET(rx_hash_field_select, hfs, selected_fields,
 		    MLX5_HASH_ALL);
 		break;
@@ -3286,6 +3307,11 @@ mlx5e_open_locked(if_t ifp)
 
 	mlx5e_update_carrier(priv);
 
+#ifdef KERN_TLS
+	if ((if_getcapenable(ifp) & (IFCAP_TXTLS4 | IFCAP_TXTLS6)) != 0)
+		mlx5e_tls_prealloc_tags(priv);
+#endif
+
 	return (0);
 
 err_close_channels:
@@ -3399,6 +3425,51 @@ mlx5e_set_rx_mode(if_t ifp)
 	queue_work(priv->wq, &priv->set_rx_mode_work);
 }
 
+static bool
+mlx5e_is_ipsec_capable(struct mlx5_core_dev *mdev)
+{
+#ifdef IPSEC_OFFLOAD
+	if ((mlx5_ipsec_device_caps(mdev) & MLX5_IPSEC_CAP_PACKET_OFFLOAD) != 0)
+		return (true);
+#endif
+	return (false);
+}
+
+static bool
+mlx5e_is_ratelimit_capable(struct mlx5_core_dev *mdev)
+{
+#ifdef RATELIMIT
+	if (MLX5_CAP_GEN(mdev, qos) &&
+	    MLX5_CAP_QOS(mdev, packet_pacing))
+		return (true);
+#endif
+	return (false);
+}
+
+static bool
+mlx5e_is_tlstx_capable(struct mlx5_core_dev *mdev)
+{
+#ifdef KERN_TLS
+	if (MLX5_CAP_GEN(mdev, tls_tx) != 0 &&
+	    MLX5_CAP_GEN(mdev, log_max_dek) != 0)
+		return (true);
+#endif
+	return (false);
+}
+
+static bool
+mlx5e_is_tlsrx_capable(struct mlx5_core_dev *mdev)
+{
+#ifdef KERN_TLS
+	if (MLX5_CAP_GEN(mdev, tls_rx) != 0 &&
+	    MLX5_CAP_GEN(mdev, log_max_dek) != 0 &&
+	    MLX5_CAP_FLOWTABLE_NIC_RX(mdev,
+	    ft_field_support.outer_ip_version) != 0)
+		return (true);
+#endif
+	return (false);
+}
+
 static int
 mlx5e_ioctl(if_t ifp, u_long command, caddr_t data)
 {
@@ -3502,6 +3573,24 @@ mlx5e_ioctl(if_t ifp, u_long command, caddr_t data)
 		drv_ioctl_data = (struct siocsifcapnv_driver_data *)data;
 		PRIV_LOCK(priv);
 siocsifcap_driver:
+		if (!mlx5e_is_tlstx_capable(priv->mdev)) {
+			drv_ioctl_data->reqcap &= ~(IFCAP_TXTLS4 |
+			    IFCAP_TXTLS6);
+		}
+		if (!mlx5e_is_tlsrx_capable(priv->mdev)) {
+		        drv_ioctl_data->reqcap2 &= ~(
+			    IFCAP2_BIT(IFCAP2_RXTLS4) |
+			    IFCAP2_BIT(IFCAP2_RXTLS6));
+		}
+		if (!mlx5e_is_ipsec_capable(priv->mdev)) {
+			drv_ioctl_data->reqcap2 &=
+			    ~IFCAP2_BIT(IFCAP2_IPSEC_OFFLOAD);
+		}
+		if (!mlx5e_is_ratelimit_capable(priv->mdev)) {
+			drv_ioctl_data->reqcap &= ~(IFCAP_TXTLS_RTLMT |
+			    IFCAP_TXRTLMT);
+		}
+
 		mask = drv_ioctl_data->reqcap ^ if_getcapenable(ifp);
 
 		if (mask & IFCAP_TXCSUM) {
@@ -3602,31 +3691,11 @@ siocsifcap_driver:
 		}
 
 		VLAN_CAPABILITIES(ifp);
-		/* turn off LRO means also turn of HW LRO - if it's on */
-		if (mask & IFCAP_LRO) {
-			int was_opened = test_bit(MLX5E_STATE_OPENED, &priv->state);
-			bool need_restart = false;
 
+		/* hw_lro and IFCAP_LRO are divorsed, only toggle sw LRO. */
+		if (mask & IFCAP_LRO)
 			if_togglecapenable(ifp, IFCAP_LRO);
 
-			/* figure out if updating HW LRO is needed */
-			if (!(if_getcapenable(ifp) & IFCAP_LRO)) {
-				if (priv->params.hw_lro_en) {
-					priv->params.hw_lro_en = false;
-					need_restart = true;
-				}
-			} else {
-				if (priv->params.hw_lro_en == false &&
-				    priv->params_ethtool.hw_lro != 0) {
-					priv->params.hw_lro_en = true;
-					need_restart = true;
-				}
-			}
-			if (was_opened && need_restart) {
-				mlx5e_close_locked(ifp);
-				mlx5e_open_locked(ifp);
-			}
-		}
 		if (mask & IFCAP_HWRXTSTMP) {
 			if_togglecapenable(ifp, IFCAP_HWRXTSTMP);
 			if (if_getcapenable(ifp) & IFCAP_HWRXTSTMP) {
@@ -3642,6 +3711,18 @@ siocsifcap_driver:
 			if_togglecapenable2(ifp, IFCAP2_BIT(IFCAP2_RXTLS4));
 		if ((mask & IFCAP2_BIT(IFCAP2_RXTLS6)) != 0)
 			if_togglecapenable2(ifp, IFCAP2_BIT(IFCAP2_RXTLS6));
+#ifdef IPSEC_OFFLOAD
+		if ((mask & IFCAP2_BIT(IFCAP2_IPSEC_OFFLOAD)) != 0) {
+			bool was_enabled = (if_getcapenable2(ifp) &
+			    IFCAP2_BIT(IFCAP2_IPSEC_OFFLOAD)) != 0;
+			mlx5e_close_locked(ifp);
+			if (was_enabled)
+				ipsec_accel_on_ifdown(priv->ifp);
+			if_togglecapenable2(ifp,
+			    IFCAP2_BIT(IFCAP2_IPSEC_OFFLOAD));
+			mlx5e_open_locked(ifp);
+		}
+#endif
 out:
 		PRIV_UNLOCK(priv);
 		break;
@@ -3674,6 +3755,11 @@ out:
 		/* Check if module is present before doing an access */
 		module_status = mlx5_query_module_status(priv->mdev, module_num);
 		if (module_status != MLX5_MODULE_STATUS_PLUGGED_ENABLED) {
+			if (bootverbose)
+				mlx5_en_err(ifp,
+				    "Query module %d status: not plugged (%d), "
+				    "eeprom reading is not supported\n",
+				    module_num, module_status);
 			error = EINVAL;
 			goto err_i2c;
 		}
@@ -4485,10 +4571,6 @@ mlx5e_create_ifp(struct mlx5_core_dev *mdev)
 	    M_MLX5EN, mlx5_dev_domainset(mdev), M_WAITOK | M_ZERO);
 
 	ifp = priv->ifp = if_alloc_dev(IFT_ETHER, mdev->pdev->dev.bsddev);
-	if (ifp == NULL) {
-		mlx5_core_err(mdev, "if_alloc() failed\n");
-		goto err_free_priv;
-	}
 	/* setup all static fields */
 	if (mlx5e_priv_static_init(priv, mdev, mdev->priv.eq_table.num_comp_vectors)) {
 		mlx5_core_err(mdev, "mlx5e_priv_static_init() failed\n");
@@ -4517,13 +4599,21 @@ mlx5e_create_ifp(struct mlx5_core_dev *mdev)
 	if_setcapabilitiesbit(ifp, IFCAP_TSO | IFCAP_VLAN_HWTSO, 0);
 	if_setcapabilitiesbit(ifp, IFCAP_HWSTATS | IFCAP_HWRXTSTMP, 0);
 	if_setcapabilitiesbit(ifp, IFCAP_MEXTPG, 0);
-	if_setcapabilitiesbit(ifp, IFCAP_TXTLS4 | IFCAP_TXTLS6, 0);
-#ifdef RATELIMIT
-	if_setcapabilitiesbit(ifp, IFCAP_TXRTLMT | IFCAP_TXTLS_RTLMT, 0);
-#endif
+	if (mlx5e_is_tlstx_capable(mdev))
+		if_setcapabilitiesbit(ifp, IFCAP_TXTLS4 | IFCAP_TXTLS6, 0);
+	if (mlx5e_is_tlsrx_capable(mdev))
+		if_setcapabilities2bit(ifp, IFCAP2_BIT(IFCAP2_RXTLS4) |
+		    IFCAP2_BIT(IFCAP2_RXTLS6), 0);
+	if (mlx5e_is_ratelimit_capable(mdev)) {
+		if_setcapabilitiesbit(ifp, IFCAP_TXRTLMT, 0);
+		if (mlx5e_is_tlstx_capable(mdev))
+			if_setcapabilitiesbit(ifp, IFCAP_TXTLS_RTLMT, 0);
+	}
 	if_setcapabilitiesbit(ifp, IFCAP_VXLAN_HWCSUM | IFCAP_VXLAN_HWTSO, 0);
-	if_setcapabilities2bit(ifp, IFCAP2_BIT(IFCAP2_RXTLS4) |
-	    IFCAP2_BIT(IFCAP2_RXTLS6), 0);
+	if (mlx5e_is_ipsec_capable(mdev))
+		if_setcapabilities2bit(ifp, IFCAP2_BIT(IFCAP2_IPSEC_OFFLOAD),
+		    0);
+
 	if_setsndtagallocfn(ifp, mlx5e_snd_tag_alloc);
 #ifdef RATELIMIT
 	if_setratelimitqueryfn(ifp, mlx5e_ratelimit_query);
@@ -4623,10 +4713,18 @@ mlx5e_create_ifp(struct mlx5_core_dev *mdev)
 		goto err_rl_init;
 	}
 
+	if ((if_getcapenable2(ifp) & IFCAP2_BIT(IFCAP2_IPSEC_OFFLOAD)) != 0) {
+		err = mlx5e_ipsec_init(priv);
+		if (err) {
+			if_printf(ifp, "%s: mlx5e_tls_init failed\n", __func__);
+			goto err_tls_init;
+		}
+	}
+
 	err = mlx5e_open_drop_rq(priv, &priv->drop_rq);
 	if (err) {
 		if_printf(ifp, "%s: mlx5e_open_drop_rq failed (%d)\n", __func__, err);
-		goto err_tls_init;
+		goto err_ipsec_init;
 	}
 
 	err = mlx5e_open_rqts(priv);
@@ -4802,6 +4900,9 @@ err_open_rqts:
 err_open_drop_rq:
 	mlx5e_close_drop_rq(&priv->drop_rq);
 
+err_ipsec_init:
+	mlx5e_ipsec_cleanup(priv);
+
 err_tls_init:
 	mlx5e_tls_cleanup(priv);
 
@@ -4828,8 +4929,6 @@ err_free_sysctl:
 
 err_free_ifp:
 	if_free(ifp);
-
-err_free_priv:
 	free(priv, M_MLX5EN);
 	return (NULL);
 }
@@ -4848,7 +4947,12 @@ mlx5e_destroy_ifp(struct mlx5_core_dev *mdev, void *vpriv)
 
 #ifdef RATELIMIT
 	/*
-	 * The kernel can have reference(s) via the m_snd_tag's into
+	 * Tell the TCP ratelimit code to release the rate-sets attached
+	 * to our ifnet.
+	 */
+	tcp_rl_release_ifnet(ifp);
+	/*
+	 * The kernel can still have reference(s) via the m_snd_tag's into
 	 * the ratelimit channels, and these must go away before
 	 * detaching:
 	 */
@@ -4910,10 +5014,14 @@ mlx5e_destroy_ifp(struct mlx5_core_dev *mdev, void *vpriv)
 	ether_ifdetach(ifp);
 
 	mlx5e_tls_rx_cleanup(priv);
+#ifdef IPSEC_OFFLOAD
+	ipsec_accel_on_ifdown(priv->ifp);
+#endif
 	mlx5e_close_flow_tables(priv);
 	mlx5e_close_tirs(priv);
 	mlx5e_close_rqts(priv);
 	mlx5e_close_drop_rq(&priv->drop_rq);
+	mlx5e_ipsec_cleanup(priv);
 	mlx5e_tls_cleanup(priv);
 	mlx5e_rl_cleanup(priv);
 
@@ -5028,6 +5136,7 @@ mlx5e_cleanup(void)
 module_init_order(mlx5e_init, SI_ORDER_SIXTH);
 module_exit_order(mlx5e_cleanup, SI_ORDER_SIXTH);
 
+MODULE_DEPEND(mlx5en, ipsec, 1, 1, 1);
 MODULE_DEPEND(mlx5en, linuxkpi, 1, 1, 1);
 MODULE_DEPEND(mlx5en, mlx5, 1, 1, 1);
 MODULE_VERSION(mlx5en, 1);

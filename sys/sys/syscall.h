@@ -4,8 +4,10 @@
  * DO NOT EDIT-- this file is automatically @generated.
  */
 
+#define 	SYS_exit	SYS__exit
+
 #define	SYS_syscall	0
-#define	SYS_exit	1
+#define	SYS__exit	1
 #define	SYS_fork	2
 #define	SYS_read	3
 #define	SYS_write	4
@@ -83,8 +85,8 @@
 				/* 76 is obsolete vhangup */
 				/* 77 is obsolete vlimit */
 #define	SYS_mincore	78
-#define	SYS_getgroups	79
-#define	SYS_setgroups	80
+#define	SYS_freebsd14_getgroups	79
+#define	SYS_freebsd14_setgroups	80
 #define	SYS_getpgrp	81
 #define	SYS_setpgid	82
 #define	SYS_setitimer	83
@@ -442,7 +444,7 @@
 #define	SYS_symlinkat	502
 #define	SYS_unlinkat	503
 #define	SYS_posix_openpt	504
-#define	SYS_gssd_syscall	505
+				/* 505 is obsolete kgssapi */
 #define	SYS_jail_get	506
 #define	SYS_jail_set	507
 #define	SYS_jail_remove	508
@@ -525,4 +527,17 @@
 #define	SYS_timerfd_gettime	586
 #define	SYS_timerfd_settime	587
 #define	SYS_kcmp	588
-#define	SYS_MAXSYSCALL	589
+#define	SYS_getrlimitusage	589
+#define	SYS_fchroot	590
+#define	SYS_setcred	591
+#define	SYS_exterrctl	592
+#define	SYS_inotify_add_watch_at	593
+#define	SYS_inotify_rm_watch	594
+#define	SYS_getgroups	595
+#define	SYS_setgroups	596
+#define	SYS_jail_attach_jd	597
+#define	SYS_jail_remove_jd	598
+#define	SYS_kexec_load	599
+#define	SYS_pdrfork	600
+#define	SYS_pdwait	601
+#define	SYS_MAXSYSCALL	602

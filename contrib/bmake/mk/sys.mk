@@ -1,15 +1,8 @@
-# SPDX-License-Identifier: BSD-2-Clause
-#
-# $Id: sys.mk,v 1.60 2024/02/17 17:26:57 sjg Exp $
+# $Id: sys.mk,v 1.66 2025/11/19 03:38:20 sjg Exp $
 #
 #	@(#) Copyright (c) 2003-2023, Simon J. Gerraty
 #
-#	This file is provided in the hope that it will
-#	be of use.  There is absolutely NO WARRANTY.
-#	Permission to copy, redistribute or otherwise
-#	use this file is hereby granted provided that
-#	the above copyright notice and this notice are
-#	left intact.
+#	SPDX-License-Identifier: BSD-2-Clause
 #
 #	Please send copies of changes and bug-fixes to:
 #	sjg@crufty.net
@@ -97,9 +90,11 @@ OPTIONS_DEFAULT_NO += \
 
 OPTIONS_DEFAULT_DEPENDENT += \
 	AUTO_OBJ/DIRDEPS_BUILD \
+	META_ERROR_TARGET/DIRDEPS_BUILD \
 	META_MODE/DIRDEPS_BUILD \
 	STAGING/DIRDEPS_BUILD \
 	STATIC_DIRDEPS_CACHE/DIRDEPS_CACHE \
+	UPDATE_DEPENDFILE/DIRDEPS_BUILD \
 
 .-include <options.mk>
 

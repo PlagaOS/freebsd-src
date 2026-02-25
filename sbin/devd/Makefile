@@ -1,4 +1,3 @@
-
 .include <src.opts.mk>
 
 WARNS?= 6
@@ -45,6 +44,18 @@ CONFGROUPS+=	HYPERV
 HYPERVDIR=${DEVDDIR}
 HYPERV+=	hyperv.conf
 HYPERVPACKAGE=	hyperv-tools
+.endif
+
+CONFGROUPS+=		NVME
+NVMEDIR=		${DEVDDIR}
+NVME+=			nvmf.conf
+NVMEPACKAGE=		nvme-tools
+
+.if ${MK_SOUND} != "no"
+CONFGROUPS+=		SND
+SNDDIR=			${DEVDDIR}
+SND=			snd.conf
+SNDPACKAGE=		sound
 .endif
 
 .if ${MK_USB} != "no"

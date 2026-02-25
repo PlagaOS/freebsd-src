@@ -216,10 +216,15 @@ static inline void
 _vq_record(int i, struct vring_desc *vd, struct vmctx *ctx, struct iovec *iov,
     int n_iov, struct vi_req *reqp)
 {
+	uint32_t len;
+	uint64_t addr;
+
 	if (i >= n_iov)
 		return;
-	iov[i].iov_base = paddr_guest2host(ctx, vd->addr, vd->len);
-	iov[i].iov_len = vd->len;
+	len = atomic_load_32(&vd->len);
+	addr = atomic_load_64(&vd->addr);
+	iov[i].iov_len = len;
+	iov[i].iov_base = paddr_guest2host(ctx, addr, len);
 	if ((vd->flags & VRING_DESC_F_WRITE) == 0)
 		reqp->readable++;
 	else
@@ -326,7 +331,7 @@ vq_getchain(struct vqueue_info *vq, struct iovec *iov, int niov,
 		if ((vdir->flags & VRING_DESC_F_INDIRECT) == 0) {
 			_vq_record(i, vdir, ctx, iov, niov, &req);
 			i++;
-		} else if ((vs->vs_vc->vc_hv_caps &
+		} else if ((vs->vs_negotiated_caps &
 		    VIRTIO_RING_F_INDIRECT_DESC) == 0) {
 			EPRINTLN(
 			    "%s: descriptor has forbidden INDIRECT flag, "

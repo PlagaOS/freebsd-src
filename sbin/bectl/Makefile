@@ -1,4 +1,3 @@
-
 .include <src.opts.mk>
 
 PACKAGE=zfs
@@ -12,17 +11,18 @@ LIBADD+= be \
 	nvpair \
 	spl \
 	util \
-	zfsbootenv
+	zfsbootenv \
+	pthread
 
 CFLAGS+= -DIN_BASE
-CFLAGS+= -I${SRCTOP}/sys/contrib/openzfs/include
-CFLAGS+= -I${SRCTOP}/sys/contrib/openzfs/lib/libspl/include/
-CFLAGS+= -I${SRCTOP}/sys/contrib/openzfs/lib/libspl/include/os/freebsd
+CFLAGS+= -I${ZFSTOP}/include
+CFLAGS+= -I${ZFSTOP}/lib/libspl/include/
+CFLAGS+= -I${ZFSTOP}/lib/libspl/include/os/freebsd
 CFLAGS+= -I${SRCTOP}/sys
 CFLAGS+= -I${SRCTOP}/cddl/compat/opensolaris/include
-CFLAGS+= -I${SRCTOP}/sys/contrib/openzfs/module/icp/include
-CFLAGS+= -include ${SRCTOP}/sys/contrib/openzfs/include/os/freebsd/spl/sys/ccompile.h
-CFLAGS+= -DHAVE_ISSETUGID 
+CFLAGS+= -I${ZFSTOP}/module/icp/include
+CFLAGS+= -include ${ZFSTOP}/include/os/freebsd/spl/sys/ccompile.h
+CFLAGS+= -DHAVE_ISSETUGID -DHAVE_STRLCAT -DHAVE_STRLCPY
 CFLAGS+= -include ${SRCTOP}/sys/modules/zfs/zfs_config.h
 
 HAS_TESTS=	yes

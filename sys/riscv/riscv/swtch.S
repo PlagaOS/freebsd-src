@@ -33,7 +33,6 @@
  */
 
 #include "assym.inc"
-#include "opt_sched.h"
 
 #include <machine/param.h>
 #include <machine/asm.h>
@@ -315,7 +314,7 @@ ENTRY(cpu_switch)
 
 	/* Release the old thread */
 	sd	s2, TD_LOCK(s0)
-#if defined(SCHED_ULE) && defined(SMP)
+#if defined(SMP)
 	/* Spin if TD_LOCK points to a blocked_lock */
 	la	s2, _C_LABEL(blocked_lock)
 1:
@@ -419,7 +418,7 @@ ENTRY(fork_trampoline)
 	 * Store our pcpup on stack, we will load it back
 	 * on kernel mode trap.
 	 */
-	sd	tp, (TF_SIZE)(sp)
+	sd	tp, (TF_SIZE + KF_TP)(sp)
 	ld	tp, (TF_TP)(sp)
 
 	/* Save kernel stack so we can use it doing a user trap */

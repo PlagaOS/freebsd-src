@@ -25,7 +25,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include <sys/stdint.h>
 #include <sys/stddef.h>
 #include <sys/param.h>
@@ -100,6 +99,14 @@ xhci_pci_match(device_t self)
 		return ("AMD Starship USB 3.0 controller");
 	case 0x149c1022:
 		return ("AMD Matisse USB 3.0 controller");
+	case 0x15b61022:
+	case 0x15b71022:
+		return ("AMD Raphael/Granite Ridge USB 3.1 controller");
+	case 0x15b81022:
+		return ("AMD Raphael/Granite Ridge USB 2.0 controller");
+	case 0x15e01022:
+	case 0x15e11022:
+		return ("AMD Raven USB 3.1 controller");
 	case 0x43ba1022:
 		return ("AMD X399 USB 3.0 controller");
 	case 0x43b91022: /* X370 */
@@ -107,6 +114,8 @@ xhci_pci_match(device_t self)
 		return ("AMD 300 Series USB 3.1 controller");
 	case 0x43d51022:
 		return ("AMD 400 Series USB 3.1 controller");
+	case 0x43f71022:
+		return ("AMD 600 Series USB 3.2 controller");
 	case 0x78121022:
 	case 0x78141022:
 	case 0x79141022:
@@ -169,7 +178,11 @@ xhci_pci_match(device_t self)
 		return ("Intel Tiger Lake-H USB 3.2 controller");
 	case 0x461e8086:
 		return ("Intel Alder Lake-P Thunderbolt 4 USB controller");
+	case 0x4b7d8086:
+		return ("Intel Elkhart Lake USB 3.1 controller");
 	case 0x51ed8086:
+	case 0x54ed8086:
+	case 0x5fed8086:
 		return ("Intel Alder Lake USB 3.2 controller");
 	case 0x5aa88086:
 		return ("Intel Apollo Lake USB 3.0 controller");
@@ -386,7 +399,7 @@ xhci_pci_attach(device_t self)
 		device_printf(self, "Could not allocate IRQ\n");
 		/* goto error; FALLTHROUGH - use polling */
 	}
-	sc->sc_bus.bdev = device_add_child(self, "usbus", -1);
+	sc->sc_bus.bdev = device_add_child(self, "usbus", DEVICE_UNIT_ANY);
 	if (sc->sc_bus.bdev == NULL) {
 		device_printf(self, "Could not add USB device\n");
 		goto error;
@@ -462,9 +475,12 @@ static int
 xhci_pci_detach(device_t self)
 {
 	struct xhci_softc *sc = device_get_softc(self);
+	int error;
 
 	/* during module unload there are lots of children leftover */
-	device_delete_children(self);
+	error = bus_generic_detach(self);
+	if (error != 0)
+		return (error);
 
 	usb_callout_drain(&sc->sc_callout);
 	xhci_halt_controller(sc);
@@ -508,7 +524,7 @@ xhci_pci_take_controller(device_t self)
 	uint16_t to;
 	uint8_t bios_sem;
 
-	cparams = XREAD4(sc, capa, XHCI_HCSPARAMS0);
+	cparams = XREAD4(sc, capa, XHCI_HCCPARAMS1);
 
 	eec = -1;
 

@@ -121,9 +121,14 @@ build-tools: gethost
 tc.defs.c: gethost
 
 DEPENDOBJS+= gethost
-gethost: gethost.c sh.err.h tc.const.h sh.h ${BUILD_TOOLS_META}
+gethost: gethost.c sh.err.h sh.h ${BUILD_TOOLS_META}
 	@rm -f ${.TARGET}
+	# Define _h_tc_const so that tc.h will skip including tc.const.h.
+	# gethost.c does not actually require any of the definitions in there,
+	# and building tc.const.h requires target headers which are not
+	# available when we need to build gethost.
 	${HOST_CC:N${CCACHE_BIN}} -o gethost ${LDFLAGS} ${CFLAGS:C/-DHAVE_ICONV//} \
+	    -D_h_tc_const \
 	    ${TCSHDIR}/gethost.c
 .endif
 
@@ -158,14 +163,5 @@ tc.const.h: tc.const.c sh.char.h config.h config_f.h sh.types.h sh.err.h ${BUILD
 	    sed -e 's/Char \([a-zA-Z0-9_]*\)\(.*\)/extern Char \1[];/' | \
 	    sort >> ${.TARGET}
 	@echo '#endif /* _h_tc_const */' >> ${.TARGET}
-
-beforeinstallconfig:
-	rm -f ${DESTDIR}/.cshrc
-
-afterinstallconfig:
-	# XXX Set link mode explicitly via -m.  We cannot use LINKMODE for this
-	# link, as it would also apply to the tcsh link above.
-	${INSTALL_LINK} ${TAG_ARGS} -m ${CONFMODE} ${DESTDIR}/root/.cshrc \
-	    ${DESTDIR}/.cshrc
 
 .include <bsd.prog.mk>

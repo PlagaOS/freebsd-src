@@ -33,12 +33,14 @@
 #include <sys/bus.h>
 #include <sys/eventhandler.h>
 #include <sys/kernel.h>
+#include <sys/power.h>
 
 #include <contrib/dev/acpica/include/acpi.h>
 #include <dev/acpica/acpivar.h>
 
 #include <linux/notifier.h>
 #include <linux/suspend.h>
+#include <linux/uuid.h>
 
 #include <acpi/acpi_bus.h>
 #include <acpi/video.h>
@@ -71,8 +73,9 @@ bsd_acpi_get_handle(device_t bsddev)
 }
 
 bool
-acpi_check_dsm(ACPI_HANDLE handle, const char *uuid, int rev, uint64_t funcs)
+acpi_check_dsm(ACPI_HANDLE handle, const guid_t *uuid, int rev, uint64_t funcs)
 {
+	UINT64 ret;
 
 	if (funcs == 0)
 		return (false);
@@ -86,35 +89,65 @@ acpi_check_dsm(ACPI_HANDLE handle, const char *uuid, int rev, uint64_t funcs)
 	 */
 	funcs |= 1 << 0;
 
-	return ((acpi_DSMQuery(handle, uuid, rev) & funcs) == funcs);
+	ret = acpi_DSMQuery(handle, (const uint8_t *)uuid, rev);
+	return ((ret & funcs) == funcs);
 }
 
 ACPI_OBJECT *
-acpi_evaluate_dsm_typed(ACPI_HANDLE handle, const char *uuid, int rev,
+acpi_evaluate_dsm_typed(ACPI_HANDLE handle, const guid_t *uuid, int rev,
     int func, ACPI_OBJECT *argv4, ACPI_OBJECT_TYPE type)
 {
 	ACPI_BUFFER buf;
+	ACPI_STATUS status;
 
-	return (ACPI_SUCCESS(acpi_EvaluateDSMTyped(handle, uuid, rev, func,
-	    argv4, &buf, type)) ? (ACPI_OBJECT *)buf.Pointer : NULL);
+	status = acpi_EvaluateDSMTyped(handle, (const uint8_t *)uuid, rev, func,
+	    argv4, &buf, type);
+	return (ACPI_SUCCESS(status) ? (ACPI_OBJECT *)buf.Pointer : NULL);
 }
 
-static void
-linux_handle_power_suspend_event(void *arg __unused)
+union linuxkpi_acpi_object *
+acpi_evaluate_dsm(ACPI_HANDLE ObjHandle, const guid_t *guid,
+    UINT64 rev, UINT64 func, union linuxkpi_acpi_object *pkg)
 {
-	/*
-	 * Only support S3 for now.
-	 * acpi_sleep_event isn't always called so we use power_suspend_early
-	 * instead which means we don't know what state we're switching to.
-	 * TODO: Make acpi_sleep_event consistent
-	 */
-	linux_acpi_target_sleep_state = ACPI_STATE_S3;
+	ACPI_BUFFER buf;
+	ACPI_STATUS status;
+
+	status = acpi_EvaluateDSM(ObjHandle, (const uint8_t *)guid, rev, func,
+	    (ACPI_OBJECT *)pkg, &buf);
+	return (ACPI_SUCCESS(status) ?
+	    (union linuxkpi_acpi_object *)buf.Pointer : NULL);
 }
 
 static void
-linux_handle_power_resume_event(void *arg __unused)
+linux_handle_power_suspend_event(void *arg __unused, enum power_stype stype)
+{
+	switch (stype) {
+	case POWER_STYPE_SUSPEND_TO_IDLE:
+		/*
+		 * XXX: obiwac Not 100% sure this is correct, but
+		 * acpi_target_sleep_state does seem to be set to
+		 * ACPI_STATE_S3 during s2idle on Linux.
+		 */
+		linux_acpi_target_sleep_state = ACPI_STATE_S3;
+		pm_suspend_target_state = PM_SUSPEND_TO_IDLE;
+		break;
+	case POWER_STYPE_SUSPEND_TO_MEM:
+		linux_acpi_target_sleep_state = ACPI_STATE_S3;
+		pm_suspend_target_state = PM_SUSPEND_MEM;
+		break;
+	default:
+		printf("%s: sleep type %d not yet supported\n",
+		    __func__, stype);
+		break;
+	}
+}
+
+static void
+linux_handle_power_resume_event(void *arg __unused,
+    enum power_stype stype __unused)
 {
 	linux_acpi_target_sleep_state = ACPI_STATE_S0;
+	pm_suspend_target_state = PM_SUSPEND_ON;
 }
 
 static void
@@ -178,6 +211,7 @@ struct acpi_dev_present_ctx {
 	const char *hid;
 	const char *uid;
 	int64_t hrv;
+	struct acpi_device *dev;
 };
 
 static ACPI_STATUS
@@ -185,6 +219,7 @@ acpi_dev_present_cb(ACPI_HANDLE handle, UINT32 level, void *context,
     void **result)
 {
 	ACPI_DEVICE_INFO *devinfo;
+	struct acpi_device *dev;
 	struct acpi_dev_present_ctx *match = context;
 	bool present = false;
 	UINT32 sta, hrv;
@@ -228,6 +263,11 @@ acpi_dev_present_cb(ACPI_HANDLE handle, UINT32 level, void *context,
 			return (AE_OK);
 	}
 
+	dev = acpi_get_device(handle);
+	if (dev == NULL)
+		return (AE_OK);
+	match->dev = dev;
+
 	return (AE_ERROR);
 }
 
@@ -245,6 +285,24 @@ lkpi_acpi_dev_present(const char *hid, const char *uid, int64_t hrv)
 	    ACPI_UINT32_MAX, acpi_dev_present_cb, NULL, &match, NULL);
 
 	return (rv == AE_ERROR);
+}
+
+struct acpi_device *
+lkpi_acpi_dev_get_first_match_dev(const char *hid, const char *uid,
+    int64_t hrv)
+{
+	struct acpi_dev_present_ctx match;
+	int rv;
+
+	match.hid = hid;
+	match.uid = uid;
+	match.hrv = hrv;
+	match.dev = NULL;
+
+	rv = AcpiWalkNamespace(ACPI_TYPE_DEVICE, ACPI_ROOT_OBJECT,
+	    ACPI_UINT32_MAX, acpi_dev_present_cb, NULL, &match, NULL);
+
+	return (rv == AE_ERROR ? match.dev : NULL);
 }
 
 static void
@@ -284,14 +342,21 @@ bsd_acpi_get_handle(device_t bsddev)
 }
 
 bool
-acpi_check_dsm(ACPI_HANDLE handle, const char *uuid, int rev, uint64_t funcs)
+acpi_check_dsm(ACPI_HANDLE handle, const guid_t *uuid, int rev, uint64_t funcs)
 {
 	return (false);
 }
 
 ACPI_OBJECT *
-acpi_evaluate_dsm_typed(ACPI_HANDLE handle, const char *uuid, int rev,
+acpi_evaluate_dsm_typed(ACPI_HANDLE handle, const guid_t *uuid, int rev,
      int func, ACPI_OBJECT *argv4, ACPI_OBJECT_TYPE type)
+{
+	return (NULL);
+}
+
+union linuxkpi_acpi_object *
+acpi_evaluate_dsm(ACPI_HANDLE ObjHandle, const guid_t *guid,
+    UINT64 rev, UINT64 func, union linuxkpi_acpi_object *pkg)
 {
 	return (NULL);
 }
@@ -318,6 +383,13 @@ bool
 lkpi_acpi_dev_present(const char *hid, const char *uid, int64_t hrv)
 {
 	return (false);
+}
+
+struct acpi_device *
+lkpi_acpi_dev_get_first_match_dev(const char *hid, const char *uid,
+    int64_t hrv)
+{
+	return (NULL);
 }
 
 #endif	/* !DEV_ACPI */

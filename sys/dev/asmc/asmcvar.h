@@ -33,6 +33,7 @@ struct asmc_softc {
 	device_t 		sc_dev;
 	struct mtx 		sc_mtx;
 	int 			sc_nfan;
+	int 			sc_nkeys;
 	int16_t			sms_rest_x;
 	int16_t			sms_rest_y;
 	int16_t			sms_rest_z;
@@ -123,6 +124,11 @@ struct asmc_softc {
  * Clamshell.
  */
 #define ASMC_KEY_CLAMSHELL	"MSLD"	/* RO; 1 byte */
+
+/*
+ * Auto power on / Wake-on-LAN.
+ */
+#define ASMC_KEY_AUPO		"AUPO"	/* RW; 1 byte */
 
 /*
  * Interrupt keys.
@@ -432,6 +438,75 @@ struct asmc_softc {
 				  "TM0S", "TP0P", "TPCD", "TW0P", "Ta0P", \
 				  "TaSP", "Th1H", "Th2H", "Ts0P", "Ts0S", \
 				  "Ts1S" }
+
+#define ASMC_MBP114_TEMPS	{ "IC0C", "ID0R", "IHDC", "IPBR", "IC0R", \
+				  "IO3R", "IO5R", "IM0C", "IC1C", "IC2C", \
+				  "IC3C", "ILDC", "IBLC", "IAPC", "IHSC", \
+				  "ICMC", "TC0P", "TP0P", "TM0P", \
+				  "Ta0P", "Th2H", "Th1H", "TW0P", "Ts0P", \
+				  "Ts1P", "TB0T", "TB1T", "TB2T", "TH0A", "TH0B", \
+				  "TC1C", "TC2C", "TC3C", "TC4C", "TCXC", \
+				  "TCGC", "TPCD", "TCSA", "VC0C", "VD0R", \
+				  "VP0R", "ALSL", "F0Ac", "F1Ac", "PCPC", \
+				  "PCPG", "PCPT", "PSTR", "PDTR", NULL }
+
+#define ASMC_MBP114_TEMPNAMES	{ "IC0C", "ID0R", "IHDC", "IPBR", "IC0R", \
+				  "IO3R", "IO5R", "IM0C", "IC1C", "IC2C", \
+				  "IC3C", "ILDC", "IBLC", "IAPC", "IHSC", \
+				  "ICMC", "TC0P", "TP0P", "TM0P", \
+				  "Ta0P", "Th2H", "Th1H", "TW0P", "Ts0P", \
+				  "Ts1P", "TB0T", "TB1T", "TB2T", "TH0A", "TH0B", \
+				  "TC1C", "TC2C", "TC3C", "TC4C", "TCXC", \
+				  "TCGC", "TPCD", "TCSA", "VC0C", "VD0R", \
+				  "VP0R", "ALSL", "F0Ac", "F1Ac", "PCPC", \
+				  "PCPG", "PCPT", "PSTR", "PDTR" }
+
+#define ASMC_MBP114_TEMPDESCS	{ "CPU High (CPU, I/O)", "DC In", "SSD", "Charger (BMON)", "CPU", \
+				  "Other 3.3V", "Other 5V", "Memory", "Platform Controller Hub Core", "CPU Load Current Monitor", \
+				  "CPU DDR", "LCD Panel", "LCD Backlight", "Airport", "Thunderbolt", \
+				  "S2", "CPU Proximity", "Platform Controller Hub", "Memory Proximity", "Air Flow Proximity", \
+				  "Left Fin Stack", "Right Fin Stack", "Airport Proximity", "Palm Rest", "Palm Rest Actuator", \
+				  "Battery Max", "Battery Sensor 1", "Battery Sensor 2", "SSD A", "SSD B", \
+				  "CPU Core 1", "CPU Core 2", "CPU Core 3", "CPU Core 4", "CPU PECI Die", \
+				  "Intel GPU", "Platform Controller Hub PECI", "CPU System Agent Core", "CPU VCore", "DC In", \
+				  "Pbus", "Ambient Light", "Leftside", "Rightside", "CPU Package Core", \
+				  "CPU Package GPU", "CPU Package Total", "System Total", "DC In" }
+
+/* MacBookPro11,5 - same as 11,4 but without IBLC, ICMC, and IC2C keys */
+#define ASMC_MBP115_TEMPS	{ "IC0C", "ID0R", "IHDC", "IPBR", "IC0R", \
+				  "IO3R", "IO5R", "IM0C", "IC1C", \
+				  "IC3C", "ILDC", "IAPC", "IHSC", \
+				  "TC0P", "TP0P", "TM0P", \
+				  "Ta0P", "Th2H", "Th1H", "TW0P", "Ts0P", \
+				  "Ts1P", "TB0T", "TB1T", "TB2T", "TH0A", "TH0B", \
+				  "TC1C", "TC2C", "TC3C", "TC4C", "TCXC", \
+				  "TCGC", "TPCD", "TCSA", "VC0C", "VD0R", \
+				  "VP0R", "ALSL", "F0Ac", "F1Ac", "PCPC", \
+				  "PCPG", "PCPT", "PSTR", "PDTR", NULL }
+
+
+#define ASMC_MBP115_TEMPNAMES	{ "IC0C", "ID0R", "IHDC", "IPBR", "IC0R", \
+				  "IO3R", "IO5R", "IM0C", "IC1C", \
+				  "IC3C", "ILDC", "IAPC", "IHSC", \
+				  "TC0P", "TP0P", "TM0P", \
+				  "Ta0P", "Th2H", "Th1H", "TW0P", "Ts0P", \
+				  "Ts1P", "TB0T", "TB1T", "TB2T", "TH0A", "TH0B", \
+				  "TC1C", "TC2C", "TC3C", "TC4C", "TCXC", \
+				  "TCGC", "TPCD", "TCSA", "VC0C", "VD0R", \
+				  "VP0R", "ALSL", "F0Ac", "F1Ac", "PCPC", \
+				  "PCPG", "PCPT", "PSTR", "PDTR" }
+
+#define ASMC_MBP115_TEMPDESCS	{ "CPU High (CPU, I/O)", "DC In", "SSD", "Charger (BMON)", "CPU", \
+				  "Other 3.3V", "Other 5V", "Memory", "Platform Controller Hub Core", \
+				  "CPU DDR", "LCD Panel", "Airport", "Thunderbolt", \
+				  "CPU Proximity", "Platform Controller Hub", "Memory Proximity", "Air Flow Proximity", \
+				  "Left Fin Stack", "Right Fin Stack", "Airport Proximity", "Palm Rest", "Palm Rest Actuator", \
+				  "Battery Max", "Battery Sensor 1", "Battery Sensor 2", "SSD A", "SSD B", \
+				  "CPU Core 1", "CPU Core 2", "CPU Core 3", "CPU Core 4", "CPU PECI Die", \
+				  "Intel GPU", "Platform Controller Hub PECI", "CPU System Agent Core", "CPU VCore", "DC In", \
+				  "Pbus", "Ambient Light", "Leftside", "Rightside", "CPU Package Core", \
+				  "CPU Package GPU", "CPU Package Total", "System Total", "DC In" }
+
 #define ASMC_MM_TEMPS		{ "TN0P", "TN1P", NULL }
 #define ASMC_MM_TEMPNAMES	{ "northbridge1", "northbridge2" }
 #define ASMC_MM_TEMPDESCS	{ "Northbridge Point 1", \
@@ -530,6 +605,68 @@ struct asmc_softc {
 				  "Power Supply Temperature", \
 				  "Wireless Module Proximity Temperature", }
 
+#define ASMC_MM61_TEMPS		{ "TA0P", "TA1P", \
+				  "TC0D", "TC0G", "TC0P", "TCPG", \
+				  "TI0P", \
+				  "TM0S", "TMBS", "TM0P", \
+				  "TP0P", "TPCD", \
+				  "Tp0C", \
+				  "TW0P", NULL }
+
+#define ASMC_MM61_TEMPNAMES	{ "ambient_air_proximity", "ambient_cpu_pch_wireless_dimm", \
+				  "cpu_die", "TC0G", "cpu_proximity", "TCPG", \
+				  "thunderbolt_proximity", \
+				  "memory_slot1", "memory_slot2", "memory_proximity", \
+				  "pch_controller_proximity", "pch_controller_die", \
+				  "pwr_supply", \
+				  "wireless_proximity", NULL }
+
+#define ASMC_MM61_TEMPDESCS	{ "Ambient Air Proximity Temperature", \
+				  "Combo Ambient CPU PCH Wireless DIMM Temperature", \
+				  "CPU Die Temperature", \
+				  NULL, \
+				  "CPU Proximity Temperature", \
+				  NULL, \
+				  "Thunderbolt Proximity Temperature", \
+				  "Memory Slot 1 Temperature", \
+				  "Memory Slot 2 Temperature", \
+				  "Memory Slots Proximity Temperature", \
+				  "Platform Controller Hub Proximity Temperature", \
+				  "Platform Controller Hub Die Temperature", \
+				  "Power Supply Temperature", \
+				  "Wireless Module Proximity Temperature", NULL }
+
+#define ASMC_MM62_TEMPS		{ "TA0P", "TA1P", \
+				  "TC0D", "TC0G", "TC0P", "TCPG", \
+				  "TI0P", \
+				  "TM0S", "TMBS", "TM0P", \
+				  "TP0P", "TPCD", \
+				  "Tp0C", \
+				  "TW0P", NULL }
+
+#define ASMC_MM62_TEMPNAMES	{ "ambient_air_proximity", "ambient_cpu_pch_wireless_dimm", \
+				  "cpu_die", "TC0G", "cpu_proximity", "TCPG", \
+				  "thunderbolt_proximity", \
+				  "memory_slot1", "memory_slot2", "memory_proximity", \
+				  "pch_controller_proximity", "pch_controller_die", \
+				  "pwr_supply", \
+				  "wireless_proximity", NULL }
+
+#define ASMC_MM62_TEMPDESCS	{ "Ambient Air Proximity Temperature", \
+				  "Combo Ambient CPU PCH Wireless DIMM Temperature", \
+				  "CPU Die Temperature", \
+				  NULL, \
+				  "CPU Proximity Temperature", \
+				  NULL, \
+				  "Thunderbolt Proximity Temperature", \
+				  "Memory Slot 1 Temperature", \
+				  "Memory Slot 2 Temperature", \
+				  "Memory Slots Proximity Temperature", \
+				  "Platform Controller Hub Proximity Temperature", \
+				  "Platform Controller Hub Die Temperature", \
+				  "Power Supply Temperature", \
+				  "Wireless Module Proximity Temperature", NULL }
+
 #define ASMC_MM71_TEMPS		{ "TA0p", "TA1p", \
 				  "TA2p", "TC0c", \
 				  "TC0p", "TC1c", \
@@ -623,6 +760,75 @@ struct asmc_softc {
 				  "Power Supply, Location 1", \
 				  "Power Supply, Location 2", \
 				  "Tv0S", "Tv1S", }
+
+#define ASMC_MP31_TEMPS		{ "TA0P", \
+				  "TC0C", "TC0D", "TC0P", \
+				  "TC1C", "TC1D", \
+				  "TC2C", "TC2D", \
+				  "TC3C", "TC3D", \
+				  "TCAG", "TCAH", "TCBG", "TCBH", \
+				  "TH0P", "TH1P", "TH2P", "TH3P", \
+				  "TM0P", "TM0S", "TM1P", "TM1S", \
+				  "TM2P", "TM2S", "TM3S", \
+				  "TM8P", "TM8S", "TM9P", "TM9S", \
+				  "TMAP", "TMAS", "TMBS", \
+				  "TN0C", "TN0D", "TN0H", \
+				  "TS0C", \
+				  "Tp0C", "Tp1C", \
+				  "Tv0S", "Tv1S", NULL }
+
+#define ASMC_MP31_TEMPNAMES	{ "ambient", \
+				  "cpu_core0", "cpu_diode0", "cpu_a_proximity", \
+				  "cpu_core1", "cpu_diode1", \
+				  "cpu_core2", "cpu_diode2", \
+				  "cpu_core3", "cpu_diode3", \
+				  "cpu_a_pkg", "cpu_a_heatsink", \
+				  "cpu_b_pkg", "cpu_b_heatsink", \
+				  "hdd_bay0", "hdd_bay1", \
+				  "hdd_bay2", "hdd_bay3", \
+				  "mem_riser_a_prox0", "mem_riser_a_slot0", \
+				  "mem_riser_a_prox1", "mem_riser_a_slot1", \
+				  "mem_riser_a_prox2", "mem_riser_a_slot2", \
+				  "mem_riser_a_slot3", \
+				  "mem_riser_b_prox0", "mem_riser_b_slot0", \
+				  "mem_riser_b_prox1", "mem_riser_b_slot1", \
+				  "mem_riser_b_prox2", "mem_riser_b_slot2", \
+				  "mem_riser_b_slot3", \
+				  "northbridge_core", "northbridge_diode", \
+				  "northbridge_heatsink", \
+				  "expansion_slots", \
+				  "power_supply0", "power_supply1", \
+				  "vrm0", "vrm1", }
+
+#define ASMC_MP31_TEMPDESCS	{ "Ambient Air", \
+				  "CPU Core 1", "CPU Diode 1", \
+				  "CPU A Proximity", \
+				  "CPU Core 2", "CPU Diode 2", \
+				  "CPU Core 3", "CPU Diode 3", \
+				  "CPU Core 4", "CPU Diode 4", \
+				  "CPU A Package", "CPU A Heatsink", \
+				  "CPU B Package", "CPU B Heatsink", \
+				  "Hard Drive Bay 1", "Hard Drive Bay 2", \
+				  "Hard Drive Bay 3", "Hard Drive Bay 4", \
+				  "Memory Riser A, Proximity 1", \
+				  "Memory Riser A, Slot 1", \
+				  "Memory Riser A, Proximity 2", \
+				  "Memory Riser A, Slot 2", \
+				  "Memory Riser A, Proximity 3", \
+				  "Memory Riser A, Slot 3", \
+				  "Memory Riser A, Slot 4", \
+				  "Memory Riser B, Proximity 1", \
+				  "Memory Riser B, Slot 1", \
+				  "Memory Riser B, Proximity 2", \
+				  "Memory Riser B, Slot 2", \
+				  "Memory Riser B, Proximity 3", \
+				  "Memory Riser B, Slot 3", \
+				  "Memory Riser B, Slot 4", \
+				  "Northbridge Core", "Northbridge Diode", \
+				  "Northbridge Heatsink", \
+				  "Expansion Slots", \
+				  "Power Supply 1", "Power Supply 2", \
+				  "VRM 1", "VRM 2", }
 
 #define ASMC_MP2_TEMPS		{ "TA0P", "TCAG", "TCAH", "TCBG", "TCBH", \
 				  "TC0C", "TC0D", "TC0P", "TC1C", "TC1D", \

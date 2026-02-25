@@ -494,6 +494,13 @@ gic_v3_read_ivar(device_t dev, device_t child, int which, uintptr_t *result)
 	case GICV3_IVAR_REDIST:
 		*result = (uintptr_t)&sc->gic_redists.pcpu[PCPU_GET(cpuid)];
 		return (0);
+	case GICV3_IVAR_FLAGS:
+		*result = sc->gic_flags;
+		return (0);
+	case GIC_IVAR_SUPPORT_LPIS:
+		*result =
+		    (gic_d_read(sc, 4, GICD_TYPER) & GICD_TYPER_LPIS) != 0;
+		return (0);
 	case GIC_IVAR_HW_REV:
 		KASSERT(
 		    GICR_PIDR2_ARCH(sc->gic_pidr2) == GICR_PIDR2_ARCH_GICv3 ||
@@ -526,6 +533,7 @@ gic_v3_write_ivar(device_t dev, device_t child, int which, uintptr_t value)
 	switch(which) {
 	case GICV3_IVAR_NIRQS:
 	case GICV3_IVAR_REDIST:
+	case GICV3_IVAR_FLAGS:
 	case GIC_IVAR_HW_REV:
 	case GIC_IVAR_BUS:
 		return (EINVAL);
@@ -535,7 +543,7 @@ gic_v3_write_ivar(device_t dev, device_t child, int which, uintptr_t value)
 }
 
 static struct resource *
-gic_v3_alloc_resource(device_t bus, device_t child, int type, int *rid,
+gic_v3_alloc_resource(device_t bus, device_t child, int type, int rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct gic_v3_softc *sc;
@@ -555,7 +563,7 @@ gic_v3_alloc_resource(device_t bus, device_t child, int type, int *rid,
 			return (NULL);
 
 		/* Find defaults for this rid */
-		rle = resource_list_find(rl, type, *rid);
+		rle = resource_list_find(rl, type, rid);
 		if (rle == NULL)
 			return (NULL);
 
@@ -1089,7 +1097,7 @@ gic_v3_bind_intr(device_t dev, struct intr_irqsrc *isrc)
 
 #ifdef SMP
 static void
-gic_v3_init_secondary(device_t dev)
+gic_v3_init_secondary(device_t dev, uint32_t rootnum)
 {
 	struct gic_v3_setup_periph_args pargs;
 	device_t child;
@@ -1136,7 +1144,7 @@ gic_v3_init_secondary(device_t dev)
 
 	for (i = 0; i < sc->gic_nchildren; i++) {
 		child = sc->gic_children[i];
-		PIC_INIT_SECONDARY(child);
+		PIC_INIT_SECONDARY(child, rootnum);
 	}
 }
 
@@ -1430,7 +1438,7 @@ gic_v3_redist_find(struct gic_v3_softc *sc)
 				    (GICR_VLPI_BASE_SIZE + GICR_RESERVED_SIZE);
 			}
 		} while (offset < rman_get_size(r_res) &&
-		    (typer & GICR_TYPER_LAST) == 0);
+		    !sc->gic_redists.single && (typer & GICR_TYPER_LAST) == 0);
 	}
 
 	device_printf(sc->dev, "No Re-Distributor found for CPU%u\n", cpuid);

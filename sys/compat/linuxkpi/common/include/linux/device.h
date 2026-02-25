@@ -4,7 +4,7 @@
  * Copyright (c) 2010 Panasas, Inc.
  * Copyright (c) 2013-2016 Mellanox Technologies, Ltd.
  * All rights reserved.
- * Copyright (c) 2021-2022 The FreeBSD Foundation
+ * Copyright (c) 2021-2025 The FreeBSD Foundation
  *
  * Portions of this software were developed by Björn Zeeb
  * under sponsorship from the FreeBSD Foundation.
@@ -45,6 +45,7 @@
 #include <linux/backlight.h>
 #include <linux/pm.h>
 #include <linux/idr.h>
+#include <linux/overflow.h>
 #include <linux/ratelimit.h>	/* via linux/dev_printk.h */
 #include <linux/fwnode.h>
 #include <asm/atomic.h>
@@ -56,7 +57,6 @@ struct device;
 
 struct class {
 	const char	*name;
-	struct module	*owner;
 	struct kobject	kobj;
 	devclass_t	bsdclass;
 	const struct dev_pm_ops *pm;
@@ -90,6 +90,9 @@ struct dev_pm_ops {
 struct device_driver {
 	const char	*name;
 	const struct dev_pm_ops *pm;
+
+	void (*shutdown) (struct device *);
+	void (*coredump) (struct device *);
 };
 
 struct device_type {
@@ -282,6 +285,8 @@ int lkpi_devres_destroy(struct device *, void(*release)(struct device *, void *)
 void lkpi_devres_release_free_list(struct device *);
 void lkpi_devres_unlink(struct device *, void *);
 void lkpi_devm_kmalloc_release(struct device *, void *);
+void lkpi_devm_kfree(struct device *, const void *);
+#define	devm_kfree(_d, _p)		lkpi_devm_kfree(_d, _p)
 
 static inline const char *
 dev_driver_string(const struct device *dev)
@@ -329,6 +334,13 @@ dev_name(const struct device *dev)
 	return kobject_name(&dev->kobj);
 }
 
+static inline bool
+dev_is_removable(struct device *dev)
+{
+
+	return (false);
+}
+
 #define	dev_set_name(_dev, _fmt, ...)					\
 	kobject_set_name(&(_dev)->kobj, (_fmt), ##__VA_ARGS__)
 
@@ -340,7 +352,12 @@ put_device(struct device *dev)
 		kobject_put(&dev->kobj);
 }
 
-struct class *class_create(struct module *owner, const char *name);
+struct class *lkpi_class_create(const char *name);
+#if defined(LINUXKPI_VERSION) && LINUXKPI_VERSION >= 60400
+#define	class_create(name)		lkpi_class_create(name)
+#else
+#define	class_create(owner, name)	lkpi_class_create(name)
+#endif
 
 static inline int
 class_register(struct class *class)
@@ -540,6 +557,7 @@ static inline void
 device_release_driver(struct device *dev)
 {
 
+	pr_debug("%s: TODO\n", __func__);
 #if 0
 	/* This leads to panics. Disable temporarily. Keep to rework. */
 
@@ -695,5 +713,9 @@ int lkpi_devm_add_action(struct device *dev, void (*action)(void *), void *data)
 int lkpi_devm_add_action_or_reset(struct device *dev, void (*action)(void *), void *data);
 #define	devm_add_action_or_reset(dev, action, data)	\
 	lkpi_devm_add_action_or_reset(dev, action, data)
+
+int lkpi_devm_device_add_group(struct device *dev, const struct attribute_group *group);
+#define	devm_device_add_group(dev, group)	\
+	lkpi_devm_device_add_group(dev, group)
 
 #endif	/* _LINUXKPI_LINUX_DEVICE_H_ */

@@ -89,8 +89,6 @@ struct mac_lomac_proc {
 	struct mtx mtx;
 };
 
-SYSCTL_DECL(_security_mac);
-
 static SYSCTL_NODE(_security_mac, OID_AUTO, lomac,
     CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "TrustedBSD mac_lomac policy controls");
@@ -113,7 +111,8 @@ SYSCTL_INT(_security_mac_lomac, OID_AUTO, trust_all_interfaces, CTLFLAG_RDTUN,
 
 static char	trusted_interfaces[128];
 SYSCTL_STRING(_security_mac_lomac, OID_AUTO, trusted_interfaces, CTLFLAG_RDTUN,
-    trusted_interfaces, 0, "Interfaces considered 'trusted' by MAC/LOMAC");
+    trusted_interfaces, sizeof(trusted_interfaces),
+    "Interfaces considered 'trusted' by MAC/LOMAC");
 
 static int	ptys_equal = 0;
 SYSCTL_INT(_security_mac_lomac, OID_AUTO, ptys_equal, CTLFLAG_RWTUN,
@@ -1009,7 +1008,7 @@ lomac_cred_create_init(struct ucred *cred)
 }
 
 static void
-lomac_cred_create_swapper(struct ucred *cred)
+lomac_cred_create_kproc0(struct ucred *cred)
 {
 	struct mac_lomac *dest;
 
@@ -2911,7 +2910,7 @@ static struct mac_policy_ops lomac_ops =
 	.mpo_cred_check_relabel = lomac_cred_check_relabel,
 	.mpo_cred_check_visible = lomac_cred_check_visible,
 	.mpo_cred_copy_label = lomac_copy_label,
-	.mpo_cred_create_swapper = lomac_cred_create_swapper,
+	.mpo_cred_create_kproc0 = lomac_cred_create_kproc0,
 	.mpo_cred_create_init = lomac_cred_create_init,
 	.mpo_cred_destroy_label = lomac_destroy_label,
 	.mpo_cred_externalize_label = lomac_externalize_label,

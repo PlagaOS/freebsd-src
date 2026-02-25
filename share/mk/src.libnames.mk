@@ -7,7 +7,7 @@
 .endif
 
 .if !target(__<src.libnames.mk>__)
-__<src.libnames.mk>__:
+__<src.libnames.mk>__:	.NOTMAIN
 
 .include <src.opts.mk>
 
@@ -27,11 +27,15 @@ _PRIVATELIBS=	\
 		gtest_main \
 		heimipcc \
 		heimipcs \
+		kldelf \
 		ldns \
+		opencsd \
+		samplerate \
 		sqlite3 \
 		ssh \
 		ucl \
 		unbound \
+		yaml \
 		zstd
 
 # Let projects based on FreeBSD append to _PRIVATELIBS
@@ -40,9 +44,11 @@ _PRIVATELIBS+=	${LOCAL_PRIVATELIBS}
 
 _INTERNALLIBS=	\
 		amu \
+		apputils \
 		bsnmptools \
 		c_nossp_pic \
 		cron \
+		der \
 		diff \
 		elftc \
 		fdt \
@@ -50,23 +56,31 @@ _INTERNALLIBS=	\
 		ifconfig \
 		ipf \
 		iscsiutil \
+		kadmin_common \
+		kprop_util \
+		krb5apputils \
+		krb5profile \
+		krb5ss \
 		lpr \
 		lua \
 		lutok \
 		netbsd \
 		ntp \
 		ntpevent \
+		nvmf \
 		openbsd \
 		opts \
 		parse \
 		pe \
 		pfctl \
+		pkgecc \
 		pmcstat \
 		sl \
 		sm \
 		smdb \
 		smutil \
 		telnet \
+		util++ \
 		vers \
 		wpaap \
 		wpacommon \
@@ -78,6 +92,7 @@ _INTERNALLIBS=	\
 		wpaeapol_auth \
 		wpaeapol_supp \
 		wpal2_packet \
+		wpapasn \
 		wparadius \
 		wparsn_supp \
 		wpatls \
@@ -146,6 +161,7 @@ _LIBRARIES=	\
 		gpio \
 		gssapi \
 		gssapi_krb5 \
+		gssrpc \
 		hdb \
 		heimbase \
 		heimntlm \
@@ -155,12 +171,17 @@ _LIBRARIES=	\
 		ipsec \
 		ipt \
 		jail \
-		kadm5clnt \
-		kadm5srv \
+		k5crypto \
+		kadm5 \
+		kadmin_common \
 		kafs5 \
+		kdb5 \
 		kdc \
 		kiconv \
+		krad \
 		krb5 \
+		krb5profile \
+		krb5support \
 		kvm \
 		l \
 		lzma \
@@ -209,7 +230,6 @@ _LIBRARIES=	\
 		tacplus \
 		termcapw \
 		tinfow \
-		tpool \
 		ufs \
 		ugidfw \
 		ulog \
@@ -217,7 +237,8 @@ _LIBRARIES=	\
 		usb \
 		usbhid \
 		util \
-		uutil \
+		uvmem \
+		verto \
 		vmmapi \
 		wind \
 		wrap \
@@ -232,10 +253,24 @@ _LIBRARIES=	\
 		zpool \
 		zutil
 
+.if ${MK_KERBEROS} != "no" && ${MK_MITKRB5} != "no"
+_LIBRARIES+= \
+		kadm5clnt_mit \
+		kadm5srv_mit
+.else
+_LIBRARIES+= \
+		kadm5clnt \
+		kadm5srv
+.endif
+
 .if ${MK_BLACKLIST} != "no"
 _LIBRARIES+= \
-		blacklist \
+		blacklist
+.endif
 
+.if ${MK_BLOCKLIST} != "no"
+_LIBRARIES+= \
+		blocklist
 .endif
 
 .if ${MK_OFED} != "no"
@@ -249,6 +284,7 @@ _LIBRARIES+= \
 		irdma \
 		mlx4 \
 		mlx5 \
+		bnxtre \
 		rdmacm \
 		osmcomp \
 		opensm \
@@ -289,6 +325,9 @@ _DP_zstd=	pthread
 .if ${MK_BLACKLIST} != "no"
 _DP_blacklist+=	pthread
 .endif
+.if ${MK_BLOCKLIST} != "no"
+_DP_blocklist+=	pthread
+.endif
 _DP_crypto=	pthread
 # See comment by _DP_archive above
 .if ${.MAKE.OS} == "FreeBSD" || !defined(BOOTSTRAPPING)
@@ -299,7 +338,7 @@ _DP_archive+=	md
 .endif
 .endif
 _DP_sqlite3=	pthread
-_DP_ssl=	crypto
+_DP_ssl=	pthread crypto
 _DP_ssh=	crypto crypt z
 .if ${MK_LDNS} != "no"
 _DP_ssh+=	ldns
@@ -310,6 +349,7 @@ _DP_bsnmp=	crypto
 .endif
 _DP_geom=	bsdxml sbuf
 _DP_cam=	sbuf
+_DP_kldelf=	elf
 _DP_kvm=	elf
 _DP_casper=	nv
 _DP_cap_dns=	nv
@@ -318,8 +358,9 @@ _DP_cap_grp=	nv
 _DP_cap_pwd=	nv
 _DP_cap_sysctl=	nv
 _DP_cap_syslog=	nv
+_DP_crypt=	md
 .if ${MK_OFED} != "no"
-_DP_pcap=	ibverbs mlx5
+_DP_pcap=	ibverbs mlx5 bnxtre
 .endif
 _DP_pjdlog=	util
 _DP_usb=	pthread
@@ -341,6 +382,7 @@ _DP_mp=	crypto
 _DP_memstat=	kvm
 _DP_magic=	z
 _DP_mt=		sbuf bsdxml
+_DP_nvmf=	nv
 _DP_ldns=	ssl crypto
 _DP_lua=	m
 _DP_lutok=	lua
@@ -361,7 +403,7 @@ _DP_gmock_main=	gmock
 _DP_gtest_main=	gtest
 _DP_devstat=	kvm
 _DP_pam=	radius tacplus md util
-.if ${MK_KERBEROS} != "no"
+.if ${MK_KERBEROS} != "no" && ${MK_MITKRB5} != "no"
 _DP_pam+=	krb5
 .endif
 .if ${MK_OPENSSH} != "no"
@@ -371,12 +413,27 @@ _DP_pam+=	ssh
 .if ${MK_NIS} != "no"
 _DP_pam+=	ypclnt
 .endif
+.if ${MK_KERBEROS} != "no"
+.if ${MK_MITKRB5} != "no"
+# _DP_krb5support=	no dependencies except for libc
+# _DP_verto=		no dependencies except for libc
+# _DP_apputils=		no dependencies except for libc
+_DP_com_err=		krb5support
+_DP_k5crypto=		com_err krb5support crypto
+_DP_gssapi_krb5=	krb5 k5crypto com_err krb5profile krb5support
+_DP_kadm5clnt_mit=	gssrpc gssapi_krb5 krb5 k5crypto krb5support com_err krb5profile
+_DP_kadm5srv_mit=	krb5profile gssrpc gssapi_krb5 kdb5 krb5 k5crypto krb5support com_err
+_DP_kdb5=		gssrpc krb5 k5crypto com_err krb5support gssapi_krb5 krb5profile
+_DP_krad=		krb5 k5crypto com_err krb5profile krb5support verto
+_DP_krb5=		krb5profile k5crypto com_err krb5support
+_DP_gssrpc=		gssapi_krb5 krb5 k5crypto com_err krb5support
+.else
 _DP_roken=	crypt
 _DP_kadm5clnt=	com_err krb5 roken
 _DP_kadm5srv=	com_err hdb krb5 roken
 _DP_heimntlm=	crypto com_err krb5 roken
 _DP_hx509=	asn1 com_err crypto roken wind
-_DP_hdb=	asn1 com_err krb5 roken sqlite3
+_DP_hdb=	asn1 com_err krb5 roken sqlite3 heimbase
 _DP_asn1=	com_err roken
 _DP_kdc=	roken hdb hx509 krb5 heimntlm asn1 crypto
 _DP_wind=	com_err roken
@@ -386,6 +443,8 @@ _DP_heimipcs=	heimbase roken pthread
 _DP_kafs5=	asn1 krb5 roken
 _DP_krb5=	asn1 com_err crypt crypto hx509 roken wind heimbase heimipcc
 _DP_gssapi_krb5=	gssapi krb5 crypto roken asn1 com_err
+.endif
+.endif
 _DP_lzma=	md pthread
 _DP_ucl=	m
 _DP_vmmapi=	util
@@ -393,7 +452,7 @@ _DP_opencsd=	cxxrt
 _DP_ctf=	spl z
 _DP_dtrace=	ctf elf proc pthread rtld_db xo
 _DP_xo=		util
-_DP_ztest=	geom m nvpair umem zpool pthread avl zfs_core spl zutil zfs uutil icp
+_DP_ztest=	geom m nvpair umem zpool pthread avl zfs_core spl zutil zfs icp
 # The libc dependencies are not strictly needed but are defined to make the
 # assert happy.
 _DP_c=		compiler_rt sys
@@ -421,23 +480,27 @@ _DP_ncursesw=	tinfow
 _DP_formw=	ncursesw
 _DP_nvpair=	spl
 _DP_panelw=	ncursesw
+.if ${MK_MITKRB5} == "no"
 _DP_rpcsec_gss=	gssapi
+.else
+_DP_rpcsec_gss=	gssapi_krb5
+.endif
 _DP_smb=	kiconv
 _DP_ulog=	md
 _DP_fifolog=	z
 _DP_ipf=	kvm
-_DP_tpool=	spl
-_DP_uutil=	avl spl
-_DP_zfs=	md pthread rt umem util uutil m avl bsdxml crypto geom nvpair \
+_DP_uvmem=	pthread
+_DP_zfs=	md pthread rt umem util m avl bsdxml crypto geom nvpair \
 	z zfs_core zutil
 _DP_zfsbootenv= zfs nvpair
 _DP_zfs_core=	nvpair spl zutil
 _DP_zpool=	md pthread z icp spl nvpair avl umem
-_DP_zutil=	avl geom m tpool
+_DP_zutil=	avl geom m
 _DP_be=		zfs spl nvpair zfsbootenv
 _DP_netmap=
 _DP_ifconfig=	m
 _DP_pfctl=	nv
+_DP_krb5ss=		edit
 
 # OFED support
 .if ${MK_OFED} != "no"
@@ -445,11 +508,12 @@ _DP_cxgb4=	ibverbs pthread
 _DP_ibcm=	ibverbs
 _DP_ibmad=	ibumad
 _DP_ibnetdisc=	osmcomp ibmad ibumad
-_DP_ibumad=	
+_DP_ibumad=
 _DP_ibverbs=
 _DP_irdma=	ibverbs pthread
 _DP_mlx4=	ibverbs pthread
 _DP_mlx5=	ibverbs pthread
+_DP_bnxtre=	ibverbs pthread
 _DP_rdmacm=	ibverbs
 _DP_osmcomp=	pthread
 _DP_opensm=	pthread
@@ -486,7 +550,7 @@ LDADD_${_l}_L+=		-L${LIB${_l:tu}DIR}
 .endif
 DPADD_${_l}?=	${LIB${_l:tu}}
 .if ${_PRIVATELIBS:M${_l}}
-LDADD_${_l}?=	-lprivate${_l}
+LDADD_${_l}?=	${LDADD_${_l}_L} -lprivate${_l}
 .elif ${_INTERNALLIBS:M${_l}}
 LDADD_${_l}?=	${LDADD_${_l}_L} -l${_l:S/${PIE_SUFFIX}//}${PIE_SUFFIX}
 .else
@@ -599,11 +663,17 @@ LIBNV?=		${LIBNVDIR}/libnv${PIE_SUFFIX}.a
 LIBISCSIUTILDIR=	${_LIB_OBJTOP}/lib/libiscsiutil
 LIBISCSIUTIL?=	${LIBISCSIUTILDIR}/libiscsiutil${PIE_SUFFIX}.a
 
+LIBNVMFDIR=	${_LIB_OBJTOP}/lib/libnvmf
+LIBNVMF?=	${LIBNVMFDIR}/libnvmf${PIE_SUFFIX}.a
+
 LIBTELNETDIR=	${_LIB_OBJTOP}/lib/libtelnet
 LIBTELNET?=	${LIBTELNETDIR}/libtelnet${PIE_SUFFIX}.a
 
 LIBCRONDIR=	${_LIB_OBJTOP}/usr.sbin/cron/lib
 LIBCRON?=	${LIBCRONDIR}/libcron${PIE_SUFFIX}.a
+
+LIBDERDIR=	${_LIB_OBJTOP}/lib/libder
+LIBDER?=	${LIBDERDIR}/libder${PIE_SUFFIX}.a
 
 LIBNTPDIR=	${_LIB_OBJTOP}/usr.sbin/ntp/libntp
 LIBNTP?=	${LIBNTPDIR}/libntp${PIE_SUFFIX}.a
@@ -617,7 +687,7 @@ LIBOPTS?=	${LIBOPTSDIR}/libopts${PIE_SUFFIX}.a
 LIBPARSEDIR=	${_LIB_OBJTOP}/usr.sbin/ntp/libparse
 LIBPARSE?=	${LIBPARSEDIR}/libparse${PIE_SUFFIX}.a
 
-LIBPFCTL=	${_LIB_OBJTOP}/lib/libpfctl
+LIBPFCTLDIR=	${_LIB_OBJTOP}/lib/libpfctl
 LIBPFCTL?=	${LIBPFCTLDIR}/libpfctl${PIE_SUFFIX}.a
 
 LIBLPRDIR=	${_LIB_OBJTOP}/usr.sbin/lpr/common_source
@@ -631,8 +701,14 @@ LIBBSNMPTOOLS?=	${LIBBSNMPTOOLSDIR}/libbsnmptools${PIE_SUFFIX}.a
 
 LIBBE?=		${LIBBEDIR}/libbe${PIE_SUFFIX}.a
 
+LIBPKGECCDIR=	${_LIB_OBJTOP}/secure/lib/libpkgecc
+LIBPKGECC?=	${LIBPKGECCDIR}/libpkgecc${PIE_SUFFIX}.a
+
 LIBPMCSTATDIR=	${_LIB_OBJTOP}/lib/libpmcstat
 LIBPMCSTAT?=	${LIBPMCSTATDIR}/libpmcstat${PIE_SUFFIX}.a
+
+LIBUTIL++DIR=	${_LIB_OBJTOP}/lib/libutil++
+LIBUTIL++?=	${LIBUTIL++DIR}/libutil++${PIE_SUFFIX}.a
 
 LIBWPAAPDIR=	${_LIB_OBJTOP}/usr.sbin/wpa/src/ap
 LIBWPAAP?=	${LIBWPAAPDIR}/libwpaap${PIE_SUFFIX}.a
@@ -664,6 +740,9 @@ LIBWPAEAPOL_SUPP?=	${LIBWPAEAPOL_SUPPDIR}/libwpaeapol_supp${PIE_SUFFIX}.a
 LIBWPAL2_PACKETDIR=	${_LIB_OBJTOP}/usr.sbin/wpa/src/l2_packet
 LIBWPAL2_PACKET?=	${LIBWPAL2_PACKETDIR}/libwpal2_packet${PIE_SUFFIX}.a
 
+LIBWPAPASNDIR=		${_LIB_OBJTOP}/usr.sbin/wpa/src/pasn
+LIBWPAPASN?=		${LIBWPAPASNDIR}/libwpapasn${PIE_SUFFIX}.a
+
 LIBWPARADIUSDIR=	${_LIB_OBJTOP}/usr.sbin/wpa/src/radius
 LIBWPARADIUS?=	${LIBWPARADIUSDIR}/libwparadius${PIE_SUFFIX}.a
 
@@ -682,6 +761,15 @@ LIBWPAWPS?=	${LIBWPAWPSDIR}/libwpawps${PIE_SUFFIX}.a
 LIBC_NOSSP_PICDIR=	${_LIB_OBJTOP}/lib/libc
 LIBC_NOSSP_PIC?=	${LIBC_NOSSP_PICDIR}/libc_nossp_pic.a
 
+LIBSYS_PICDIR=	${_LIB_OBJTOP}/lib/libsys
+LIBSYS_PIC?=	${LIBSYS_PICDIR}/libsys_pic.a
+
+LIBSAMPLERATEDIR?=	${_LIB_OBJTOP}/lib/libsamplerate
+LIBSAMPLERATE?=	${LIBSAMPLERATEDIR}/libsamplerate${PIE_SUFFIX}.a
+
+LIBUVMEMDIR=	${OBJTOP}/lib/libuvmem
+LIBUVMEM?=	${LIBUVMEMDIR}/libuvmem${PIE_SUFFIX}.a
+
 # Define a directory for each library.  This is useful for adding -L in when
 # not using a --sysroot or for meta mode bootstrapping when there is no
 # Makefile.depend.  These are sorted by directory.
@@ -695,7 +783,6 @@ LIBICP_RESCUE?=	${LIBICP_RESCUEDIR}/libicp_rescue${PIE_SUFFIX}.a
 LIBNVPAIRDIR=	${_LIB_OBJTOP}/cddl/lib/libnvpair
 LIBNVPAIR?=	${LIBNVPAIRDIR}/libnvpair${PIE_SUFFIX}.a
 LIBUMEMDIR=	${_LIB_OBJTOP}/cddl/lib/libumem
-LIBUUTILDIR=	${_LIB_OBJTOP}/cddl/lib/libuutil
 LIBZDBDIR=	${_LIB_OBJTOP}/cddl/lib/libzdb
 LIBZDB?=	${LIBZDBDIR}/libzdb${PIE_SUFFIX}.a
 LIBZFSDIR=	${_LIB_OBJTOP}/cddl/lib/libzfs
@@ -708,7 +795,6 @@ LIBZPOOLDIR=	${_LIB_OBJTOP}/cddl/lib/libzpool
 LIBZPOOL?=	${LIBZPOOLDIR}/libzpool${PIE_SUFFIX}.a
 LIBZUTILDIR=	${_LIB_OBJTOP}/cddl/lib/libzutil
 LIBZUTIL?=	${LIBZUTILDIR}/libzutil${PIE_SUFFIX}.a
-LIBTPOOLDIR=	${_LIB_OBJTOP}/cddl/lib/libtpool
 
 # OFED support
 LIBCXGB4DIR=	${_LIB_OBJTOP}/lib/ofed/libcxgb4
@@ -720,6 +806,7 @@ LIBIBVERBSDIR=	${_LIB_OBJTOP}/lib/ofed/libibverbs
 LIBIRDMADIR=	${_LIB_OBJTOP}/lib/ofed/libirdma
 LIBMLX4DIR=	${_LIB_OBJTOP}/lib/ofed/libmlx4
 LIBMLX5DIR=	${_LIB_OBJTOP}/lib/ofed/libmlx5
+LIBBNXTREDIR=	${_LIB_OBJTOP}/lib/ofed/libbnxtre
 LIBRDMACMDIR=	${_LIB_OBJTOP}/lib/ofed/librdmacm
 LIBOSMCOMPDIR=	${_LIB_OBJTOP}/lib/ofed/complib
 LIBOPENSMDIR=	${_LIB_OBJTOP}/lib/ofed/libopensm
@@ -728,6 +815,40 @@ LIBOSMVENDORDIR=${_LIB_OBJTOP}/lib/ofed/libvendor
 LIBDIALOGDIR=	${_LIB_OBJTOP}/gnu/lib/libdialog
 LIBSSPDIR=	${_LIB_OBJTOP}/lib/libssp
 LIBSSP_NONSHAREDDIR=	${_LIB_OBJTOP}/lib/libssp_nonshared
+.if ${MK_MITKRB5} != "no"
+LIBAPPUTILSDIR=		${_LIB_OBJTOP}/krb5/lib/apputils
+LIBAPPUTILS?=		${LIBAPPUTILSDIR}/libapputils${PIE_SUFFIX}.a
+LIBGSSAPI_KRB5DIR=	${_LIB_OBJTOP}/krb5/lib/gssapi
+LIBGSSAPI_KRB5?=	${LIBGSSAPI_KRB5DIR}/libgssapi_krb5${PIE_SUFFIX}.a
+LIBGSSRPCDIR=		${_LIB_OBJTOP}/krb5/lib/rpc
+LIBGSSRPC?=		${LIBGSSRPCDIR}/libgssrpc${PIE_SUFFIX}.a
+LIBK5CRYPTODIR=		${_LIB_OBJTOP}/krb5/lib/crypto
+LIBK5CRYPTO?=		${LIBK5CRYPTODIR}/libk5crypto${PIE_SUFFIX}.a
+LIBK5GSSRPCDIR=		${_LIB_OBJTOP}/krb5/lib/rpc
+LIBK5GSSRPC?=		${LIBK5GSSRPCDIR}/libgssrpc${PIE_SUFFIX}.a
+LIBKADM5CLNT_MITDIR=	${_LIB_OBJTOP}/krb5/lib/kadm5clnt
+LIBKADM5CLNT_MIT?=	${LIBKADM5CLNT_MITDIR}/libkadm5clnt_mit${PIE_SUFFIX}.a
+LIBKADM5SRV_MITDIR=	${_LIB_OBJTOP}/krb5/lib/kadm5srv
+LIBKADM5SRV_MIT?=	${LIBKADM5SRV_MITDIR}/libkadm5srv_mit${PIE_SUFFIX}.a
+LIBKADMIN_COMMONDIR=	${_LIB_OBJTOP}/krb5/lib/kadmin_common
+LIBKADMIN_COMMON?=	${LIBKADMIN_COMMONDIR}/libkadmin_common${PIE_SUFFIX}.a
+LIBKDB5DIR=		${_LIB_OBJTOP}/krb5/lib/kdb
+LIBKDB5?=		${LIBKDB5DIR}/libkdb5${PIE_SUFFIX}.a
+LIBKPROP_UTILDIR=	${_LIB_OBJTOP}/krb5/lib/kprop_util
+LIBKPROP_UTIL?=		${LIBKPROP_UTILDIR}/libkprop_util${PIE_SUFFIX}.a
+LIBKRADDIR=		${_LIB_OBJTOP}/krb5/lib/krad
+LIBKRAD?=		${LIBKRADDIR}/libkrad${PIE_SUFFIX}.a
+LIBKRB5DIR=		${_LIB_OBJTOP}/krb5/lib/krb5
+LIBKRB5?=		${LIBKRB5DIR}/libkrb5${PIE_SUFFIX}.a
+LIBKRB5SSDIR=		${_LIB_OBJTOP}/krb5/util/ss
+LIBKRB5SS?=		${LIBKRB5SUPPORTDIR}/libkrb5ss${PIE_SUFFIX}.a
+LIBKRB5SUPPORTDIR=	${_LIB_OBJTOP}/krb5/util/support
+LIBKRB5SUPPORT?=	${LIBKRB5SUPPORTDIR}/libkrb5support${PIE_SUFFIX}.a
+LIBKRB5PROFILEDIR=	${_LIB_OBJTOP}/krb5/util/profile
+LIBKRB5PROFILE?=	${LIBPROFILEDIR}/libkrb5profile${PIE_SUFFIX}.a
+LIBVERTODIR=		${_LIB_OBJTOP}/krb5/util/verto
+LIBVERTO?=		${LIBVERTODIR}/libverto${PIE_SUFFIX}.a
+.else
 LIBASN1DIR=	${_LIB_OBJTOP}/kerberos5/lib/libasn1
 LIBGSSAPI_KRB5DIR=	${_LIB_OBJTOP}/kerberos5/lib/libgssapi_krb5
 LIBGSSAPI_NTLMDIR=	${_LIB_OBJTOP}/kerberos5/lib/libgssapi_ntlm
@@ -745,6 +866,7 @@ LIBKDCDIR=	${_LIB_OBJTOP}/kerberos5/lib/libkdc
 LIBKRB5DIR=	${_LIB_OBJTOP}/kerberos5/lib/libkrb5
 LIBROKENDIR=	${_LIB_OBJTOP}/kerberos5/lib/libroken
 LIBWINDDIR=	${_LIB_OBJTOP}/kerberos5/lib/libwind
+.endif
 LIBATF_CDIR=	${_LIB_OBJTOP}/lib/atf/libatf-c
 LIBATF_CXXDIR=	${_LIB_OBJTOP}/lib/atf/libatf-c++
 LIBGMOCKDIR=	${_LIB_OBJTOP}/lib/googletest/gmock
@@ -753,6 +875,7 @@ LIBGTESTDIR=	${_LIB_OBJTOP}/lib/googletest/gtest
 LIBGTEST_MAINDIR=	${_LIB_OBJTOP}/lib/googletest/gtest_main
 LIBALIASDIR=	${_LIB_OBJTOP}/lib/libalias/libalias
 LIBBLACKLISTDIR=	${_LIB_OBJTOP}/lib/libblacklist
+LIBBLOCKLISTDIR=	${_LIB_OBJTOP}/lib/libblocklist
 LIBBLOCKSRUNTIMEDIR=	${_LIB_OBJTOP}/lib/libblocksruntime
 LIBBSNMPDIR=	${_LIB_OBJTOP}/lib/libbsnmp/libbsnmp
 LIBCASPERDIR=	${_LIB_OBJTOP}/lib/libcasper/libcasper

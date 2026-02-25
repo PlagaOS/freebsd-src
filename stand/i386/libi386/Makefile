@@ -1,4 +1,3 @@
-
 .include <bsd.init.mk>
 
 LIB=	i386
@@ -8,6 +7,7 @@ SRCS+=	bio.c
 SRCS+=	biosacpi.c
 SRCS+=	biosdisk.c
 SRCS+=	biosmem.c
+SRCS+=	biosmemdisk.c
 SRCS+=	biospci.c
 SRCS+=	biospnp.c
 SRCS+=	biossmap.c

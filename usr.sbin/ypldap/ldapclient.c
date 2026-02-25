@@ -317,7 +317,7 @@ client_dispatch_parent(int fd, short events, void *p)
 			client_configure(env);
 			break;
 		default:
-			log_debug("client_dispatch_parent: unexpect imsg %d",
+			log_debug("client_dispatch_parent: unexpected imsg %d",
 			    imsg.hdr.type);
 
 			break;
@@ -385,7 +385,7 @@ ldapclient(int pipe_main2client[2])
 	ypldap_process = PROC_CLIENT;
 
 #ifndef DEBUG
-	if (setgroups(1, &pw->pw_gid) ||
+	if (setgroups(0, NULL) ||
 	    setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) ||
 	    setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid))
 		fatal("cannot drop privileges");

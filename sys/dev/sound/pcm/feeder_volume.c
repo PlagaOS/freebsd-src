@@ -63,10 +63,13 @@ feed_volume_##SIGN##BIT##ENDIAN(int *vol, int *matrix,			\
 		do {							\
 			dst -= PCM_##BIT##_BPS;				\
 			i--;						\
-			x = PCM_READ_##SIGN##BIT##_##ENDIAN(dst);	\
+			x = pcm_sample_read_calc(dst,			\
+			    AFMT_##SIGN##BIT##_##ENDIAN);		\
 			v = FEEDVOLUME_CALC##BIT(x, vol[matrix[i]]);	\
-			x = PCM_CLAMP_##SIGN##BIT(v);			\
-			_PCM_WRITE_##SIGN##BIT##_##ENDIAN(dst, x);	\
+			x = pcm_clamp_calc(v,				\
+			    AFMT_##SIGN##BIT##_##ENDIAN);		\
+			pcm_sample_write(dst, x,			\
+			    AFMT_##SIGN##BIT##_##ENDIAN);		\
 		} while (i != 0);					\
 	} while (--count != 0);						\
 }
@@ -90,6 +93,8 @@ FEEDVOLUME_DECLARE(U, 32, LE)
 FEEDVOLUME_DECLARE(U, 16, BE)
 FEEDVOLUME_DECLARE(U, 24, BE)
 FEEDVOLUME_DECLARE(U, 32, BE)
+FEEDVOLUME_DECLARE(F, 32, LE)
+FEEDVOLUME_DECLARE(F, 32, BE)
 #endif
 
 struct feed_volume_info {
@@ -128,7 +133,9 @@ static const struct {
 	FEEDVOLUME_ENTRY(U, 32, LE),
 	FEEDVOLUME_ENTRY(U, 16, BE),
 	FEEDVOLUME_ENTRY(U, 24, BE),
-	FEEDVOLUME_ENTRY(U, 32, BE)
+	FEEDVOLUME_ENTRY(U, 32, BE),
+	FEEDVOLUME_ENTRY(F, 32, LE),
+	FEEDVOLUME_ENTRY(F, 32, BE),
 #endif
 };
 
@@ -144,20 +151,20 @@ feed_volume_init(struct pcm_feeder *f)
 	uint32_t i;
 	int ret;
 
-	if (f->desc->in != f->desc->out ||
-	    AFMT_CHANNEL(f->desc->in) > SND_CHN_MAX)
+	if (f->desc.in != f->desc.out ||
+	    AFMT_CHANNEL(f->desc.in) > SND_CHN_MAX)
 		return (EINVAL);
 
 	for (i = 0; i < FEEDVOLUME_TAB_SIZE; i++) {
-		if (AFMT_ENCODING(f->desc->in) ==
+		if (AFMT_ENCODING(f->desc.in) ==
 		    feed_volume_info_tab[i].format) {
 			info = malloc(sizeof(*info), M_DEVBUF,
 			    M_NOWAIT | M_ZERO);
 			if (info == NULL)
 				return (ENOMEM);
 
-			info->bps = AFMT_BPS(f->desc->in);
-			info->channels = AFMT_CHANNEL(f->desc->in);
+			info->bps = AFMT_BPS(f->desc.in);
+			info->channels = AFMT_CHANNEL(f->desc.in);
 			info->apply = feed_volume_info_tab[i].apply;
 			info->volume_class = SND_VOL_C_PCM;
 			info->state = FEEDVOLUME_ENABLE;
@@ -186,8 +193,7 @@ feed_volume_free(struct pcm_feeder *f)
 	struct feed_volume_info *info;
 
 	info = f->data;
-	if (info != NULL)
-		free(info, M_DEVBUF);
+	free(info, M_DEVBUF);
 
 	f->data = NULL;
 
@@ -225,7 +231,6 @@ feed_volume_set(struct pcm_feeder *f, int what, int value)
 		break;
 	default:
 		return (EINVAL);
-		break;
 	}
 
 	return (ret);
@@ -299,11 +304,6 @@ feed_volume_feed(struct pcm_feeder *f, struct pcm_channel *c, uint8_t *b,
 	return (dst - b);
 }
 
-static struct pcm_feederdesc feeder_volume_desc[] = {
-	{ FEEDER_VOLUME, 0, 0, 0, 0 },
-	{ 0, 0, 0, 0, 0 }
-};
-
 static kobj_method_t feeder_volume_methods[] = {
 	KOBJMETHOD(feeder_init,		feed_volume_init),
 	KOBJMETHOD(feeder_free,		feed_volume_free),
@@ -312,7 +312,7 @@ static kobj_method_t feeder_volume_methods[] = {
 	KOBJMETHOD_END
 };
 
-FEEDER_DECLARE(feeder_volume, NULL);
+FEEDER_DECLARE(feeder_volume, FEEDER_VOLUME);
 
 /* Extern */
 
@@ -330,14 +330,14 @@ feeder_volume_apply_matrix(struct pcm_feeder *f, struct pcmchan_matrix *m)
 	struct feed_volume_info *info;
 	uint32_t i;
 
-	if (f == NULL || f->desc == NULL || f->desc->type != FEEDER_VOLUME ||
-	    f->data == NULL || m == NULL || m->channels < SND_CHN_MIN ||
+	if (f == NULL || f->class->type != FEEDER_VOLUME || f->data == NULL ||
+	    m == NULL || m->channels < SND_CHN_MIN ||
 	    m->channels > SND_CHN_MAX)
 		return (EINVAL);
 
 	info = f->data;
 
-	for (i = 0; i < (sizeof(info->matrix) / sizeof(info->matrix[0])); i++) {
+	for (i = 0; i < nitems(info->matrix); i++) {
 		if (i < m->channels)
 			info->matrix[i] = m->map[i].type;
 		else

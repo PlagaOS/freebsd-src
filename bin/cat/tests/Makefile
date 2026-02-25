@@ -1,4 +1,3 @@
-
 PACKAGE=	tests
 
 NETBSD_ATF_TESTS_SH=		cat_test
@@ -13,6 +12,7 @@ ${PACKAGE}FILES+=		d_s_output.in
 ${PACKAGE}FILES+=		d_s_output.out
 ${PACKAGE}FILES+=		d_vt_output.in
 ${PACKAGE}FILES+=		d_vt_output.out
+${PACKAGE}FILES+=		stdin_test.out
 
 .include <netbsd-tests.test.mk>
 

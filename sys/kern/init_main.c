@@ -104,7 +104,17 @@ void mi_startup(void);				/* Should be elsewhere */
 static struct session session0;
 static struct pgrp pgrp0;
 struct	proc proc0;
-struct thread0_storage thread0_st __aligned(32);
+struct thread0_storage thread0_st __aligned(32) = {
+	.t0st_thread = {
+		/*
+		 * thread0.td_pflags is set with TDP_NOFAULTING to
+		 * short-cut the vm page fault handler until it is
+		 * ready.  It is cleared in vm_init() after VM
+		 * initialization.
+		 */
+		.td_pflags = TDP_NOFAULTING,
+	},
+};
 struct	vmspace vmspace0;
 struct	proc *initproc;
 
@@ -138,19 +148,11 @@ SYSCTL_INT(_debug, OID_AUTO, bootverbose, CTLFLAG_RW, &bootverbose, 0,
  * - 1, 'compiled in but verbose by default' (default)
  */
 int	verbose_sysinit = VERBOSE_SYSINIT;
-TUNABLE_INT("debug.verbose_sysinit", &verbose_sysinit);
 #endif
 
 #ifdef INVARIANTS
 FEATURE(invariants, "Kernel compiled with INVARIANTS, may affect performance");
 #endif
-
-/*
- * This ensures that there is at least one entry so that the sysinit_set
- * symbol is not undefined.  A sybsystem ID of SI_SUB_DUMMY is never
- * executed.
- */
-SYSINIT(placeholder, SI_SUB_DUMMY, SI_ORDER_ANY, NULL, NULL);
 
 /*
  * The sysinit linker set compiled into the kernel.  These are placed onto the
@@ -256,7 +258,6 @@ symbol_name(vm_offset_t va, db_strategy_t strategy)
 void
 mi_startup(void)
 {
-
 	struct sysinit *sip;
 	int last;
 #if defined(VERBOSE_SYSINIT)
@@ -271,8 +272,9 @@ mi_startup(void)
 	/* Construct and sort sysinit list. */
 	sysinit_mklist(&sysinit_list, SET_BEGIN(sysinit_set), SET_LIMIT(sysinit_set));
 
-	last = SI_SUB_COPYRIGHT;
+	last = SI_SUB_DUMMY;
 #if defined(VERBOSE_SYSINIT)
+	TUNABLE_INT_FETCH("debug.verbose_sysinit", &verbose_sysinit);
 	verbose = 0;
 #if !defined(DDB)
 	printf("VERBOSE_SYSINIT: DDB not enabled, symbol lookups disabled.\n");
@@ -297,9 +299,9 @@ mi_startup(void)
 			BOOTTRACE_INIT("sysinit 0x%7x", sip->subsystem);
 
 #if defined(VERBOSE_SYSINIT)
-		if (sip->subsystem > last && verbose_sysinit != 0) {
+		if (sip->subsystem != last && verbose_sysinit != 0) {
 			verbose = 1;
-			printf("subsystem %x\n", last);
+			printf("subsystem %x\n", sip->subsystem);
 		}
 		if (verbose) {
 #if defined(DDB)
@@ -339,20 +341,22 @@ mi_startup(void)
 	mtx_unlock(&Giant);
 
 	/*
-	 * Now hand over this thread to swapper.
+	 * We can't free our thread structure since it is statically allocated.
+	 * Just sleep forever.  This thread could be repurposed for something if
+	 * the need arises.
 	 */
-	swapper();
-	/* NOTREACHED*/
+	for (;;)
+		tsleep(__builtin_frame_address(0), PNOLOCK, "-", 0);
 }
 
 static void
-print_caddr_t(void *data)
+print_caddr_t(const void *data)
 {
-	printf("%s", (char *)data);
+	printf("%s", (const char *)data);
 }
 
 static void
-print_version(void *data __unused)
+print_version(const void *data __unused)
 {
 	int len;
 
@@ -364,36 +368,36 @@ print_version(void *data __unused)
 	printf("%s\n", compiler_version);
 }
 
-SYSINIT(announce, SI_SUB_COPYRIGHT, SI_ORDER_FIRST, print_caddr_t,
+C_SYSINIT(announce, SI_SUB_COPYRIGHT, SI_ORDER_FIRST, print_caddr_t,
     copyright);
-SYSINIT(trademark, SI_SUB_COPYRIGHT, SI_ORDER_SECOND, print_caddr_t,
+C_SYSINIT(trademark, SI_SUB_COPYRIGHT, SI_ORDER_SECOND, print_caddr_t,
     trademark);
-SYSINIT(version, SI_SUB_COPYRIGHT, SI_ORDER_THIRD, print_version, NULL);
+C_SYSINIT(version, SI_SUB_COPYRIGHT, SI_ORDER_THIRD, print_version, NULL);
 
 #ifdef WITNESS
-static char wit_warn[] =
+static const char wit_warn[] =
      "WARNING: WITNESS option enabled, expect reduced performance.\n";
-SYSINIT(witwarn, SI_SUB_COPYRIGHT, SI_ORDER_FOURTH,
+C_SYSINIT(witwarn, SI_SUB_COPYRIGHT, SI_ORDER_FOURTH,
    print_caddr_t, wit_warn);
-SYSINIT(witwarn2, SI_SUB_LAST, SI_ORDER_FOURTH,
+C_SYSINIT(witwarn2, SI_SUB_LAST, SI_ORDER_FOURTH,
    print_caddr_t, wit_warn);
 #endif
 
 #ifdef DIAGNOSTIC
-static char diag_warn[] =
+static const char diag_warn[] =
      "WARNING: DIAGNOSTIC option enabled, expect reduced performance.\n";
-SYSINIT(diagwarn, SI_SUB_COPYRIGHT, SI_ORDER_FIFTH,
+C_SYSINIT(diagwarn, SI_SUB_COPYRIGHT, SI_ORDER_FIFTH,
     print_caddr_t, diag_warn);
-SYSINIT(diagwarn2, SI_SUB_LAST, SI_ORDER_FIFTH,
+C_SYSINIT(diagwarn2, SI_SUB_LAST, SI_ORDER_FIFTH,
     print_caddr_t, diag_warn);
 #endif
 
 #if __SIZEOF_LONG__ == 4
-static char ilp32_warn[] =
-    "WARNING: 32-bit kernels are deprecated and may be removed in FreeBSD 15.0.\n";
-SYSINIT(ilp32warn, SI_SUB_COPYRIGHT, SI_ORDER_FIFTH,
+static const char ilp32_warn[] =
+    "WARNING: 32-bit kernels are deprecated and may be removed in FreeBSD 16.0.\n";
+C_SYSINIT(ilp32warn, SI_SUB_COPYRIGHT, SI_ORDER_FIFTH,
     print_caddr_t, ilp32_warn);
-SYSINIT(ilp32warn2, SI_SUB_LAST, SI_ORDER_FIFTH,
+C_SYSINIT(ilp32warn2, SI_SUB_LAST, SI_ORDER_FIFTH,
     print_caddr_t, ilp32_warn);
 #endif
 
@@ -492,7 +496,7 @@ proc0_init(void *dummy __unused)
 	schedinit();	/* scheduler gets its house in order */
 
 	/*
-	 * Create process 0 (the swapper).
+	 * Create process 0.
 	 */
 	LIST_INSERT_HEAD(&allproc, p, p_list);
 	LIST_INSERT_HEAD(PIDHASH(0), p, p_hash);
@@ -537,7 +541,7 @@ proc0_init(void *dummy __unused)
 	LIST_INIT(&p->p_reaplist);
 
 	strncpy(p->p_comm, "kernel", sizeof (p->p_comm));
-	strncpy(td->td_name, "swapper", sizeof (td->td_name));
+	strncpy(td->td_name, "kernel", sizeof (td->td_name));
 
 	callout_init_mtx(&p->p_itcallout, &p->p_mtx, 0);
 	callout_init_mtx(&p->p_limco, &p->p_mtx, 0);
@@ -566,7 +570,7 @@ proc0_init(void *dummy __unused)
 	audit_cred_kproc0(newcred);
 #endif
 #ifdef MAC
-	mac_cred_create_swapper(newcred);
+	mac_cred_create_kproc0(newcred);
 #endif
 	/* Create sigacts. */
 	p->p_sigacts = sigacts_alloc();
@@ -649,12 +653,12 @@ static void
 proc0_post(void *dummy __unused)
 {
 	struct proc *p;
-	struct rusage ru;
 	struct thread *td;
 
 	/*
 	 * Now we can look at the time, having had a chance to verify the
-	 * time from the filesystem.  Pretend that proc0 started now.
+	 * time from the filesystem.  Pretend that all current threads
+	 * started now.
 	 */
 	sx_slock(&allproc_lock);
 	FOREACH_PROC_IN_SYSTEM(p) {
@@ -665,15 +669,19 @@ proc0_post(void *dummy __unused)
 		}
 		microuptime(&p->p_stats->p_start);
 		PROC_STATLOCK(p);
-		rufetch(p, &ru);	/* Clears thread stats */
-		p->p_rux.rux_runtime = 0;
-		p->p_rux.rux_uticks = 0;
-		p->p_rux.rux_sticks = 0;
-		p->p_rux.rux_iticks = 0;
-		PROC_STATUNLOCK(p);
+		ruxreset(&p->p_rux);
 		FOREACH_THREAD_IN_PROC(p, td) {
+			thread_lock(td);
+			td->td_incruntime = 0;
 			td->td_runtime = 0;
+			td->td_pticks = 0;
+			td->td_sticks = 0;
+			td->td_iticks = 0;
+			td->td_uticks = 0;
+			ruxreset(&td->td_rux);
+			thread_unlock(td);
 		}
+		PROC_STATUNLOCK(p);
 		PROC_UNLOCK(p);
 	}
 	sx_sunlock(&allproc_lock);

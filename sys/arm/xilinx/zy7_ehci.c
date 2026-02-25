@@ -45,10 +45,10 @@
 #include <sys/condvar.h>
 #include <sys/resource.h>
 #include <sys/rman.h>
+#include <sys/stdarg.h>
 
 #include <machine/bus.h>
 #include <machine/resource.h>
-#include <machine/stdarg.h>
 
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
@@ -258,7 +258,7 @@ zy7_ehci_attach(device_t dev)
 	}
 
 	/* Add USB device */
-	sc->sc_bus.bdev = device_add_child(dev, "usbus", -1);
+	sc->sc_bus.bdev = device_add_child(dev, "usbus", DEVICE_UNIT_ANY);
 	if (!sc->sc_bus.bdev) {
 		device_printf(dev, "Could not add USB device\n");
 		zy7_ehci_detach(dev);
@@ -315,9 +315,12 @@ static int
 zy7_ehci_detach(device_t dev)
 {
 	ehci_softc_t *sc = device_get_softc(dev);
+	int error;
 
 	/* during module unload there are lots of children leftover */
-	device_delete_children(dev);
+	error = bus_generic_detach(dev);
+	if (error != 0)
+		return (error);
 
 	if ((sc->sc_flags & EHCI_SCFLG_DONEINIT) != 0) {
 		ehci_detach(sc);

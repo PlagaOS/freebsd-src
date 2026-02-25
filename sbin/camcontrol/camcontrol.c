@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1997-2007 Kenneth D. Merry
  * All rights reserved.
  *
@@ -44,6 +46,7 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <err.h>
+#include <libnvmf.h>
 #include <libutil.h>
 #include <limits.h>
 #include <inttypes.h>
@@ -60,9 +63,7 @@
 #include <cam/mmc/mmc_all.h>
 #include <camlib.h>
 #include "camcontrol.h"
-#ifdef WITH_NVME
 #include "nvmecontrol_ext.h"
-#endif
 
 typedef enum {
 	CAM_CMD_NONE,
@@ -278,9 +279,7 @@ static int print_dev_ata(struct device_match_result *dev_result, char *tmpstr);
 static int print_dev_semb(struct device_match_result *dev_result, char *tmpstr);
 static int print_dev_mmcsd(struct device_match_result *dev_result,
     char *tmpstr);
-#ifdef WITH_NVME
 static int print_dev_nvme(struct device_match_result *dev_result, char *tmpstr);
-#endif
 static int requestsense(struct cam_device *device, int argc, char **argv,
 			char *combinedopt, int task_attr, int retry_count,
 			int timeout);
@@ -600,14 +599,12 @@ getdevtree(int argc, char **argv, char *combinedopt)
 						skip_device = 1;
 						break;
 					}
-#ifdef WITH_NVME
 				} else if (dev_result->protocol == PROTO_NVME) {
 					if (print_dev_nvme(dev_result,
 					    &tmpstr[0]) != 0) {
 						skip_device = 1;
 						break;
 					}
-#endif
 				} else {
 				    sprintf(tmpstr, "<>");
 				}
@@ -658,6 +655,7 @@ getdevtree(int argc, char **argv, char *combinedopt)
 	if (need_close)
 		fprintf(stdout, ")\n");
 
+	free(ccb.cdm.matches);
 	close(fd);
 
 	return (error);
@@ -781,7 +779,6 @@ print_dev_mmcsd(struct device_match_result *dev_result, char *tmpstr)
 	return (0);
 }
 
-#ifdef WITH_NVME
 static int
 nvme_get_cdata(struct cam_device *dev, struct nvme_controller_data *cdata)
 {
@@ -843,7 +840,6 @@ print_dev_nvme(struct device_match_result *dev_result, char *tmpstr)
 	cam_close_device(dev);
 	return (0);
 }
-#endif
 
 static int
 requestsense(struct cam_device *device, int argc, char **argv,
@@ -1678,6 +1674,35 @@ atacapprint(struct ata_params *parm)
 	}
 	printf("\n");
 
+	printf("transport revision    ");
+	if (parm->transport_major == 0 || parm->transport_major == 0xffff) {
+		printf("Unknown");
+	} else {
+		if (parm->transport_major & 0x0400)
+			printf("SATA Rev 3.5");
+		else if (parm->transport_major & 0x0200)
+			printf("SATA Rev 3.4");
+		else if (parm->transport_major & 0x0100)
+			printf("SATA Rev 3.3");
+		else if (parm->transport_major & 0x0080)
+			printf("SATA Rev 3.2");
+		else if (parm->transport_major & 0x0040)
+			printf("SATA Rev 3.1");
+		else if (parm->transport_major & 0x0020)
+			printf("SATA Rev 3.0");
+		else if (parm->transport_major & 0x0010)
+			printf("SATA Rev 2.6");
+		else if (parm->transport_major & 0x0008)
+			printf("SATA Rev 2.5");
+		else if (parm->transport_major & 0x0004)
+			printf("SATA II: Extensions");
+		else if (parm->transport_major & 0x0002)
+			printf("SATA 1.0a");
+		else if (parm->transport_major & 0x0001)
+			printf("ATA8-AST");
+	}
+	printf("\n");
+
 	if (parm->media_rotation_rate == 1) {
 		printf("media RPM             non-rotating\n");
 	} else if (parm->media_rotation_rate >= 0x0401 &&
@@ -2108,7 +2133,7 @@ ata_read_native_max(struct cam_device *device, int retry_count,
 			   /*sector_count*/0,
 			   /*data_ptr*/NULL,
 			   /*dxfer_len*/0,
-			   timeout ? timeout : 5000,
+			   timeout ? timeout : 10 * 1000,
 			   is48bit);
 
 	if (error)
@@ -2489,7 +2514,6 @@ ataidentify(struct cam_device *device, int retry_count, int timeout)
 	return (0);
 }
 
-#ifdef WITH_NVME
 static int
 nvmeidentify(struct cam_device *device, int retry_count __unused, int timeout __unused)
 {
@@ -2501,12 +2525,10 @@ nvmeidentify(struct cam_device *device, int retry_count __unused, int timeout __
 
 	return (0);
 }
-#endif
 
 static int
 identify(struct cam_device *device, int retry_count, int timeout)
 {
-#ifdef WITH_NVME
 	struct ccb_pathinq cpi;
 
 	if (get_cpi(device, &cpi) != 0) {
@@ -2517,7 +2539,6 @@ identify(struct cam_device *device, int retry_count, int timeout)
 	if (cpi.protocol == PROTO_NVME) {
 		return (nvmeidentify(device, retry_count, timeout));
 	}
-#endif
 	return (ataidentify(device, retry_count, timeout));
 }
 
@@ -5390,6 +5411,39 @@ cts_print(struct cam_device *device, struct ccb_trans_settings *cts)
 				sata->caps);
 		}
 	}
+	if (cts->transport == XPORT_NVME) {
+		struct ccb_trans_settings_nvme *nvme =
+		    &cts->xport_specific.nvme;
+
+		if (nvme->valid & CTS_NVME_VALID_LINK) {
+			fprintf(stdout, "%sPCIe lanes: %d (%d max)\n", pathstr,
+			    nvme->lanes, nvme->max_lanes);
+			fprintf(stdout, "%sPCIe Generation: %d (%d max)\n", pathstr,
+			    nvme->speed, nvme->max_speed);
+		}
+	}
+	if (cts->transport == XPORT_NVMF) {
+		struct ccb_trans_settings_nvmf *nvmf =
+		    &cts->xport_specific.nvmf;
+
+		if (nvmf->valid & CTS_NVMF_VALID_TRTYPE) {
+			fprintf(stdout, "%sTransport: %s\n", pathstr,
+			    nvmf_transport_type(nvmf->trtype));
+		}
+	}
+	if (cts->transport == XPORT_UFSHCI) {
+		struct ccb_trans_settings_ufshci *ufshci =
+		    &cts->xport_specific.ufshci;
+
+		if (ufshci->valid & CTS_UFSHCI_VALID_LINK) {
+			fprintf(stdout, "%sHigh Speed Gear: %d (%d max)\n",
+				pathstr, ufshci->hs_gear, ufshci->max_hs_gear);
+			fprintf(stdout, "%sUnipro TX lanes: %d (%d max)\n", pathstr,
+				ufshci->tx_lanes, ufshci->max_tx_lanes);
+			fprintf(stdout, "%sUnipro RX lanes: %d (%d max)\n", pathstr,
+				ufshci->rx_lanes, ufshci->max_rx_lanes);
+		}
+	}
 	if (cts->protocol == PROTO_ATA) {
 		struct ccb_trans_settings_ata *ata=
 		    &cts->proto_specific.ata;
@@ -5410,24 +5464,16 @@ cts_print(struct cam_device *device, struct ccb_trans_settings *cts)
 				"enabled" : "disabled");
 		}
 	}
-#ifdef WITH_NVME
 	if (cts->protocol == PROTO_NVME) {
-		struct ccb_trans_settings_nvme *nvmex =
-		    &cts->xport_specific.nvme;
+		struct ccb_trans_settings_nvme *nvme =
+		    &cts->proto_specific.nvme;
 
-		if (nvmex->valid & CTS_NVME_VALID_SPEC) {
+		if (nvme->valid & CTS_NVME_VALID_SPEC) {
 			fprintf(stdout, "%sNVMe Spec: %d.%d\n", pathstr,
-			    NVME_MAJOR(nvmex->spec),
-			    NVME_MINOR(nvmex->spec));
-		}
-		if (nvmex->valid & CTS_NVME_VALID_LINK) {
-			fprintf(stdout, "%sPCIe lanes: %d (%d max)\n", pathstr,
-			    nvmex->lanes, nvmex->max_lanes);
-			fprintf(stdout, "%sPCIe Generation: %d (%d max)\n", pathstr,
-			    nvmex->speed, nvmex->max_speed);
+			    NVME_MAJOR(nvme->spec),
+			    NVME_MINOR(nvme->spec));
 		}
 	}
-#endif
 }
 
 /*

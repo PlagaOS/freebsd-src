@@ -136,7 +136,9 @@ struct linear_buffer {
 };
 #define	SCRATCH_BUFFER_SIZE	1024
 
-#define	RTS_PID_LOG(_l, _fmt, ...)	RT_LOG_##_l(_l, "PID %d: " _fmt, curproc ? curproc->p_pid : 0, ## __VA_ARGS__)
+#define	RTS_PID_LOG(_l, _fmt, ...)					\
+	RT_LOG_##_l(_l, "PID %d: " _fmt, curproc ? curproc->p_pid : 0,	\
+	    ## __VA_ARGS__)
 
 MALLOC_DEFINE(M_RTABLE, "routetbl", "routing tables");
 
@@ -206,7 +208,7 @@ static int	sysctl_ifmalist(int af, struct walkarg *w);
 static void	rt_getmetrics(const struct rtentry *rt,
 			const struct nhop_object *nh, struct rt_metrics *out);
 static void	rt_dispatch(struct mbuf *, sa_family_t);
-static void	rt_ifannouncemsg(struct ifnet *ifp, int what);
+static void	rt_ifannouncemsg(struct ifnet *, int, const char *);
 static int	handle_rtm_get(struct rt_addrinfo *info, u_int fibnum,
 			struct rt_msghdr *rtm, struct rib_cmd_info *rc);
 static int	update_rtm_from_rc(struct rt_addrinfo *info,
@@ -259,7 +261,7 @@ vnet_rts_init(void)
 #endif
 }
 VNET_SYSINIT(vnet_rtsock, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD,
-    vnet_rts_init, 0);
+    vnet_rts_init, NULL);
 
 #ifdef VIMAGE
 static void
@@ -269,7 +271,7 @@ vnet_rts_uninit(void)
 	netisr_unregister_vnet(&rtsock_nh);
 }
 VNET_SYSUNINIT(vnet_rts_uninit, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD,
-    vnet_rts_uninit, 0);
+    vnet_rts_uninit, NULL);
 #endif
 
 static void
@@ -307,7 +309,7 @@ rtsock_notify_event(uint32_t fibnum, const struct rib_cmd_info *rc)
 }
 
 static void
-rtsock_init(void)
+rtsock_init(void *dummy __unused)
 {
 	rtsbridge_orig_p = rtsock_callback_p;
 	rtsock_callback_p = &rtsbridge;
@@ -315,18 +317,27 @@ rtsock_init(void)
 SYSINIT(rtsock_init, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD, rtsock_init, NULL);
 
 static void
-rts_handle_ifnet_arrival(void *arg __unused, struct ifnet *ifp)
+rts_ifnet_attached(void *arg __unused, struct ifnet *ifp)
 {
-	rt_ifannouncemsg(ifp, IFAN_ARRIVAL);
+	rt_ifannouncemsg(ifp, IFAN_ARRIVAL, NULL);
 }
-EVENTHANDLER_DEFINE(ifnet_arrival_event, rts_handle_ifnet_arrival, NULL, 0);
+EVENTHANDLER_DEFINE(ifnet_attached_event, rts_ifnet_attached, NULL, 0);
 
 static void
 rts_handle_ifnet_departure(void *arg __unused, struct ifnet *ifp)
 {
-	rt_ifannouncemsg(ifp, IFAN_DEPARTURE);
+	rt_ifannouncemsg(ifp, IFAN_DEPARTURE, NULL);
 }
 EVENTHANDLER_DEFINE(ifnet_departure_event, rts_handle_ifnet_departure, NULL, 0);
+
+static void
+rts_handle_ifnet_rename(void *arg __unused, struct ifnet *ifp,
+    const char *old_name)
+{
+	rt_ifannouncemsg(ifp, IFAN_DEPARTURE, old_name);
+	rt_ifannouncemsg(ifp, IFAN_ARRIVAL, NULL);
+}
+EVENTHANDLER_DEFINE(ifnet_rename_event, rts_handle_ifnet_rename, NULL, 0);
 
 static void
 rts_append_data(struct socket *so, struct mbuf *m)
@@ -419,6 +430,30 @@ rts_attach(struct socket *so, int proto, struct thread *td)
 	soisconnected(so);
 
 	return (0);
+}
+
+static int
+rts_ctloutput(struct socket *so, struct sockopt *sopt)
+{
+	int error, optval;
+
+	error = ENOPROTOOPT;
+	if (sopt->sopt_dir == SOPT_SET) {
+		switch (sopt->sopt_level) {
+		case SOL_SOCKET:
+			switch (sopt->sopt_name) {
+			case SO_SETFIB:
+				error = sooptcopyin(sopt, &optval,
+				    sizeof(optval), sizeof(optval));
+				if (error != 0)
+					break;
+				error = sosetfib(so, optval);
+				break;
+			}
+			break;
+		}
+	}
+	return (error);
 }
 
 static void
@@ -919,8 +954,10 @@ update_rtm_from_info(struct rt_addrinfo *info, struct rt_msghdr **prtm,
 		 */
 	}
 
-	w.w_tmem = (caddr_t)rtm;
-	w.w_tmemsize = alloc_len;
+	w = (struct walkarg ){
+		.w_tmem = (caddr_t)rtm,
+		.w_tmemsize = alloc_len,
+	};
 	rtsock_msg_buffer(rtm->rtm_type, info, &w, &len);
 	rtm->rtm_addrs = info->rti_addrs;
 
@@ -1772,7 +1809,10 @@ rtsock_msg_buffer(int type, struct rt_addrinfo *rtinfo, struct walkarg *w, int *
 	struct sockaddr_in6 *sin6;
 #endif
 #ifdef COMPAT_FREEBSD32
-	bool compat32 = false;
+	bool compat32;
+
+	compat32 = w != NULL && w->w_req != NULL &&
+	    (w->w_req->flags & SCTL_MASK32);
 #endif
 
 	switch (type) {
@@ -1780,10 +1820,9 @@ rtsock_msg_buffer(int type, struct rt_addrinfo *rtinfo, struct walkarg *w, int *
 	case RTM_NEWADDR:
 		if (w != NULL && w->w_op == NET_RT_IFLISTL) {
 #ifdef COMPAT_FREEBSD32
-			if (w->w_req->flags & SCTL_MASK32) {
+			if (compat32)
 				len = sizeof(struct ifa_msghdrl32);
-				compat32 = true;
-			} else
+			else
 #endif
 				len = sizeof(struct ifa_msghdrl);
 		} else
@@ -1791,20 +1830,21 @@ rtsock_msg_buffer(int type, struct rt_addrinfo *rtinfo, struct walkarg *w, int *
 		break;
 
 	case RTM_IFINFO:
+		if (w != NULL && w->w_op == NET_RT_IFLISTL) {
 #ifdef COMPAT_FREEBSD32
-		if (w != NULL && w->w_req->flags & SCTL_MASK32) {
-			if (w->w_op == NET_RT_IFLISTL)
+			if (compat32)
 				len = sizeof(struct if_msghdrl32);
 			else
-				len = sizeof(struct if_msghdr32);
-			compat32 = true;
-			break;
-		}
 #endif
-		if (w != NULL && w->w_op == NET_RT_IFLISTL)
-			len = sizeof(struct if_msghdrl);
-		else
-			len = sizeof(struct if_msghdr);
+				len = sizeof(struct if_msghdrl);
+		} else {
+#ifdef COMPAT_FREEBSD32
+			if (compat32)
+				len = sizeof(struct if_msghdr32);
+			else
+#endif
+				len = sizeof(struct if_msghdr);
+		}
 		break;
 
 	case RTM_NEWMADDR:
@@ -1835,8 +1875,8 @@ rtsock_msg_buffer(int type, struct rt_addrinfo *rtinfo, struct walkarg *w, int *
 #endif
 			dlen = SA_SIZE(sa);
 		if (cp != NULL && buflen >= dlen) {
-			KASSERT(dlen <= sizeof(ss),
-			    ("%s: sockaddr size overflow", __func__));
+			if (sa->sa_len > sizeof(ss))
+				return (EINVAL);
 			bzero(&ss, sizeof(ss));
 			bcopy(sa, &ss, sa->sa_len);
 			sa = (struct sockaddr *)&ss;
@@ -2112,7 +2152,7 @@ rt_newmaddrmsg(int cmd, struct ifmultiaddr *ifma)
 
 static struct mbuf *
 rt_makeifannouncemsg(struct ifnet *ifp, int type, int what,
-	struct rt_addrinfo *info)
+    struct rt_addrinfo *info, const char *ifname)
 {
 	struct if_announcemsghdr *ifan;
 	struct mbuf *m;
@@ -2124,8 +2164,9 @@ rt_makeifannouncemsg(struct ifnet *ifp, int type, int what,
 	if (m != NULL) {
 		ifan = mtod(m, struct if_announcemsghdr *);
 		ifan->ifan_index = ifp->if_index;
-		strlcpy(ifan->ifan_name, ifp->if_xname,
-			sizeof(ifan->ifan_name));
+		strlcpy(ifan->ifan_name,
+		    ifname != NULL ? ifname : ifp->if_xname,
+		    sizeof(ifan->ifan_name));
 		ifan->ifan_what = what;
 	}
 	return m;
@@ -2142,7 +2183,7 @@ rt_ieee80211msg(struct ifnet *ifp, int what, void *data, size_t data_len)
 	struct mbuf *m;
 	struct rt_addrinfo info;
 
-	m = rt_makeifannouncemsg(ifp, RTM_IEEE80211, what, &info);
+	m = rt_makeifannouncemsg(ifp, RTM_IEEE80211, what, &info, NULL);
 	if (m != NULL) {
 		/*
 		 * Append the ieee80211 data.  Try to stick it in the
@@ -2176,12 +2217,12 @@ rt_ieee80211msg(struct ifnet *ifp, int what, void *data, size_t data_len)
  * network interface arrival and departure.
  */
 static void
-rt_ifannouncemsg(struct ifnet *ifp, int what)
+rt_ifannouncemsg(struct ifnet *ifp, int what, const char *ifname)
 {
 	struct mbuf *m;
 	struct rt_addrinfo info;
 
-	m = rt_makeifannouncemsg(ifp, RTM_IFANNOUNCE, what, &info);
+	m = rt_makeifannouncemsg(ifp, RTM_IFANNOUNCE, what, &info, ifname);
 	if (m != NULL)
 		rt_dispatch(m, AF_UNSPEC);
 }
@@ -2695,6 +2736,7 @@ static struct protosw routesw = {
 	.pr_flags =		PR_ATOMIC|PR_ADDR,
 	.pr_abort =		rts_close,
 	.pr_attach =		rts_attach,
+	.pr_ctloutput =		rts_ctloutput,
 	.pr_detach =		rts_detach,
 	.pr_send =		rts_send,
 	.pr_shutdown =		rts_shutdown,

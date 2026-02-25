@@ -27,8 +27,9 @@
 /* Driver for ptnet paravirtualized network device. */
 
 #include <sys/cdefs.h>
+#include "opt_inet.h"
+#include "opt_inet6.h"
 
-#include <sys/types.h>
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -74,9 +75,6 @@
 
 #include <dev/pci/pcivar.h>
 #include <dev/pci/pcireg.h>
-
-#include "opt_inet.h"
-#include "opt_inet6.h"
 
 #include <sys/selinfo.h>
 #include <net/netmap.h>
@@ -399,12 +397,6 @@ ptnet_attach(device_t dev)
 
 	/* Setup Ethernet interface. */
 	sc->ifp = ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		device_printf(dev, "Failed to allocate ifnet\n");
-		err = ENOMEM;
-		goto err_path;
-	}
-
 	if_initname(ifp, device_get_name(dev), device_get_unit(dev));
 	if_setbaudrate(ifp, IF_Gbps(10));
 	if_setsoftc(ifp, sc);
@@ -546,7 +538,7 @@ ptnet_detach(device_t dev)
 	ptnet_irqs_fini(sc);
 
 	if (sc->csb_gh) {
-		contigfree(sc->csb_gh, 2*PAGE_SIZE, M_DEVBUF);
+		free(sc->csb_gh, M_DEVBUF);
 		sc->csb_gh = NULL;
 		sc->csb_hg = NULL;
 	}

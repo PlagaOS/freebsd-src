@@ -818,7 +818,7 @@ load_fw(struct tegra_xhci_softc *sc)
 		DELAY(100);
 	}
 	if (i <= 0) {
-		device_printf(sc->dev, "Timedout while wating for DMA, "
+		device_printf(sc->dev, "Timedout while waiting for DMA, "
 		    "state: 0x%08X\n",
 		    CSB_RD4(sc, XUSB_CSB_MEMPOOL_L2IMEMOP_RESULT));
 		return (ETIMEDOUT);
@@ -835,7 +835,7 @@ load_fw(struct tegra_xhci_softc *sc)
 		DELAY(100);
 	}
 	if (i <= 0) {
-		device_printf(sc->dev, "Timedout while wating for FALCON cpu, "
+		device_printf(sc->dev, "Timedout while waiting for FALCON cpu, "
 		    "state: 0x%08X\n", CSB_RD4(sc, XUSB_FALCON_CPUCTL));
 		return (ETIMEDOUT);
 	}
@@ -916,12 +916,16 @@ tegra_xhci_detach(device_t dev)
 {
 	struct tegra_xhci_softc *sc;
 	struct xhci_softc *xsc;
+	int error;
 
 	sc = device_get_softc(dev);
 	xsc = &sc->xhci_softc;
 
 	/* during module unload there are lots of children leftover */
-	device_delete_children(dev);
+	error = bus_generic_detach(dev);
+	if (error != 0)
+		return (error);
+
 	if (sc->xhci_inited) {
 		usb_callout_drain(&xsc->sc_callout);
 		xhci_halt_controller(xsc);
@@ -1048,7 +1052,7 @@ tegra_xhci_attach(device_t dev)
 	strlcpy(xsc->sc_vendor, "Nvidia", sizeof(xsc->sc_vendor));
 
 	/* Add USB bus device. */
-	xsc->sc_bus.bdev = device_add_child(sc->dev, "usbus", -1);
+	xsc->sc_bus.bdev = device_add_child(sc->dev, "usbus", DEVICE_UNIT_ANY);
 	if (xsc->sc_bus.bdev == NULL) {
 		device_printf(sc->dev, "Could not add USB device\n");
 		rv = ENXIO;

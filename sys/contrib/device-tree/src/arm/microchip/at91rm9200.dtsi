@@ -135,9 +135,9 @@
 				#address-cells = <1>;
 				#size-cells = <0>;
 				reg = <0xfffa0000 0x100>;
-				interrupts = <17 IRQ_TYPE_LEVEL_HIGH 0
-					      18 IRQ_TYPE_LEVEL_HIGH 0
-					      19 IRQ_TYPE_LEVEL_HIGH 0>;
+				interrupts = <17 IRQ_TYPE_LEVEL_HIGH 0>,
+					     <18 IRQ_TYPE_LEVEL_HIGH 0>,
+					     <19 IRQ_TYPE_LEVEL_HIGH 0>;
 				clocks = <&pmc PMC_TYPE_PERIPHERAL 17>, <&pmc PMC_TYPE_PERIPHERAL 18>, <&pmc PMC_TYPE_PERIPHERAL 19>, <&slow_xtal>;
 				clock-names = "t0_clk", "t1_clk", "t2_clk", "slow_clk";
 			};
@@ -147,9 +147,9 @@
 				#address-cells = <1>;
 				#size-cells = <0>;
 				reg = <0xfffa4000 0x100>;
-				interrupts = <20 IRQ_TYPE_LEVEL_HIGH 0
-					      21 IRQ_TYPE_LEVEL_HIGH 0
-					      22 IRQ_TYPE_LEVEL_HIGH 0>;
+				interrupts = <20 IRQ_TYPE_LEVEL_HIGH 0>,
+					     <21 IRQ_TYPE_LEVEL_HIGH 0>,
+					     <22 IRQ_TYPE_LEVEL_HIGH 0>;
 				clocks = <&pmc PMC_TYPE_PERIPHERAL 20>, <&pmc PMC_TYPE_PERIPHERAL 21>, <&pmc PMC_TYPE_PERIPHERAL 22>, <&slow_xtal>;
 				clock-names = "t0_clk", "t1_clk", "t2_clk", "slow_clk";
 			};
@@ -225,7 +225,7 @@
 			pinctrl@fffff400 {
 				#address-cells = <1>;
 				#size-cells = <1>;
-				compatible = "atmel,at91rm9200-pinctrl", "simple-bus";
+				compatible = "atmel,at91rm9200-pinctrl", "simple-mfd";
 				ranges = <0xfffff400 0xfffff400 0x800>;
 
 				atmel,mux-mask = <
@@ -702,7 +702,7 @@
 			status = "disabled";
 		};
 
-		usb0: ohci@300000 {
+		usb0: usb@300000 {
 			compatible = "atmel,at91rm9200-ohci", "usb-ohci";
 			reg = <0x00300000 0x100000>;
 			interrupts = <23 IRQ_TYPE_LEVEL_HIGH 2>;
@@ -714,9 +714,8 @@
 
 	i2c-gpio-0 {
 		compatible = "i2c-gpio";
-		gpios = <&pioA 25 GPIO_ACTIVE_HIGH /* sda */
-			 &pioA 26 GPIO_ACTIVE_HIGH /* scl */
-			>;
+		sda-gpios = <&pioA 25 GPIO_ACTIVE_HIGH>;
+		scl-gpios = <&pioA 26 GPIO_ACTIVE_HIGH>;
 		i2c-gpio,sda-open-drain;
 		i2c-gpio,scl-open-drain;
 		i2c-gpio,delay-us = <2>;	/* ~100 kHz */

@@ -9,6 +9,8 @@
         ..
         boot
             kernel
+                gdb
+                ..
             ..
             modules
             ..
@@ -28,7 +30,7 @@
             ..
             lib
                 clang
-                    17
+                    19
                         lib
                             freebsd
                             ..
@@ -37,14 +39,30 @@
                 ..
                 engines-3
                 ..
+                flua
+                    freebsd
+                        sys
+                        ..
+                    ..
+                ..
                 i18n
+                ..
+                krb5
+                    plugins
+                    ..
+                ..
+                libxo
+                    encoder
+                    ..
+                ..
+                ossl-modules
                 ..
             ..
             libexec
                 bsdinstall
                 ..
-                lpr
-                    ru
+                lpr		tags=package=lp
+                    ru		tags=package=lp
                     ..
                 ..
                 sendmail

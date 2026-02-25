@@ -100,12 +100,8 @@ static struct gpio_entry *
 regnode_get_gpio_entry(struct gpiobus_pin *gpio_pin)
 {
 	struct gpio_entry *entry, *tmp;
-	device_t busdev;
 	int rv;
 
-	busdev = GPIO_GET_BUS(gpio_pin->dev);
-	if (busdev == NULL)
-		return (NULL);
 	entry = malloc(sizeof(struct gpio_entry), M_FIXEDREGULATOR,
 	    M_WAITOK | M_ZERO);
 
@@ -122,8 +118,8 @@ regnode_get_gpio_entry(struct gpiobus_pin *gpio_pin)
 	}
 
 	/* Reserve pin. */
-	/* XXX Can we call gpiobus_acquire_pin() with gpio_list_mtx held? */
-	rv = gpiobus_acquire_pin(busdev, gpio_pin->pin);
+	/* XXX Can we call gpio_pin_acquire() with gpio_list_mtx held? */
+	rv = gpio_pin_acquire(gpio_pin);
 	if (rv != 0) {
 		mtx_unlock(&gpio_list_mtx);
 		free(entry, M_FIXEDREGULATOR);
@@ -384,6 +380,7 @@ regfix_parse_fdt(struct regfix_softc * sc)
 {
 	phandle_t node;
 	int rv;
+	char *name;
 	struct regnode_init_def *init_def;
 
 	node = ofw_bus_get_node(sc->dev);
@@ -409,15 +406,21 @@ regfix_parse_fdt(struct regfix_softc * sc)
 	if (OF_hasprop(node, "gpio-open-drain"))
 		sc->init_def.gpio_open_drain = true;
 
-	if (!OF_hasprop(node, "gpio"))
-		return (0);
-	rv = ofw_bus_parse_xref_list_alloc(node, "gpio", "#gpio-cells", 0,
-	    &sc->gpio_prodxref, &sc->gpio_ncells, &sc->gpio_cells);
+	if (OF_hasprop(node, "gpio"))
+		name = "gpio";
+	else if (OF_hasprop(node, "gpios"))
+		name = "gpios";
+	else
+		return(0);
+
+	rv = ofw_bus_parse_xref_list_alloc(node, name, "#gpio-cells",
+	    0, &sc->gpio_prodxref, &sc->gpio_ncells, &sc->gpio_cells);
 	if (rv != 0) {
 		sc->gpio_prodxref = 0;
-		device_printf(sc->dev, "Malformed gpio property\n");
+		device_printf(sc->dev, "Malformed gpios property\n");
 		return (ENXIO);
 	}
+
 	return (0);
 }
 
@@ -485,14 +488,17 @@ regfix_attach(device_t dev)
 
 	/* Try to get and configure GPIO. */
 	rv = regfix_get_gpio(sc);
-	if (rv != 0)
-		return (bus_generic_attach(dev));
+	if (rv != 0) {
+		bus_attach_children(dev);
+		return (0);
+	}
 
 	/* Register regulator. */
 	regnode_fixed_register(sc->dev, &sc->init_def);
 	sc->attach_done = true;
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 }
 
 static device_method_t regfix_methods[] = {

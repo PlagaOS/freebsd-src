@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
  * Copyright (c) 2014 Juniper Networks, Inc.
  * All rights reserved.
  *
@@ -29,6 +31,9 @@
 
 #include <sys/queue.h>
 #include <sys/types.h>
+#include <time.h>
+
+extern time_t timestamp;
 
 struct part {
 	TAILQ_ENTRY(part) link;

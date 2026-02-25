@@ -32,10 +32,10 @@
 
 #include <sys/cdefs.h>
 /*
- * RealTek 8129/8139 PCI NIC driver
+ * Realtek 8129/8139 PCI NIC driver
  *
  * Supports several extremely cheap PCI 10/100 adapters based on
- * the RealTek chipset. Datasheets can be obtained from
+ * the Realtek chipset. Datasheets can be obtained from
  * www.realtek.com.tw.
  *
  * Written by Bill Paul <wpaul@ctr.columbia.edu>
@@ -43,7 +43,7 @@
  * Columbia University, New York City
  */
 /*
- * The RealTek 8139 PCI NIC redefines the meaning of 'low end.' This is
+ * The Realtek 8139 PCI NIC redefines the meaning of 'low end.' This is
  * probably the worst PCI ethernet controller ever made, with the possible
  * exception of the FEAST chip made by SMC. The 8139 supports bus-master
  * DMA, but it has a terrible interface that nullifies any performance
@@ -132,15 +132,15 @@ MODULE_DEPEND(rl, miibus, 1, 1, 1);
  */
 static const struct rl_type rl_devs[] = {
 	{ RT_VENDORID, RT_DEVICEID_8129, RL_8129,
-		"RealTek 8129 10/100BaseTX" },
+		"Realtek 8129 10/100BaseTX" },
 	{ RT_VENDORID, RT_DEVICEID_8139, RL_8139,
-		"RealTek 8139 10/100BaseTX" },
+		"Realtek 8139 10/100BaseTX" },
 	{ RT_VENDORID, RT_DEVICEID_8139D, RL_8139,
-		"RealTek 8139 10/100BaseTX" },
+		"Realtek 8139 10/100BaseTX" },
 	{ RT_VENDORID, RT_DEVICEID_8138, RL_8139,
-		"RealTek 8139 10/100BaseTX CardBus" },
+		"Realtek 8139 10/100BaseTX CardBus" },
 	{ RT_VENDORID, RT_DEVICEID_8100, RL_8139,
-		"RealTek 8100 10/100BaseTX" },
+		"Realtek 8100 10/100BaseTX" },
 	{ ACCTON_VENDORID, ACCTON_DEVICEID_5030, RL_8139,
 		"Accton MPX 5030/5038 10/100BaseTX" },
 	{ DELTA_VENDORID, DELTA_DEVICEID_8139, RL_8139,
@@ -499,7 +499,7 @@ rl_miibus_statchg(device_t dev)
 		}
 	}
 	/*
-	 * RealTek controllers do not provide any interface to
+	 * Realtek controllers do not provide any interface to
 	 * Tx/Rx MACs for resolved speed, duplex and flow-control
 	 * parameters.
 	 */
@@ -577,7 +577,7 @@ rl_reset(struct rl_softc *sc)
 }
 
 /*
- * Probe for a RealTek 8129/8139 chip. Check the PCI vendor and device
+ * Probe for a Realtek 8129/8139 chip. Check the PCI vendor and device
  * IDs against our list and return a device name if we find a match.
  */
 static int
@@ -640,7 +640,7 @@ rl_attach(device_t dev)
 	const struct rl_type	*t;
 	struct sysctl_ctx_list	*ctx;
 	struct sysctl_oid_list	*children;
-	int			error = 0, hwrev, i, phy, pmc, rid;
+	int			error = 0, hwrev, i, phy, rid;
 	int			prefer_iomap, unit;
 	uint16_t		rl_did = 0;
 	char			tn[32];
@@ -669,7 +669,7 @@ rl_attach(device_t dev)
 	 * there appear to be problems with memory mapped mode: it looks
 	 * like doing too many memory mapped access back to back in rapid
 	 * succession can hang the bus. I'm inclined to blame this on
-	 * crummy design/construction on the part of RealTek. Memory
+	 * crummy design/construction on the part of Realtek. Memory
 	 * mapped mode does appear to work on uniprocessor systems though.
 	 */
 	prefer_iomap = 1;
@@ -780,11 +780,6 @@ rl_attach(device_t dev)
 		goto fail;
 
 	ifp = sc->rl_ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		device_printf(dev, "can not if_alloc()\n");
-		error = ENOSPC;
-		goto fail;
-	}
 
 #define	RL_PHYAD_INTERNAL	0
 
@@ -808,8 +803,7 @@ rl_attach(device_t dev)
 	if_setinitfn(ifp, rl_init);
 	if_setcapabilities(ifp, IFCAP_VLAN_MTU);
 	/* Check WOL for RTL8139B or newer controllers. */
-	if (sc->rl_type == RL_8139 &&
-	    pci_find_cap(sc->rl_dev, PCIY_PMG, &pmc) == 0) {
+	if (sc->rl_type == RL_8139 && pci_has_pm(sc->rl_dev)) {
 		hwrev = CSR_READ_4(sc, RL_TXCFG) & RL_TXCFG_HWREV;
 		switch (hwrev) {
 		case RL_HWREV_8139B:
@@ -887,8 +881,6 @@ rl_detach(device_t dev)
 #if 0
 	sc->suspended = 1;
 #endif
-	if (sc->rl_miibus)
-		device_delete_child(dev, sc->rl_miibus);
 	bus_generic_detach(dev);
 
 	if (sc->rl_intrhand[0])
@@ -1151,11 +1143,11 @@ rl_rxeof(struct rl_softc *sc)
 
 		/*
 		 * Here's a totally undocumented fact for you. When the
-		 * RealTek chip is in the process of copying a packet into
+		 * Realtek chip is in the process of copying a packet into
 		 * RAM for you, the length will be 0xfff0. If you spot a
 		 * packet header with this value, you need to stop. The
 		 * datasheet makes absolutely no mention of this and
-		 * RealTek should be shot for this.
+		 * Realtek should be shot for this.
 		 */
 		total_len = rxstat >> 16;
 		if (total_len == RL_RXSTAT_UNFINISHED)
@@ -1174,7 +1166,7 @@ rl_rxeof(struct rl_softc *sc)
 		rx_bytes += total_len + 4;
 
 		/*
-		 * XXX The RealTek chip includes the CRC with every
+		 * XXX The Realtek chip includes the CRC with every
 		 * received frame, and there's no way to turn this
 		 * behavior off (at least, I can't find anything in
 		 * the manual that explains how to do it) so we have
@@ -1296,7 +1288,7 @@ rl_twister_update(struct rl_softc *sc)
 {
 	uint16_t linktest;
 	/*
-	 * Table provided by RealTek (Kinston <shangh@realtek.com.tw>) for
+	 * Table provided by Realtek (Kinston <shangh@realtek.com.tw>) for
 	 * Linux driver.  Values undocumented otherwise.
 	 */
 	static const uint32_t param[4][4] = {
@@ -1559,7 +1551,7 @@ rl_encap(struct rl_softc *sc, struct mbuf **m_head)
 	if (m->m_pkthdr.len < RL_MIN_FRAMELEN)
 		padlen = RL_MIN_FRAMELEN - m->m_pkthdr.len;
 	/*
-	 * The RealTek is brain damaged and wants longword-aligned
+	 * The Realtek is brain damaged and wants longword-aligned
 	 * TX buffers, plus we can only have one fragment buffer
 	 * per packet. We have to copy pretty much all the time.
 	 */
@@ -1979,24 +1971,13 @@ rl_resume(device_t dev)
 {
 	struct rl_softc		*sc;
 	if_t			ifp;
-	int			pmc;
-	uint16_t		pmstat;
 
 	sc = device_get_softc(dev);
 	ifp = sc->rl_ifp;
 
 	RL_LOCK(sc);
 
-	if ((if_getcapabilities(ifp) & IFCAP_WOL) != 0 &&
-	    pci_find_cap(sc->rl_dev, PCIY_PMG, &pmc) == 0) {
-		/* Disable PME and clear PME status. */
-		pmstat = pci_read_config(sc->rl_dev,
-		    pmc + PCIR_POWER_STATUS, 2);
-		if ((pmstat & PCIM_PSTAT_PMEENABLE) != 0) {
-			pmstat &= ~PCIM_PSTAT_PMEENABLE;
-			pci_write_config(sc->rl_dev,
-			    pmc + PCIR_POWER_STATUS, pmstat, 2);
-		}
+	if ((if_getcapabilities(ifp) & IFCAP_WOL) != 0) {
 		/*
 		 * Clear WOL matching such that normal Rx filtering
 		 * wouldn't interfere with WOL patterns.
@@ -2044,16 +2025,12 @@ static void
 rl_setwol(struct rl_softc *sc)
 {
 	if_t			ifp;
-	int			pmc;
-	uint16_t		pmstat;
 	uint8_t			v;
 
 	RL_LOCK_ASSERT(sc);
 
 	ifp = sc->rl_ifp;
 	if ((if_getcapabilities(ifp) & IFCAP_WOL) == 0)
-		return;
-	if (pci_find_cap(sc->rl_dev, PCIY_PMG, &pmc) != 0)
 		return;
 
 	/* Enable config register write. */
@@ -2087,11 +2064,8 @@ rl_setwol(struct rl_softc *sc)
 	CSR_WRITE_1(sc, RL_EECMD, RL_EEMODE_OFF);
 
 	/* Request PME if WOL is requested. */
-	pmstat = pci_read_config(sc->rl_dev, pmc + PCIR_POWER_STATUS, 2);
-	pmstat &= ~(PCIM_PSTAT_PME | PCIM_PSTAT_PMEENABLE);
 	if ((if_getcapenable(ifp) & IFCAP_WOL) != 0)
-		pmstat |= PCIM_PSTAT_PME | PCIM_PSTAT_PMEENABLE;
-	pci_write_config(sc->rl_dev, pmc + PCIR_POWER_STATUS, pmstat, 2);
+		pci_enable_pme(sc->rl_dev);
 }
 
 static void

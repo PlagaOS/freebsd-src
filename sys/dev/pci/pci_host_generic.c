@@ -59,6 +59,12 @@
 #define	PCI_RF_FLAGS	0
 #endif
 
+/*
+ * We allocate "ranges" specified mappings higher up in the rid space to avoid
+ * conflicts with various definitions in the wild that may have other registers
+ * attributed to the controller besides just the config space.
+ */
+#define	RANGE_RID(idx)	((idx) + 100)
 
 /* Forward prototypes */
 
@@ -67,8 +73,6 @@ static uint32_t generic_pcie_read_config(device_t dev, u_int bus, u_int slot,
 static void generic_pcie_write_config(device_t dev, u_int bus, u_int slot,
     u_int func, u_int reg, uint32_t val, int bytes);
 static int generic_pcie_maxslots(device_t dev);
-static int generic_pcie_read_ivar(device_t dev, device_t child, int index,
-    uintptr_t *result);
 static int generic_pcie_write_ivar(device_t dev, device_t child, int index,
     uintptr_t value);
 
@@ -80,13 +84,14 @@ pci_host_generic_core_attach(device_t dev)
 	struct resource_map map;
 #endif
 	struct generic_pcie_core_softc *sc;
+	struct rman *rm;
 	uint64_t phys_base;
 	uint64_t pci_base;
 	uint64_t size;
 	const char *range_descr;
 	char buf[64];
 	int domain, error;
-	int flags, rid, tuple, type;
+	int flags, rid, tuple;
 
 	sc = device_get_softc(dev);
 	sc->dev = dev;
@@ -174,7 +179,7 @@ pci_host_generic_core_attach(device_t dev)
 		phys_base = sc->ranges[tuple].phys_base;
 		pci_base = sc->ranges[tuple].pci_base;
 		size = sc->ranges[tuple].size;
-		rid = tuple + 1;
+		rid = RANGE_RID(tuple);
 		if (size == 0)
 			continue; /* empty range element */
 		switch (FLAG_TYPE(sc->ranges[tuple].flags)) {
@@ -182,76 +187,51 @@ pci_host_generic_core_attach(device_t dev)
 			sc->has_pmem = true;
 			range_descr = "prefetch";
 			flags = RF_PREFETCHABLE;
-			type = SYS_RES_MEMORY;
-			error = rman_manage_region(&sc->pmem_rman,
-			   pci_base, pci_base + size - 1);
+			rm = &sc->pmem_rman;
 			break;
 		case FLAG_TYPE_MEM:
 			range_descr = "memory";
 			flags = 0;
-			type = SYS_RES_MEMORY;
-			error = rman_manage_region(&sc->mem_rman,
-			   pci_base, pci_base + size - 1);
+			rm = &sc->mem_rman;
 			break;
 		case FLAG_TYPE_IO:
 			range_descr = "I/O port";
 			flags = 0;
-			type = SYS_RES_IOPORT;
-			error = rman_manage_region(&sc->io_rman,
-			   pci_base, pci_base + size - 1);
+			rm = &sc->io_rman;
 			break;
 		default:
 			continue;
-		}
-		if (error) {
-			device_printf(dev, "rman_manage_region() failed."
-						"error = %d\n", error);
-			goto err_rman_manage;
-		}
-		error = bus_set_resource(dev, type, rid, phys_base, size);
-		if (error != 0) {
-			device_printf(dev,
-			    "failed to set resource for range %d: %d\n", tuple,
-			    error);
-			goto err_rman_manage;
-		}
-		sc->ranges[tuple].res = bus_alloc_resource_any(dev, type, &rid,
-		    RF_ACTIVE | RF_UNMAPPED | flags);
-		if (sc->ranges[tuple].res == NULL) {
-			device_printf(dev,
-			    "failed to allocate resource for range %d\n", tuple);
-			error = ENXIO;
-			goto err_rman_manage;
 		}
 		if (bootverbose)
 			device_printf(dev,
 			    "PCI addr: 0x%jx, CPU addr: 0x%jx, Size: 0x%jx, Type: %s\n",
 			    pci_base, phys_base, size, range_descr);
+		error = bus_set_resource(dev, SYS_RES_MEMORY, rid, phys_base,
+		    size);
+		if (error != 0) {
+			device_printf(dev,
+			    "failed to set resource for range %d: %d\n", tuple,
+			    error);
+			continue;
+		}
+		sc->ranges[tuple].rid = rid;
+		sc->ranges[tuple].res = bus_alloc_resource_any(dev,
+		    SYS_RES_MEMORY, &rid, RF_ACTIVE | RF_UNMAPPED | flags);
+		if (sc->ranges[tuple].res == NULL) {
+			device_printf(dev,
+			    "failed to allocate resource for range %d\n", tuple);
+			continue;
+		}
+		error = rman_manage_region(rm, pci_base, pci_base + size - 1);
+		if (error) {
+			device_printf(dev, "rman_manage_region() failed."
+						"error = %d\n", error);
+			continue;
+		}
 	}
 
 	return (0);
 
-err_rman_manage:
-	for (tuple = 0; tuple < MAX_RANGES_TUPLES; tuple++) {
-		if (sc->ranges[tuple].size == 0)
-			continue; /* empty range element */
-		switch (FLAG_TYPE(sc->ranges[tuple].flags)) {
-		case FLAG_TYPE_PMEM:
-		case FLAG_TYPE_MEM:
-			type = SYS_RES_MEMORY;
-			break;
-		case FLAG_TYPE_IO:
-			type = SYS_RES_IOPORT;
-			break;
-		default:
-			continue;
-		}
-		if (sc->ranges[tuple].res != NULL)
-			bus_release_resource(dev, type, tuple + 1,
-			    sc->ranges[tuple].res);
-		bus_delete_resource(dev, type, tuple + 1);
-	}
-	rman_fini(&sc->io_rman);
 err_io_rman:
 	rman_fini(&sc->mem_rman);
 err_mem_rman:
@@ -271,7 +251,7 @@ int
 pci_host_generic_core_detach(device_t dev)
 {
 	struct generic_pcie_core_softc *sc;
-	int error, tuple, type;
+	int error, rid, tuple;
 
 	sc = device_get_softc(dev);
 
@@ -280,23 +260,25 @@ pci_host_generic_core_detach(device_t dev)
 		return (error);
 
 	for (tuple = 0; tuple < MAX_RANGES_TUPLES; tuple++) {
-		if (sc->ranges[tuple].size == 0)
+		rid = sc->ranges[tuple].rid;
+		if (sc->ranges[tuple].size == 0) {
+			MPASS(sc->ranges[tuple].res == NULL);
 			continue; /* empty range element */
+		}
+
+		MPASS(rid != -1);
 		switch (FLAG_TYPE(sc->ranges[tuple].flags)) {
 		case FLAG_TYPE_PMEM:
 		case FLAG_TYPE_MEM:
-			type = SYS_RES_MEMORY;
-			break;
 		case FLAG_TYPE_IO:
-			type = SYS_RES_IOPORT;
 			break;
 		default:
 			continue;
 		}
 		if (sc->ranges[tuple].res != NULL)
-			bus_release_resource(dev, type, tuple + 1,
+			bus_release_resource(dev, SYS_RES_MEMORY, rid,
 			    sc->ranges[tuple].res);
-		bus_delete_resource(dev, type, tuple + 1);
+		bus_delete_resource(dev, SYS_RES_MEMORY, rid);
 	}
 	rman_fini(&sc->io_rman);
 	rman_fini(&sc->mem_rman);
@@ -385,20 +367,18 @@ generic_pcie_maxslots(device_t dev)
 	return (31); /* max slots per bus acc. to standard */
 }
 
-static int
+int
 generic_pcie_read_ivar(device_t dev, device_t child, int index,
     uintptr_t *result)
 {
 	struct generic_pcie_core_softc *sc;
 
 	sc = device_get_softc(dev);
-
-	if (index == PCIB_IVAR_BUS) {
+	switch (index) {
+	case PCIB_IVAR_BUS:
 		*result = sc->bus_start;
 		return (0);
-	}
-
-	if (index == PCIB_IVAR_DOMAIN) {
+	case PCIB_IVAR_DOMAIN:
 		*result = sc->ecam;
 		return (0);
 	}
@@ -439,16 +419,12 @@ int
 pci_host_generic_core_release_resource(device_t dev, device_t child,
     struct resource *res)
 {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	struct generic_pcie_core_softc *sc;
 
 	sc = device_get_softc(dev);
-#endif
 	switch (rman_get_type(res)) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (pci_domain_release_bus(sc->ecam, child, res));
-#endif
 	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
 		return (bus_generic_rman_release_resource(dev, child, res));
@@ -527,24 +503,18 @@ generic_pcie_translate_resource(device_t dev, int type, rman_res_t start,
 
 struct resource *
 pci_host_generic_core_alloc_resource(device_t dev, device_t child, int type,
-    int *rid, rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
+    int rid, rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	struct generic_pcie_core_softc *sc;
-#endif
 	struct resource *res;
 
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	sc = device_get_softc(dev);
-#endif
 
 	switch (type) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		res = pci_domain_alloc_bus(sc->ecam, child, rid, start, end,
 		    count, flags);
 		break;
-#endif
 	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
 		res = bus_generic_rman_alloc_resource(dev, child, type, rid,
@@ -558,7 +528,7 @@ pci_host_generic_core_alloc_resource(device_t dev, device_t child, int type,
 	if (res == NULL) {
 		device_printf(dev, "%s FAIL: type=%d, rid=%d, "
 		    "start=%016jx, end=%016jx, count=%016jx, flags=%x\n",
-		    __func__, type, *rid, start, end, count, flags);
+		    __func__, type, rid, start, end, count, flags);
 	}
 	return (res);
 }
@@ -566,16 +536,12 @@ pci_host_generic_core_alloc_resource(device_t dev, device_t child, int type,
 static int
 generic_pcie_activate_resource(device_t dev, device_t child, struct resource *r)
 {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	struct generic_pcie_core_softc *sc;
 
 	sc = device_get_softc(dev);
-#endif
 	switch (rman_get_type(r)) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (pci_domain_activate_bus(sc->ecam, child, r));
-#endif
 	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
 		return (bus_generic_rman_activate_resource(dev, child, r));
@@ -588,16 +554,12 @@ static int
 generic_pcie_deactivate_resource(device_t dev, device_t child,
     struct resource *r)
 {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	struct generic_pcie_core_softc *sc;
 
 	sc = device_get_softc(dev);
-#endif
 	switch (rman_get_type(r)) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (pci_domain_deactivate_bus(sc->ecam, child, r));
-#endif
 	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
 		return (bus_generic_rman_deactivate_resource(dev, child, r));
@@ -610,17 +572,13 @@ static int
 generic_pcie_adjust_resource(device_t dev, device_t child,
     struct resource *res, rman_res_t start, rman_res_t end)
 {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	struct generic_pcie_core_softc *sc;
 
 	sc = device_get_softc(dev);
-#endif
 	switch (rman_get_type(res)) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (pci_domain_adjust_bus(sc->ecam, child, res, start,
 		    end));
-#endif
 	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
 		return (bus_generic_rman_adjust_resource(dev, child, res,
@@ -642,10 +600,8 @@ generic_pcie_map_resource(device_t dev, device_t child, struct resource *r,
 
 	type = rman_get_type(r);
 	switch (type) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (EINVAL);
-#endif
 	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
 		break;
@@ -669,7 +625,7 @@ generic_pcie_map_resource(device_t dev, device_t child, struct resource *r,
 
 	args.offset = start - range->pci_base;
 	args.length = length;
-	return (bus_generic_map_resource(dev, child, range->res, &args, map));
+	return (bus_map_resource(dev, range->res, &args, map));
 }
 
 static int
@@ -681,22 +637,20 @@ generic_pcie_unmap_resource(device_t dev, device_t child, struct resource *r,
 
 	type = rman_get_type(r);
 	switch (type) {
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	case PCI_RES_BUS:
 		return (EINVAL);
-#endif
 	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
-		range = generic_pcie_containing_range(dev, type,
-		    rman_get_start(r), rman_get_end(r));
-		if (range == NULL || range->res == NULL)
-			return (ENOENT);
-		r = range->res;
 		break;
 	default:
-		break;
+		return (bus_generic_unmap_resource(dev, child, r, map));
 	}
-	return (bus_generic_unmap_resource(dev, child, r, map));
+
+	range = generic_pcie_containing_range(dev, type, rman_get_start(r),
+	    rman_get_end(r));
+	if (range == NULL || range->res == NULL)
+		return (ENOENT);
+	return (bus_unmap_resource(dev, range->res, map));
 }
 
 static bus_dma_tag_t

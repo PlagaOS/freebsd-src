@@ -51,6 +51,7 @@
 #include <sys/conf.h>
 #include <sys/cpuset.h>
 #include <sys/interrupt.h>
+#include <sys/intr.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
@@ -61,6 +62,7 @@
 #include <sys/rman.h>
 #include <sys/sched.h>
 #include <sys/smp.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <sys/syslog.h>
 #include <sys/taskqueue.h>
@@ -72,9 +74,7 @@
 
 #include <machine/atomic.h>
 #include <machine/cpu.h>
-#include <machine/intr.h>
 #include <machine/smp.h>
-#include <machine/stdarg.h>
 
 #ifdef DDB
 #include <ddb/ddb.h>
@@ -99,13 +99,14 @@
 MALLOC_DECLARE(M_INTRNG);
 MALLOC_DEFINE(M_INTRNG, "intr", "intr interrupt handling");
 
-/* Main interrupt handler called from assembler -> 'hidden' for C code. */
-void intr_irq_handler(struct trapframe *tf);
-
 /* Root interrupt controller stuff. */
-device_t intr_irq_root_dev;
-static intr_irq_filter_t *irq_root_filter;
-static void *irq_root_arg;
+struct intr_irq_root {
+	device_t dev;
+	intr_irq_filter_t *filter;
+	void *arg;
+};
+
+static struct intr_irq_root intr_irq_roots[INTR_ROOT_COUNT];
 
 struct intr_pic_child {
 	SLIST_ENTRY(intr_pic_child)	 pc_next;
@@ -149,7 +150,7 @@ static bool intr_ipi_dev_frozen;
 static struct mtx pic_list_lock;
 static SLIST_HEAD(, intr_pic) pic_list;
 
-static struct intr_pic *pic_lookup(device_t dev, intptr_t xref, int flags);
+static struct intr_pic *pic_lookup(device_t dev, intptr_t xref, u_int flags);
 
 /* Interrupt source definition. */
 static struct mtx isrc_table_lock;
@@ -327,12 +328,17 @@ isrc_release_counters(struct intr_irqsrc *isrc)
  *  from the assembler, where CPU interrupt is served.
  */
 void
-intr_irq_handler(struct trapframe *tf)
+intr_irq_handler(struct trapframe *tf, uint32_t rootnum)
 {
 	struct trapframe * oldframe;
 	struct thread * td;
+	struct intr_irq_root *root;
 
-	KASSERT(irq_root_filter != NULL, ("%s: no filter", __func__));
+	KASSERT(rootnum < INTR_ROOT_COUNT,
+	    ("%s: invalid interrupt root %d", __func__, rootnum));
+
+	root = &intr_irq_roots[rootnum];
+	KASSERT(root->filter != NULL, ("%s: no filter", __func__));
 
 	kasan_mark(tf, sizeof(*tf), sizeof(*tf), 0);
 	kmsan_mark(tf, sizeof(*tf), KMSAN_STATE_INITED);
@@ -342,7 +348,7 @@ intr_irq_handler(struct trapframe *tf)
 	td = curthread;
 	oldframe = td->td_intr_frame;
 	td->td_intr_frame = tf;
-	irq_root_filter(irq_root_arg);
+	(root->filter)(root->arg);
 	td->td_intr_frame = oldframe;
 	critical_exit();
 #ifdef HWPMC_HOOKS
@@ -477,6 +483,14 @@ isrc_free_irq(struct intr_irqsrc *isrc)
 		irq_next_free = 0;
 
 	return (0);
+}
+
+device_t
+intr_irq_root_device(uint32_t rootnum)
+{
+	KASSERT(rootnum < INTR_ROOT_COUNT,
+	    ("%s: invalid interrupt root %d", __func__, rootnum));
+	return (intr_irq_roots[rootnum].dev);
 }
 
 /*
@@ -744,7 +758,7 @@ isrc_add_handler(struct intr_irqsrc *isrc, const char *name,
  *  Lookup interrupt controller locked.
  */
 static inline struct intr_pic *
-pic_lookup_locked(device_t dev, intptr_t xref, int flags)
+pic_lookup_locked(device_t dev, intptr_t xref, u_int flags)
 {
 	struct intr_pic *pic;
 
@@ -775,7 +789,7 @@ pic_lookup_locked(device_t dev, intptr_t xref, int flags)
  *  Lookup interrupt controller.
  */
 static struct intr_pic *
-pic_lookup(device_t dev, intptr_t xref, int flags)
+pic_lookup(device_t dev, intptr_t xref, u_int flags)
 {
 	struct intr_pic *pic;
 
@@ -789,7 +803,7 @@ pic_lookup(device_t dev, intptr_t xref, int flags)
  *  Create interrupt controller.
  */
 static struct intr_pic *
-pic_create(device_t dev, intptr_t xref, int flags)
+pic_create(device_t dev, intptr_t xref, u_int flags)
 {
 	struct intr_pic *pic;
 
@@ -818,7 +832,7 @@ pic_create(device_t dev, intptr_t xref, int flags)
  *  Destroy interrupt controller.
  */
 static void
-pic_destroy(device_t dev, intptr_t xref, int flags)
+pic_destroy(device_t dev, intptr_t xref, u_int flags)
 {
 	struct intr_pic *pic;
 
@@ -877,9 +891,10 @@ intr_pic_deregister(device_t dev, intptr_t xref)
  */
 int
 intr_pic_claim_root(device_t dev, intptr_t xref, intr_irq_filter_t *filter,
-    void *arg)
+    void *arg, uint32_t rootnum)
 {
 	struct intr_pic *pic;
+	struct intr_irq_root *root;
 
 	pic = pic_lookup(dev, xref, FLAG_PIC);
 	if (pic == NULL) {
@@ -901,14 +916,17 @@ intr_pic_claim_root(device_t dev, intptr_t xref, intr_irq_filter_t *filter,
 	 * Note that we further suppose that there is not threaded interrupt
 	 * routine (handler) on the root. See intr_irq_handler().
 	 */
-	if (intr_irq_root_dev != NULL) {
+	KASSERT(rootnum < INTR_ROOT_COUNT,
+	    ("%s: invalid interrupt root %d", __func__, rootnum));
+	root = &intr_irq_roots[rootnum];
+	if (root->dev != NULL) {
 		device_printf(dev, "another root already set\n");
 		return (EBUSY);
 	}
 
-	intr_irq_root_dev = dev;
-	irq_root_filter = filter;
-	irq_root_arg = arg;
+	root->dev = dev;
+	root->filter = filter;
+	root->arg = arg;
 
 	debugf("irq root set to %s\n", device_get_nameunit(dev));
 	return (0);
@@ -1273,9 +1291,21 @@ intr_irq_shuffle(void *arg __unused)
 	irq_assign_cpu = true;
 	for (i = 0; i < intr_nirq; i++) {
 		isrc = irq_sources[i];
-		if (isrc == NULL || isrc->isrc_handlers == 0 ||
+		if (isrc == NULL ||
 		    isrc->isrc_flags & (INTR_ISRCF_PPI | INTR_ISRCF_IPI))
 			continue;
+
+		/*
+		 * We can reach this point with isrc_handlers == 0 if a
+		 * driver allocates interrupts but does not set them up
+		 * immediately; for example, a network driver might
+		 * postpone calling bus_setup_intr on I/O IRQ(s) until
+		 * the interface is brought up.
+		 */
+		if (isrc->isrc_handlers == 0) {
+			CPU_ZERO(&isrc->isrc_cpu);
+			continue;
+		}
 
 		if (isrc->isrc_event != NULL &&
 		    isrc->isrc_flags & INTR_ISRCF_BOUND &&
@@ -1552,14 +1582,19 @@ dosoftints(void)
 void
 intr_pic_init_secondary(void)
 {
+	device_t dev;
+	uint32_t rootnum;
 
 	/*
-	 * QQQ: Only root PIC is aware of other CPUs ???
+	 * QQQ: Only root PICs are aware of other CPUs ???
 	 */
-	KASSERT(intr_irq_root_dev != NULL, ("%s: no root attached", __func__));
-
 	//mtx_lock(&isrc_table_lock);
-	PIC_INIT_SECONDARY(intr_irq_root_dev);
+	for (rootnum = 0; rootnum < INTR_ROOT_COUNT; rootnum++) {
+		dev = intr_irq_roots[rootnum].dev;
+		if (dev != NULL) {
+			PIC_INIT_SECONDARY(dev, rootnum);
+		}
+	}
 	//mtx_unlock(&isrc_table_lock);
 }
 #endif
@@ -1710,14 +1745,6 @@ intr_map_irq(device_t dev, intptr_t xref, struct intr_map_data *data)
 			return (i);
 		}
 	}
-	for (i = 0; i < irq_map_first_free_idx; i++) {
-		if (irq_map[i] == NULL) {
-			irq_map[i] = entry;
-			irq_map_first_free_idx = i + 1;
-			mtx_unlock(&irq_map_lock);
-			return (i);
-		}
-	}
 	mtx_unlock(&irq_map_lock);
 
 	/* XXX Expand irq_map table */
@@ -1737,7 +1764,8 @@ intr_unmap_irq(u_int res_id)
 		panic("Attempt to unmap invalid resource id: %u\n", res_id);
 	entry = irq_map[res_id];
 	irq_map[res_id] = NULL;
-	irq_map_first_free_idx = res_id;
+	if (res_id < irq_map_first_free_idx)
+		irq_map_first_free_idx = res_id;
 	mtx_unlock(&irq_map_lock);
 	intr_free_intr_map_data(entry->map_data);
 	free(entry, M_INTRNG);
@@ -1831,8 +1859,10 @@ intr_ipi_pic_register(device_t dev, u_int priority)
 		return (EBUSY);
 	}
 
-	if (intr_ipi_dev == NULL || priority > intr_ipi_dev_priority)
+	if (intr_ipi_dev == NULL || priority > intr_ipi_dev_priority) {
+		intr_ipi_dev_priority = priority;
 		intr_ipi_dev = dev;
+	}
 
 	return (0);
 }

@@ -249,19 +249,27 @@ uiomove_faultflag(void *cp, int n, struct uio *uio, int nofault)
 		switch (uio->uio_segflg) {
 		case UIO_USERSPACE:
 			maybe_yield();
-			if (uio->uio_rw == UIO_READ)
+			switch (uio->uio_rw) {
+			case UIO_READ:
 				error = copyout(cp, iov->iov_base, cnt);
-			else
+				break;
+			case UIO_WRITE:
 				error = copyin(iov->iov_base, cp, cnt);
+				break;
+			}
 			if (error)
 				goto out;
 			break;
 
 		case UIO_SYSSPACE:
-			if (uio->uio_rw == UIO_READ)
+			switch (uio->uio_rw) {
+			case UIO_READ:
 				bcopy(cp, iov->iov_base, cnt);
-			else
+				break;
+			case UIO_WRITE:
 				bcopy(iov->iov_base, cp, cnt);
+				break;
+			}
 			break;
 		case UIO_NOCOPY:
 			break;
@@ -277,6 +285,37 @@ out:
 	if (save)
 		curthread_pflags_restore(save);
 	return (error);
+}
+
+/*
+ * Advance the pointer in the uio by offset.
+ */
+void
+uioadvance(struct uio *uio, size_t offset)
+{
+
+	while (offset > 0) {
+		struct iovec *iov;
+		size_t cnt;
+
+		MPASS(uio->uio_resid >= 0);
+		MPASS((size_t)uio->uio_resid >= offset);
+		MPASS(uio->uio_iovcnt > 0);
+
+		iov = uio->uio_iov;
+		if ((cnt = iov->iov_len) == 0) {
+			uio->uio_iov++;
+			uio->uio_iovcnt--;
+			continue;
+		}
+		if (cnt > offset)
+			cnt = offset;
+		iov->iov_base = (char *)iov->iov_base + cnt;
+		iov->iov_len -= cnt;
+		uio->uio_resid -= cnt;
+		uio->uio_offset += cnt;
+		offset -= cnt;
+	}
 }
 
 /*

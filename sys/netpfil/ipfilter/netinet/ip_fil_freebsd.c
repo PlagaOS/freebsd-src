@@ -88,26 +88,17 @@ VNET_DEFINE(ipf_main_softc_t, ipfmain) = {
 	.ipf_running		= -2,
 };
 #define	V_ipfmain		VNET(ipfmain)
+#define V0_ipfmain		VNET_VNET(vnet0,ipfmain)
 
 #include <sys/conf.h>
 #include <net/pfil.h>
 
 VNET_DEFINE_STATIC(eventhandler_tag, ipf_arrivetag);
 VNET_DEFINE_STATIC(eventhandler_tag, ipf_departtag);
+VNET_DEFINE_STATIC(eventhandler_tag, ipf_renametag);
 #define	V_ipf_arrivetag		VNET(ipf_arrivetag)
 #define	V_ipf_departtag		VNET(ipf_departtag)
-#if 0
-/*
- * Disable the "cloner" event handler;  we are getting interface
- * events before the firewall is fully initiallized and also no vnet
- * information thus leading to uninitialised memory accesses.
- * In addition it is unclear why we need it in first place.
- * If it turns out to be needed, well need a dedicated event handler
- * for it to deal with the ifc and the correct vnet.
- */
-VNET_DEFINE_STATIC(eventhandler_tag, ipf_clonetag);
-#define	V_ipf_clonetag		VNET(ipf_clonetag)
-#endif
+#define	V_ipf_renametag		VNET(ipf_renametag)
 
 static void ipf_ifevent(void *arg, struct ifnet *ifp);
 
@@ -172,21 +163,15 @@ ipf_timer_func(void *arg)
 	SPL_INT(s);
 
 	SPL_NET(s);
-	READ_ENTER(&softc->ipf_global);
 
 	if (softc->ipf_running > 0)
 		ipf_slowtimer(softc);
 
 	if (softc->ipf_running == -1 || softc->ipf_running == 1) {
-#if 0
-		softc->ipf_slow_ch = timeout(ipf_timer_func, softc, hz/2);
-#endif
-		callout_init(&softc->ipf_slow_ch, 1);
 		callout_reset(&softc->ipf_slow_ch,
 			(hz / IPF_HZ_DIVIDE) * IPF_HZ_MULT,
 			ipf_timer_func, softc);
 	}
-	RWLOCK_EXIT(&softc->ipf_global);
 	SPL_X(s);
 }
 
@@ -217,11 +202,7 @@ ipfattach(ipf_main_softc_t *softc)
 		V_ipforwarding = 1;
 
 	SPL_X(s);
-#if 0
-	softc->ipf_slow_ch = timeout(ipf_timer_func, softc,
-				     (hz / IPF_HZ_DIVIDE) * IPF_HZ_MULT);
-#endif
-	callout_init(&softc->ipf_slow_ch, 1);
+	callout_init_rw(&softc->ipf_slow_ch, &softc->ipf_global.ipf_lk, CALLOUT_SHAREDLOCK);
 	callout_reset(&softc->ipf_slow_ch, (hz / IPF_HZ_DIVIDE) * IPF_HZ_MULT,
 		ipf_timer_func, softc);
 	return (0);
@@ -244,11 +225,6 @@ ipfdetach(ipf_main_softc_t *softc)
 
 	SPL_NET(s);
 
-#if 0
-	if (softc->ipf_slow_ch.callout != NULL)
-		untimeout(ipf_timer_func, softc, softc->ipf_slow_ch);
-	bzero(&softc->ipf_slow, sizeof(softc->ipf_slow));
-#endif
 	callout_drain(&softc->ipf_slow_ch);
 
 	ipf_fini_all(softc);
@@ -279,6 +255,20 @@ ipfioctl(struct cdev *dev, ioctlcmd_t cmd, caddr_t data,
 		V_ipfmain.ipf_interror = 130001;
 		CURVNET_RESTORE();
 		return (EPERM);
+	}
+
+	/*
+	 * Remember, the host system (with its vnet0) controls
+	 * whether a jail is allowed to use ipfilter or not.
+	 * The default is ipfilter cannot be used by a jail
+	 * unless the sysctl allows it.
+	 */
+	if (V0_ipfmain.ipf_jail_allowed == 0) {
+		if (jailed(p->p_cred)) {
+			V_ipfmain.ipf_interror = 130019;
+			CURVNET_RESTORE();
+			return (EOPNOTSUPP);
+		}
 	}
 
 	if (jailed_without_vnet(p->p_cred)) {
@@ -341,15 +331,15 @@ ipf_send_reset(fr_info_t *fin)
 	ip_t *ip;
 
 	tcp = fin->fin_dp;
-	if (tcp->th_flags & TH_RST)
+	if (tcp_get_flags(tcp) & TH_RST)
 		return (-1);		/* feedback loop */
 
 	if (ipf_checkl4sum(fin) == -1)
 		return (-1);
 
 	tlen = fin->fin_dlen - (TCP_OFF(tcp) << 2) +
-			((tcp->th_flags & TH_SYN) ? 1 : 0) +
-			((tcp->th_flags & TH_FIN) ? 1 : 0);
+			((tcp_get_flags(tcp) & TH_SYN) ? 1 : 0) +
+			((tcp_get_flags(tcp) & TH_FIN) ? 1 : 0);
 
 #ifdef USE_INET6
 	hlen = (fin->fin_v == 6) ? sizeof(ip6_t) : sizeof(ip_t);
@@ -490,13 +480,14 @@ ipf_send_ip(fr_info_t *fin, mb_t *m)
 int
 ipf_send_icmp_err(int type, fr_info_t *fin, int dst)
 {
-	int err, hlen, xtra, iclen, ohlen, avail, code;
+	int err, hlen, xtra, iclen, ohlen, avail;
 	struct in_addr dst4;
 	struct icmp *icmp;
 	struct mbuf *m;
 	i6addr_t dst6;
 	void *ifp;
 #ifdef USE_INET6
+	int code;
 	ip6_t *ip6;
 #endif
 	ip_t *ip, *ip2;
@@ -504,8 +495,8 @@ ipf_send_icmp_err(int type, fr_info_t *fin, int dst)
 	if ((type < 0) || (type >= ICMP_MAXTYPE))
 		return (-1);
 
-	code = fin->fin_icode;
 #ifdef USE_INET6
+	code = fin->fin_icode;
 	/* See NetBSD ip_fil_netbsd.c r1.4: */
 	if ((code < 0) || (code >= sizeof(icmptoicmp6unreach)/sizeof(int)))
 		return (-1);
@@ -1360,10 +1351,9 @@ ipf_event_reg(void)
 	V_ipf_departtag = EVENTHANDLER_REGISTER(ifnet_departure_event, \
 					       ipf_ifevent, NULL, \
 					       EVENTHANDLER_PRI_ANY);
-#if 0
-	V_ipf_clonetag  = EVENTHANDLER_REGISTER(if_clone_event, ipf_ifevent, \
-					       NULL, EVENTHANDLER_PRI_ANY);
-#endif
+	V_ipf_renametag = EVENTHANDLER_REGISTER(ifnet_rename_event, \
+					       ipf_ifevent, NULL, \
+					       EVENTHANDLER_PRI_ANY);
 }
 
 void
@@ -1375,11 +1365,9 @@ ipf_event_dereg(void)
 	if (V_ipf_departtag != NULL) {
 		EVENTHANDLER_DEREGISTER(ifnet_departure_event, V_ipf_departtag);
 	}
-#if 0
-	if (V_ipf_clonetag != NULL) {
-		EVENTHANDLER_DEREGISTER(if_clone_event, V_ipf_clonetag);
+	if (V_ipf_renametag != NULL) {
+		EVENTHANDLER_DEREGISTER(ifnet_rename_event, V_ipf_renametag);
 	}
-#endif
 }
 
 
@@ -1459,4 +1447,6 @@ ipf_fbsd_kenv_get(ipf_main_softc_t *softc)
 {
 	TUNABLE_INT_FETCH("net.inet.ipf.large_nat",
 		&softc->ipf_large_nat);
+	TUNABLE_INT_FETCH("net.inet.ipf.jail_allowed",
+		&softc->ipf_jail_allowed);
 }

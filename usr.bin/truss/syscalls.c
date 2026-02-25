@@ -31,7 +31,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 /*
  * This file has routines used to print out system calls and their
  * arguments.
@@ -316,6 +315,9 @@ static const struct syscall_decode decoded_syscalls[] = {
 		    { Ptr | OUT, 3 }, { Ptr | OUT, 4 } } },
 	{ .name = "gettimeofday", .ret_type = 1, .nargs = 2,
 	  .args = { { Timeval | OUT, 0 }, { Ptr, 1 } } },
+	{ .name = "inotify_add_watch_at", .ret_type = 1, .nargs = 4,
+	  .args = { { Int, 0 }, { Atfd, 1 }, { Name | IN, 2 },
+	            { Inotifyflags, 3 } } },
 	{ .name = "ioctl", .ret_type = 1, .nargs = 3,
 	  .args = { { Int, 0 }, { Ioctl, 1 }, { Ptr, 2 } } },
 	{ .name = "kevent", .ret_type = 1, .nargs = 6,
@@ -401,7 +403,7 @@ static const struct syscall_decode decoded_syscalls[] = {
 	{ .name = "nanosleep", .ret_type = 1, .nargs = 1,
 	  .args = { { Timespec, 0 } } },
 	{ .name = "nmount", .ret_type = 1, .nargs = 3,
-	  .args = { { Ptr, 0 }, { UInt, 1 }, { Mountflags, 2 } } },
+	  .args = { { Iovec | IN, 0 }, { UInt, 1 }, { Mountflags, 2 } } },
 	{ .name = "open", .ret_type = 1, .nargs = 3,
 	  .args = { { Name | IN, 0 }, { Open, 1 }, { Octal, 2 } } },
 	{ .name = "openat", .ret_type = 1, .nargs = 4,
@@ -2446,6 +2448,9 @@ print_arg(struct syscall_arg *sc, syscallarg_t *args, syscallarg_t *retval,
 	case Getfsstatmode:
 		print_integer_arg(sysdecode_getfsstat_mode, fp,
 		    args[sc->offset]);
+		break;
+	case Inotifyflags:
+		print_mask_arg(sysdecode_inotifyflags, fp, args[sc->offset]);
 		break;
 	case Itimerwhich:
 		print_integer_arg(sysdecode_itimer, fp, args[sc->offset]);

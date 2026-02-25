@@ -38,12 +38,9 @@
  * Machine dependent constants for arm64.
  */
 
-#include <machine/_align.h>
+#include <sys/_align.h>
 
 #define	STACKALIGNBYTES	(16 - 1)
-#define	STACKALIGN(p)	((uint64_t)(p) & ~STACKALIGNBYTES)
-
-#define	__PCI_REROUTE_INTERRUPT
 
 #ifndef MACHINE
 #define	MACHINE		"arm64"
@@ -97,7 +94,7 @@
 #define	PAGE_SIZE	(1 << PAGE_SHIFT)
 #define	PAGE_MASK	(PAGE_SIZE - 1)
 
-#define	MAXPAGESIZES	3		/* maximum number of supported page sizes */
+#define	MAXPAGESIZES	4		/* maximum number of supported page sizes */
 
 #ifndef KSTACK_PAGES
 #if defined(KASAN) || defined(KMSAN)
@@ -119,16 +116,8 @@
 /*
  * Mach derived conversion macros
  */
-#define	round_page(x)		(((unsigned long)(x) + PAGE_MASK) & ~PAGE_MASK)
-#define	trunc_page(x)		((unsigned long)(x) & ~PAGE_MASK)
-
-#define	atop(x)			((unsigned long)(x) >> PAGE_SHIFT)
-#define	ptoa(x)			((unsigned long)(x) << PAGE_SHIFT)
-
 #define	arm64_btop(x)		((unsigned long)(x) >> PAGE_SHIFT)
 #define	arm64_ptob(x)		((unsigned long)(x) << PAGE_SHIFT)
-
-#define	pgtok(x)		((unsigned long)(x) * (PAGE_SIZE / 1024))
 
 #endif /* !_MACHINE_PARAM_H_ */
 

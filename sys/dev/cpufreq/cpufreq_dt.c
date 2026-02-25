@@ -210,7 +210,7 @@ cpufreq_dt_set(device_t dev, const struct cf_setting *set)
 	} else
 		uvolt = 0;
 
-	opp = cpufreq_dt_find_opp(sc->dev, set->freq * 1000000);
+	opp = cpufreq_dt_find_opp(sc->dev, (uint64_t)set->freq * 1000000);
 	if (opp == NULL) {
 		device_printf(dev, "Couldn't find an opp for this freq\n");
 		return (EINVAL);
@@ -315,7 +315,7 @@ cpufreq_dt_identify(driver_t *driver, device_t parent)
 	    !OF_hasprop(node, "operating-points-v2"))
 		return;
 
-	if (device_find_child(parent, "cpufreq_dt", -1) != NULL)
+	if (device_find_child(parent, "cpufreq_dt", DEVICE_UNIT_ANY) != NULL)
 		return;
 
 	if (BUS_ADD_CHILD(parent, 0, "cpufreq_dt", device_get_unit(parent))
@@ -401,7 +401,7 @@ cpufreq_dt_oppv2_parse(struct cpufreq_dt_softc *sc, phandle_t node)
 	if (opp_table == opp_xref)
 		return (ENXIO);
 
-	if (!OF_hasprop(opp_table, "opp-shared")) {
+	if (!OF_hasprop(opp_table, "opp-shared") && mp_ncpus > 1) {
 		device_printf(sc->dev, "Only opp-shared is supported\n");
 		return (ENXIO);
 	}

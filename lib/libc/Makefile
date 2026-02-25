@@ -1,4 +1,3 @@
-
 PACKAGE=	clibs
 SHLIBDIR?= /lib
 
@@ -18,6 +17,8 @@ LIBC_ARCH=${M}
 .else
 LIBC_ARCH=${MACHINE_CPUARCH}
 .endif
+
+CFLAGS+=-D_FORTIFY_SOURCE_read=_read
 
 # All library objects contain FreeBSD revision strings by default; they may be
 # excluded as a space-saving measure.  To produce a library that does
@@ -108,7 +109,6 @@ NOASM=
 .include "${LIBC_SRCTOP}/inet/Makefile.inc"
 .include "${LIBC_SRCTOP}/isc/Makefile.inc"
 .include "${LIBC_SRCTOP}/locale/Makefile.inc"
-.include "${LIBC_SRCTOP}/md/Makefile.inc"
 .include "${LIBC_SRCTOP}/nameser/Makefile.inc"
 .include "${LIBC_SRCTOP}/net/Makefile.inc"
 .include "${LIBC_SRCTOP}/nls/Makefile.inc"
@@ -118,6 +118,7 @@ NOASM=
 .endif
 .include "${LIBC_SRCTOP}/regex/Makefile.inc"
 .include "${LIBC_SRCTOP}/resolv/Makefile.inc"
+.include "${LIBC_SRCTOP}/stdbit/Makefile.inc"
 .include "${LIBC_SRCTOP}/stdio/Makefile.inc"
 .include "${LIBC_SRCTOP}/stdlib/Makefile.inc"
 .include "${LIBC_SRCTOP}/stdtime/Makefile.inc"
@@ -140,9 +141,6 @@ CFLAGS+= -DYP
 .include "${LIBC_SRCTOP}/capability/Makefile.inc"
 .if ${MK_HESIOD} != "no"
 CFLAGS+= -DHESIOD
-.endif
-.if ${MK_FP_LIBC} == "no"
-CFLAGS+= -DNO_FLOATING_POINT
 .endif
 .if ${MK_NS_CACHING} != "no"
 CFLAGS+= -DNS_CACHING
@@ -219,6 +217,6 @@ GENDIRDEPS_FILTER+= N${RELDIR:H}/msun
 # Disable warnings in contributed sources.
 CWARNFLAGS:=	${.IMPSRC:Ngdtoa_*.c:C/^.+$/${CWARNFLAGS}/:C/^$/-w/}
 # Disable stack protection for SSP symbols.
-SSP_CFLAGS:=	${.IMPSRC:N*/stack_protector.c:C/^.+$/${SSP_CFLAGS}/}
+SSP_CFLAGS:=	${.IMPSRC:N*/libc_stack_protector.c:C/^.+$/${SSP_CFLAGS}/}
 # Generate stack unwinding tables for cancellation points
 CANCELPOINTS_CFLAGS:=	${.IMPSRC:Mcancelpoints_*:C/^.+$/${CANCELPOINTS_CFLAGS}/:C/^$//}

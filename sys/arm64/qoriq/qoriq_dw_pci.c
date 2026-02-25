@@ -31,7 +31,6 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
-#include <sys/devmap.h>
 #include <sys/proc.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
@@ -60,7 +59,7 @@
 
 struct qoriq_dw_pci_cfg {
 	uint32_t	pex_pf0_dgb;	/* offset of PEX_PF0_DBG register */
-	uint32_t	ltssm_bit;	/* LSB bit of of LTSSM state field */
+	uint32_t	ltssm_bit;	/* LSB bit of LTSSM state field */
 };
 
 struct qorif_dw_pci_softc {
@@ -177,7 +176,7 @@ qorif_dw_pci_probe(device_t dev)
 	if (ofw_bus_search_compatible(dev, compat_data)->ocd_data == 0)
 		return (ENXIO);
 
-	device_set_desc(dev, "NPX Layaerscape PCI-E Controller");
+	device_set_desc(dev, "NXP QorIQ Layerscape PCI-E Controller");
 	return (BUS_PROBE_DEFAULT);
 }
 
@@ -241,7 +240,8 @@ qorif_dw_pci_attach(device_t dev)
 		goto out;
 	}
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 out:
 	/* XXX Cleanup */
 	return (rv);

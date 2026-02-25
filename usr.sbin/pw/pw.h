@@ -36,14 +36,14 @@
 
 enum _mode
 {
-        M_ADD,
-        M_DELETE,
-        M_UPDATE,
-        M_PRINT,
+	M_ADD,
+	M_DELETE,
+	M_MODIFY,
+	M_SHOW,
 	M_NEXT,
 	M_LOCK,
 	M_UNLOCK,
-        M_NUM
+	M_NUM
 };
 
 enum _passmode
@@ -56,19 +56,24 @@ enum _passmode
 
 enum _which
 {
-        W_USER,
-        W_GROUP,
-        W_NUM
+	W_USER,
+	W_GROUP,
+	W_NUM
 };
 
-#define	_DEF_DIRMODE	(S_IRWXU | S_IRWXG | S_IRWXO)
-#define	_PW_CONF	"pw.conf"
+#define _DEF_DIRMODE	(S_IRWXU | S_IRWXG | S_IRWXO)
+#define _PW_CONF	"pw.conf"
 #define _UC_MAXLINE	1024
 #define _UC_MAXSHELLS	32
 
 struct userconf *get_userconfig(const char *cfg);
 struct userconf *read_userconfig(char const * file);
 int write_userconfig(struct userconf *cnf, char const * file);
+
+void metalog_emit(const char *path, mode_t mode, uid_t uid, gid_t gid,
+    int flags);
+void metalog_emit_symlink(const char *path, const char *target, mode_t mode,
+    uid_t uid, gid_t gid);
 
 int pw_group_add(int argc, char **argv, char *name);
 int pw_group_del(int argc, char **argv, char *name);
@@ -114,3 +119,5 @@ uintmax_t strtounum(const char * __restrict, uintmax_t, uintmax_t,
     const char ** __restrict);
 
 bool grp_has_member(struct group *grp, const char *name);
+
+void usage(void);

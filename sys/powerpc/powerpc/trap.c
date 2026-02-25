@@ -138,6 +138,7 @@ static struct powerpc_exception powerpc_exceptions[] = {
 	{ EXC_VEC,	"altivec unavailable" },
 	{ EXC_VSX,	"vsx unavailable" },
 	{ EXC_FAC,	"facility unavailable" },
+	{ EXC_HFAC,	"hypervisor facility unavailable" },
 	{ EXC_ITMISS,	"instruction tlb miss" },
 	{ EXC_DLMISS,	"data load tlb miss" },
 	{ EXC_DSMISS,	"data store tlb miss" },
@@ -147,6 +148,7 @@ static struct powerpc_exception powerpc_exceptions[] = {
 	{ EXC_THRM,	"thermal management" },
 	{ EXC_RUNMODETRC,	"run mode/trace" },
 	{ EXC_SOFT_PATCH, "soft patch exception" },
+	{ EXC_HVI,	"hypervisor virtualization" },
 	{ EXC_LAST,	NULL }
 };
 
@@ -351,6 +353,7 @@ trap(struct trapframe *frame)
 			mtspr(SPR_FSCR, fscr & ~FSCR_IC_MASK);
 			break;
 		case EXC_HEA:
+		case EXC_HFAC:
 			sig = SIGILL;
 			ucode =	ILL_ILLOPC;
 			break;
@@ -791,7 +794,7 @@ trap_pfault(struct trapframe *frame, bool user, int *signo, int *ucode)
 		return (true);
 #endif
 
-	if (__predict_false((td->td_pflags & TDP_NOFAULTING) == 0)) {
+	if (__predict_true((td->td_pflags & TDP_NOFAULTING) == 0)) {
 		/*
 		 * If we get a page fault while in a critical section, then
 		 * it is most likely a fatal kernel page fault.  The kernel
@@ -858,41 +861,6 @@ fix_unaligned(struct thread *td, struct trapframe *frame)
 	int		indicator, reg;
 	double		*fpr;
 
-#ifdef __SPE__
-	indicator = (frame->cpu.booke.esr & (ESR_ST|ESR_SPE));
-	if (indicator & ESR_SPE) {
-		if (copyin((void *)frame->srr0, &inst, sizeof(inst)) != 0)
-			return (-1);
-		reg = EXC_ALI_INST_RST(inst);
-		fpr = (double *)td->td_pcb->pcb_vec.vr[reg];
-		fputhread = PCPU_GET(vecthread);
-
-		/* Juggle the SPE to ensure that we've initialized
-		 * the registers, and that their current state is in
-		 * the PCB.
-		 */
-		if (fputhread != td) {
-			if (fputhread)
-				save_vec(fputhread);
-			enable_vec(td);
-		}
-		save_vec(td);
-
-		if (!(indicator & ESR_ST)) {
-			if (copyin((void *)frame->dar, fpr,
-			    sizeof(double)) != 0)
-				return (-1);
-			frame->fixreg[reg] = td->td_pcb->pcb_vec.vr[reg][1];
-			enable_vec(td);
-		} else {
-			td->td_pcb->pcb_vec.vr[reg][1] = frame->fixreg[reg];
-			if (copyout(fpr, (void *)frame->dar,
-			    sizeof(double)) != 0)
-				return (-1);
-		}
-		return (0);
-	}
-#else
 #ifdef BOOKE
 	indicator = (frame->cpu.booke.esr & ESR_ST) ? EXC_ALI_STFD : EXC_ALI_LFD;
 #else
@@ -936,7 +904,6 @@ fix_unaligned(struct thread *td, struct trapframe *frame)
 		return (0);
 		break;
 	}
-#endif
 
 	return (-1);
 }

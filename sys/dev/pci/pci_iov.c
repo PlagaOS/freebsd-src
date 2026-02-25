@@ -43,10 +43,10 @@
 #include <sys/pciio.h>
 #include <sys/queue.h>
 #include <sys/rman.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 
 #include <machine/bus.h>
-#include <machine/stdarg.h>
 
 #include <sys/nv.h>
 #include <sys/iov_schema.h>
@@ -350,7 +350,7 @@ pci_iov_alloc_bar(struct pci_devinfo *dinfo, int bar, pci_addr_t bar_shift)
 	rid = iov->iov_pos + PCIR_SRIOV_BAR(bar);
 	bar_size = 1 << bar_shift;
 
-	res = pci_alloc_multi_resource(bus, dev, SYS_RES_MEMORY, &rid, 0,
+	res = pci_alloc_multi_resource(bus, dev, SYS_RES_MEMORY, rid, 0,
 	    ~0, 1, iov->iov_num_vfs, RF_ACTIVE);
 
 	if (res == NULL)
@@ -670,7 +670,7 @@ pci_iov_enumerate_vfs(struct pci_devinfo *dinfo, const nvlist_t *config,
 		}
 	}
 
-	bus_generic_attach(bus);
+	bus_attach_children(bus);
 }
 
 static int
@@ -734,10 +734,29 @@ pci_iov_config(struct cdev *cdev, struct pci_iov_arg *arg)
 	first_rid = pci_get_rid(dev) + rid_off;
 	last_rid = first_rid + (num_vfs - 1) * rid_stride;
 
-	/* We don't yet support allocating extra bus numbers for VFs. */
 	if (pci_get_bus(dev) != PCI_RID2BUS(last_rid)) {
-		error = ENOSPC;
-		goto out;
+		device_t pcib = device_get_parent(bus);
+		uint8_t secbus = pci_read_config(pcib, PCIR_SECBUS_1, 1);
+		uint8_t subbus = pci_read_config(pcib, PCIR_SUBBUS_1, 1);
+		uint16_t vf_bus = PCI_RID2BUS(last_rid);
+
+		/* 
+		 * XXX: This should not be directly accessing the bridge registers and does
+		 * nothing to prevent some other device from releasing this bus number while
+		 * another PF is using it.
+		 */
+		if (secbus == 0 || vf_bus < secbus || vf_bus > subbus) {
+			int rid = 0;
+
+			iov->iov_bus_res = bus_alloc_resource(bus, PCI_RES_BUS, &rid,
+							      vf_bus, vf_bus, 1, RF_ACTIVE);
+			if (iov->iov_bus_res == NULL) {
+				device_printf(dev,
+				    "failed to allocate PCIe bus number for VFs\n");
+				error = ENOSPC;
+				goto out;
+			}
+		}
 	}
 
 	if (!ari_enabled && PCI_RID2SLOT(last_rid) != 0) {
@@ -783,6 +802,11 @@ out:
 			    iov->iov_pos + PCIR_SRIOV_BAR(i));
 			iov->iov_bar[i].res = NULL;
 		}
+	}
+
+	if (iov->iov_bus_res != NULL) {
+		bus_release_resource(bus, iov->iov_bus_res);
+		iov->iov_bus_res = NULL;
 	}
 
 	if (iov->iov_flags & IOV_RMAN_INITED) {
@@ -895,6 +919,11 @@ pci_iov_delete_iov_children(struct pci_devinfo *dinfo)
 		}
 	}
 
+	if (iov->iov_bus_res != NULL) {
+		bus_release_resource(bus, iov->iov_bus_res);
+		iov->iov_bus_res = NULL;
+	}
+
 	if (iov->iov_flags & IOV_RMAN_INITED) {
 		rman_fini(&iov->rman);
 		iov->iov_flags &= ~IOV_RMAN_INITED;
@@ -998,7 +1027,7 @@ pci_iov_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int fflag,
 }
 
 struct resource *
-pci_vf_alloc_mem_resource(device_t dev, device_t child, int *rid,
+pci_vf_alloc_mem_resource(device_t dev, device_t child, int rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct pci_devinfo *dinfo;
@@ -1013,7 +1042,7 @@ pci_vf_alloc_mem_resource(device_t dev, device_t child, int *rid,
 	dinfo = device_get_ivars(child);
 	iov = dinfo->cfg.iov;
 
-	map = pci_find_bar(child, *rid);
+	map = pci_find_bar(child, rid);
 	if (map == NULL)
 		return (NULL);
 
@@ -1037,21 +1066,21 @@ pci_vf_alloc_mem_resource(device_t dev, device_t child, int *rid,
 	if (res == NULL)
 		return (NULL);
 
-	rle = resource_list_add(&dinfo->resources, SYS_RES_MEMORY, *rid,
+	rle = resource_list_add(&dinfo->resources, SYS_RES_MEMORY, rid,
 	    bar_start, bar_end, 1);
 	if (rle == NULL) {
 		rman_release_resource(res);
 		return (NULL);
 	}
 
-	rman_set_rid(res, *rid);
+	rman_set_rid(res, rid);
 	rman_set_type(res, SYS_RES_MEMORY);
 
 	if (flags & RF_ACTIVE) {
-		error = bus_activate_resource(child, SYS_RES_MEMORY, *rid, res);
+		error = bus_activate_resource(child, SYS_RES_MEMORY, rid, res);
 		if (error != 0) {
 			resource_list_delete(&dinfo->resources, SYS_RES_MEMORY,
-			    *rid);
+			    rid);
 			rman_release_resource(res);
 			return (NULL);
 		}
@@ -1070,6 +1099,12 @@ pci_vf_release_mem_resource(device_t dev, device_t child, struct resource *r)
 
 	dinfo = device_get_ivars(child);
 
+	KASSERT(rman_get_type(r) == SYS_RES_MEMORY,
+	    ("%s: invalid resource %p", __func__, r));
+	KASSERT(rman_is_region_manager(r, &dinfo->cfg.iov->rman),
+	    ("%s: rman %p doesn't match for resource %p", __func__,
+	    &dinfo->cfg.iov->rman, r));
+
 	if (rman_get_flags(r) & RF_ACTIVE) {
 		error = bus_deactivate_resource(child, r);
 		if (error != 0)
@@ -1085,4 +1120,149 @@ pci_vf_release_mem_resource(device_t dev, device_t child, struct resource *r)
 	}
 
 	return (rman_release_resource(r));
+}
+
+int
+pci_vf_activate_mem_resource(device_t dev, device_t child, struct resource *r)
+{
+#ifdef INVARIANTS
+	struct pci_devinfo *dinfo = device_get_ivars(child);
+#endif
+	struct resource_map map;
+	int error;
+
+	KASSERT(rman_get_type(r) == SYS_RES_MEMORY,
+	    ("%s: invalid resource %p", __func__, r));
+	KASSERT(rman_is_region_manager(r, &dinfo->cfg.iov->rman),
+	    ("%s: rman %p doesn't match for resource %p", __func__,
+	    &dinfo->cfg.iov->rman, r));
+
+	error = rman_activate_resource(r);
+	if (error != 0)
+		return (error);
+
+	if ((rman_get_flags(r) & RF_UNMAPPED) == 0) {
+		error = BUS_MAP_RESOURCE(dev, child, r, NULL, &map);
+		if (error != 0) {
+			rman_deactivate_resource(r);
+			return (error);
+		}
+
+		rman_set_mapping(r, &map);
+	}
+	return (0);
+}
+
+int
+pci_vf_deactivate_mem_resource(device_t dev, device_t child, struct resource *r)
+{
+#ifdef INVARIANTS
+	struct pci_devinfo *dinfo = device_get_ivars(child);
+#endif
+	struct resource_map map;
+	int error;
+
+	KASSERT(rman_get_type(r) == SYS_RES_MEMORY,
+	    ("%s: invalid resource %p", __func__, r));
+	KASSERT(rman_is_region_manager(r, &dinfo->cfg.iov->rman),
+	    ("%s: rman %p doesn't match for resource %p", __func__,
+	    &dinfo->cfg.iov->rman, r));
+
+	error = rman_deactivate_resource(r);
+	if (error != 0)
+		return (error);
+
+	if ((rman_get_flags(r) & RF_UNMAPPED) == 0) {
+		rman_get_mapping(r, &map);
+		BUS_UNMAP_RESOURCE(dev, child, r, &map);
+	}
+	return (0);
+}
+
+int
+pci_vf_adjust_mem_resource(device_t dev, device_t child, struct resource *r,
+    rman_res_t start, rman_res_t end)
+{
+#ifdef INVARIANTS
+	struct pci_devinfo *dinfo = device_get_ivars(child);
+#endif
+
+	KASSERT(rman_get_type(r) == SYS_RES_MEMORY,
+	    ("%s: invalid resource %p", __func__, r));
+	KASSERT(rman_is_region_manager(r, &dinfo->cfg.iov->rman),
+	    ("%s: rman %p doesn't match for resource %p", __func__,
+	    &dinfo->cfg.iov->rman, r));
+
+	return (rman_adjust_resource(r, start, end));
+}
+
+static struct resource *
+pci_vf_find_parent_resource(struct pcicfg_iov *iov, struct resource *r)
+{
+	struct resource *pres;
+
+	for (u_int i = 0; i <= PCIR_MAX_BAR_0; i++) {
+		pres = iov->iov_bar[i].res;
+		if (pres != NULL) {
+			if (rman_get_start(pres) <= rman_get_start(r) &&
+			    rman_get_end(pres) >= rman_get_end(r))
+				return (pres);
+		}
+	}
+	return (NULL);
+}
+
+int
+pci_vf_map_mem_resource(device_t dev, device_t child, struct resource *r,
+    struct resource_map_request *argsp, struct resource_map *map)
+{
+	struct pci_devinfo *dinfo = device_get_ivars(child);
+	struct pcicfg_iov *iov = dinfo->cfg.iov;
+	struct resource_map_request args;
+	struct resource *pres;
+	rman_res_t length, start;
+	int error;
+
+	KASSERT(rman_get_type(r) == SYS_RES_MEMORY,
+	    ("%s: invalid resource %p", __func__, r));
+	KASSERT(rman_is_region_manager(r, &iov->rman),
+	    ("%s: rman %p doesn't match for resource %p", __func__,
+	    &dinfo->cfg.iov->rman, r));
+
+	/* Resources must be active to be mapped. */
+	if (!(rman_get_flags(r) & RF_ACTIVE))
+		return (ENXIO);
+
+	resource_init_map_request(&args);
+	error = resource_validate_map_request(r, argsp, &args, &start, &length);
+	if (error)
+		return (error);
+
+	pres = pci_vf_find_parent_resource(dinfo->cfg.iov, r);
+	if (pres == NULL)
+		return (ENOENT);
+
+	args.offset = start - rman_get_start(pres);
+	args.length = length;
+	return (bus_map_resource(iov->iov_pf, pres, &args, map));
+}
+
+int
+pci_vf_unmap_mem_resource(device_t dev, device_t child, struct resource *r,
+    struct resource_map *map)
+{
+	struct pci_devinfo *dinfo = device_get_ivars(child);
+	struct pcicfg_iov *iov = dinfo->cfg.iov;
+	struct resource *pres;
+
+	KASSERT(rman_get_type(r) == SYS_RES_MEMORY,
+	    ("%s: invalid resource %p", __func__, r));
+	KASSERT(rman_is_region_manager(r, &iov->rman),
+	    ("%s: rman %p doesn't match for resource %p", __func__,
+	    &dinfo->cfg.iov->rman, r));
+
+	pres = pci_vf_find_parent_resource(iov, r);
+	if (pres == NULL)
+		return (ENOENT);
+	return (bus_unmap_resource(iov->iov_pf, pres, map));
 }

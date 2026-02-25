@@ -130,9 +130,9 @@ svc_dg_create(SVCPOOL *pool, struct socket *so, size_t sendsize,
 
 	xprt_register(xprt);
 
-	SOCKBUF_LOCK(&so->so_rcv);
+	SOCK_RECVBUF_LOCK(so);
 	soupcall_set(so, SO_RCV, svc_dg_soupcall, xprt);
-	SOCKBUF_UNLOCK(&so->so_rcv);
+	SOCK_RECVBUF_UNLOCK(so);
 
 	return (xprt);
 freedata:
@@ -190,18 +190,18 @@ svc_dg_recv(SVCXPRT *xprt, struct rpc_msg *msg,
 		 * from racing the upcall after our soreadable() call
 		 * returns false.
 		 */
-		SOCKBUF_LOCK(&xprt->xp_socket->so_rcv);
+		SOCK_RECVBUF_LOCK(xprt->xp_socket);
 		if (!soreadable(xprt->xp_socket))
 			xprt_inactive_self(xprt);
-		SOCKBUF_UNLOCK(&xprt->xp_socket->so_rcv);
+		SOCK_RECVBUF_UNLOCK(xprt->xp_socket);
 		sx_xunlock(&xprt->xp_lock);
 		return (FALSE);
 	}
 
 	if (error) {
-		SOCKBUF_LOCK(&xprt->xp_socket->so_rcv);
+		SOCK_RECVBUF_LOCK(xprt->xp_socket);
 		soupcall_clear(xprt->xp_socket, SO_RCV);
-		SOCKBUF_UNLOCK(&xprt->xp_socket->so_rcv);
+		SOCK_RECVBUF_UNLOCK(xprt->xp_socket);
 		xprt_inactive_self(xprt);
 		sx_xunlock(&xprt->xp_lock);
 		return (FALSE);
@@ -240,7 +240,7 @@ svc_dg_reply(SVCXPRT *xprt, struct rpc_msg *msg,
 		if (!xdr_replymsg(&xdrs, msg))
 			stat = FALSE;
 		else
-			xdrmbuf_append(&xdrs, m);
+			(void)xdr_putmbuf(&xdrs, m);
 	} else {
 		stat = xdr_replymsg(&xdrs, msg);
 	}
@@ -266,9 +266,9 @@ static void
 svc_dg_destroy(SVCXPRT *xprt)
 {
 
-	SOCKBUF_LOCK(&xprt->xp_socket->so_rcv);
+	SOCK_RECVBUF_LOCK(xprt->xp_socket);
 	soupcall_clear(xprt->xp_socket, SO_RCV);
-	SOCKBUF_UNLOCK(&xprt->xp_socket->so_rcv);
+	SOCK_RECVBUF_UNLOCK(xprt->xp_socket);
 
 	sx_destroy(&xprt->xp_lock);
 	if (xprt->xp_socket)

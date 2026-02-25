@@ -76,7 +76,7 @@ int	Lflag;			/* add a volume label */
 int	Nflag;			/* run without writing file system */
 int	Oflag = 2;		/* file system format (1 => UFS1, 2 => UFS2) */
 int	Rflag;			/* regression test */
-int	Uflag;			/* enable soft updates for file system */
+int	Uflag = -1;		/* enable soft updates for file system */
 int	jflag;			/* enable soft updates journaling for filesys */
 int	Xflag = 0;		/* exit in middle of newfs for testing */
 int	Jflag;			/* enable gjournal for file system */
@@ -105,7 +105,6 @@ struct uufsd disk;		/* libufs disk structure */
 static char	device[MAXPATHLEN];
 static u_char   bootarea[BBSIZE];
 static int	is_file;		/* work on a file, not a device */
-static char	*dkname;
 static char	*disktype;
 
 static void getfssize(intmax_t *, const char *p, intmax_t, intmax_t);
@@ -130,7 +129,7 @@ main(int argc, char *argv[])
 	part_name = 'c';
 	reserved = 0;
 	while ((ch = getopt(argc, argv,
-	    "EJL:NO:RS:T:UXa:b:c:d:e:f:g:h:i:jk:lm:no:p:r:s:t")) != -1)
+	    "EJL:NO:RS:T:UXa:b:c:d:e:f:g:h:i:jk:lm:no:p:r:s:tu")) != -1)
 		switch (ch) {
 		case 'E':
 			Eflag = 1;
@@ -179,6 +178,9 @@ main(int argc, char *argv[])
 			/* FALLTHROUGH */
 		case 'U':
 			Uflag = 1;
+			break;
+		case 'u':
+			Uflag = 0;
 			break;
 		case 'X':
 			Xflag++;
@@ -328,9 +330,7 @@ main(int argc, char *argv[])
 	if (fstat(disk.d_fd, &st) < 0)
 		err(1, "%s", special);
 	if ((st.st_mode & S_IFMT) != S_IFCHR) {
-		warn("%s: not a character-special device", special);
 		is_file = 1;	/* assume it is a file */
-		dkname = special;
 		if (sectorsize == 0)
 			sectorsize = 512;
 		mediasize = st.st_size;
@@ -344,6 +344,11 @@ main(int argc, char *argv[])
 	}
 	pp = NULL;
 	lp = getdisklabel();
+	/*
+	 * set filesystem size from file size when a bsdlabel isn't present
+	 */
+	if (lp == NULL && is_file)
+		fssize = mediasize / sectorsize;
 	if (lp != NULL) {
 		if (!is_file) /* already set for files */
 			part_name = special[strlen(special) - 1];
@@ -383,6 +388,9 @@ main(int argc, char *argv[])
 		fprintf(stderr, "because minfree is less than %d%%\n", MINFREE);
 		opt = FS_OPTSPACE;
 	}
+	/* Use soft updates by default for UFS2 and above */
+	if (Uflag < 0)
+		Uflag = Oflag > 1;
 	realsectorsize = sectorsize;
 	if (sectorsize != DEV_BSIZE) {		/* XXX */
 		int secperblk = sectorsize / DEV_BSIZE;
@@ -430,7 +438,7 @@ getdisklabel(void)
 		    bootarea + (0 /* labeloffset */ +
 				1 /* labelsoffset */ * sectorsize),
 		    &lab, MAXPARTITIONS))
-			errx(1, "no valid label found");
+			return (NULL);
 
 		lp = &lab;
 		return &lab;

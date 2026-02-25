@@ -32,7 +32,6 @@
  *	$KAME: frag6.c,v 1.33 2002/01/07 11:34:48 kjc Exp $
  */
 
-#include <sys/cdefs.h>
 #include "opt_rss.h"
 
 #include <sys/param.h>
@@ -1078,7 +1077,7 @@ frag6_drain_one(void)
 }
 
 void
-frag6_drain(void)
+frag6_drain(void *arg __unused, int flags __unused)
 {
 	VNET_ITERATOR_DECL(vnet_iter);
 

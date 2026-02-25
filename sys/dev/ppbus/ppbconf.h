@@ -63,7 +63,7 @@
 /*
  * Parallel Port Bus sleep/wakeup queue.
  */
-#define PPBPRI	(PZERO+8)
+#define PPBPRI	(PWAIT)
 
 /*
  * Parallel Port Chipset mode masks.
@@ -178,7 +178,9 @@ struct ppb_context {
 /*
  * List of IVARS available to ppb device drivers
  */
-#define PPBUS_IVAR_MODE 0
+enum {
+	PPBUS_IVAR_MODE = BUS_IVARS_PRIVATE
+};
 
 /* other fields are reserved to the ppbus internals */
 
@@ -208,9 +210,11 @@ struct ppb_device {
 #define EPP_1_7		0x1
 
 /* Parallel Port Chipset IVARS */		/* elsewhere XXX */
-#define PPC_IVAR_EPP_PROTO	0
-#define PPC_IVAR_LOCK		1
-#define PPC_IVAR_INTR_HANDLER	2
+enum {
+	PPC_IVAR_EPP_PROTO = BUS_IVARS_PRIVATE,
+	PPC_IVAR_LOCK,
+	PPC_IVAR_INTR_HANDLER
+};
 
 /*
  * Maximum size of the PnP info string

@@ -67,7 +67,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
@@ -142,7 +141,6 @@ udp6_append(struct inpcb *inp, struct mbuf *n, int off,
 	struct socket *so;
 	struct mbuf *opts = NULL, *tmp_opts;
 	struct udpcb *up;
-	bool filtered;
 
 	INP_LOCK_ASSERT(inp);
 
@@ -151,13 +149,19 @@ udp6_append(struct inpcb *inp, struct mbuf *n, int off,
 	 */
 	up = intoudpcb(inp);
 	if (up->u_tun_func != NULL) {
+		bool filtered;
+
 		in_pcbref(inp);
 		INP_RUNLOCK(inp);
 		filtered = (*up->u_tun_func)(n, off, inp,
 		    (struct sockaddr *)&fromsa[0], up->u_tun_ctx);
 		INP_RLOCK(inp);
-		if (filtered)
-			return (in_pcbrele_rlocked(inp));
+		if (in_pcbrele_rlocked(inp))
+			return (1);
+		if (filtered) {
+			INP_RUNLOCK(inp);
+			return (1);
+		}
 	}
 
 	off += sizeof(struct udphdr);
@@ -336,7 +340,7 @@ udp6_multi_input(struct mbuf *m, int off, int proto,
 		/*
 		 * No matching pcb found; discard datagram.  (No need
 		 * to send an ICMP Port Unreachable for a broadcast
-		 * or multicast datgram.)
+		 * or multicast datagram.)
 		 */
 		UDPSTAT_INC(udps_noport);
 		UDPSTAT_INC(udps_noportmcast);
@@ -357,6 +361,7 @@ udp6_input(struct mbuf **mp, int *offp, int proto)
 	int off = *offp;
 	int cscov_partial;
 	int plen, ulen;
+	int lookupflags;
 	struct sockaddr_in6 fromsa[2];
 	struct m_tag *fwd_tag;
 	uint16_t uh_sum;
@@ -428,6 +433,12 @@ udp6_input(struct mbuf **mp, int *offp, int proto)
 			uh_sum = in6_cksum_pseudo(ip6, ulen, nxt,
 			    m->m_pkthdr.csum_data);
 		uh_sum ^= 0xffff;
+	} else if (m->m_pkthdr.csum_flags & CSUM_IP6_UDP) {
+		/*
+		 * Packet from local host (maybe from a VM).
+		 * Checksum not required.
+		 */
+		uh_sum = 0;
 	} else
 		uh_sum = in6_cksum_partial(m, nxt, off, plen, ulen);
 
@@ -454,6 +465,8 @@ skip_checksum:
 	/*
 	 * Locate pcb for datagram.
 	 */
+	lookupflags = INPLOOKUP_RLOCKPCB |
+	    (V_udp_bind_all_fibs ? 0 : INPLOOKUP_FIB);
 
 	/*
 	 * Grab info from PACKET_TAG_IPFORWARD tag prepended to the chain.
@@ -470,7 +483,7 @@ skip_checksum:
 		 */
 		inp = in6_pcblookup_mbuf(pcbinfo, &ip6->ip6_src,
 		    uh->uh_sport, &ip6->ip6_dst, uh->uh_dport,
-		    INPLOOKUP_RLOCKPCB, m->m_pkthdr.rcvif, m);
+		    lookupflags, m->m_pkthdr.rcvif, m);
 		if (!inp) {
 			/*
 			 * It's new.  Try to find the ambushing socket.
@@ -480,8 +493,8 @@ skip_checksum:
 			inp = in6_pcblookup(pcbinfo, &ip6->ip6_src,
 			    uh->uh_sport, &next_hop6->sin6_addr,
 			    next_hop6->sin6_port ? htons(next_hop6->sin6_port) :
-			    uh->uh_dport, INPLOOKUP_WILDCARD |
-			    INPLOOKUP_RLOCKPCB, m->m_pkthdr.rcvif);
+			    uh->uh_dport, INPLOOKUP_WILDCARD | lookupflags,
+			    m->m_pkthdr.rcvif);
 		}
 		/* Remove the tag from the packet. We don't need it anymore. */
 		m_tag_delete(m, fwd_tag);
@@ -489,7 +502,7 @@ skip_checksum:
 	} else
 		inp = in6_pcblookup_mbuf(pcbinfo, &ip6->ip6_src,
 		    uh->uh_sport, &ip6->ip6_dst, uh->uh_dport,
-		    INPLOOKUP_WILDCARD | INPLOOKUP_RLOCKPCB,
+		    INPLOOKUP_WILDCARD | lookupflags,
 		    m->m_pkthdr.rcvif, m);
 	if (inp == NULL) {
 		if (V_udp_log_in_vain) {
@@ -514,7 +527,7 @@ skip_checksum:
 			goto badunlocked;
 		}
 		if (V_udp_blackhole && (V_udp_blackhole_local ||
-		    !in6_localaddr(&ip6->ip6_src)))
+		    !in6_localip(&ip6->ip6_src)))
 			goto badunlocked;
 		icmp6_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT, 0);
 		*mp = NULL;
@@ -614,6 +627,8 @@ udp6_getcred(SYSCTL_HANDLER_ARGS)
 	struct inpcb *inp;
 	int error;
 
+	if (req->newptr == NULL)
+		return (EINVAL);
 	error = priv_check(req->td, PRIV_NETINET_GETCRED);
 	if (error)
 		return (error);
@@ -687,11 +702,6 @@ udp6_send(struct socket *so, int flags_arg, struct mbuf *m,
 	}
 
 	sin6 = (struct sockaddr_in6 *)addr6;
-
-	/*
-	 * In contrast to IPv4 we do not validate the max. packet length
-	 * here due to IPv6 Jumbograms (RFC2675).
-	 */
 
 	scope_ambiguous = 0;
 	if (sin6) {
@@ -850,19 +860,34 @@ udp6_send(struct socket *so, int flags_arg, struct mbuf *m,
 		fport = inp->inp_fport;
 	}
 
+
+	/*
+	 * We do not support IPv6 Jumbograms (RFC2675), so validate the payload
+	 * length fits in a normal gram.
+	 */
 	ulen = m->m_pkthdr.len;
 	plen = sizeof(struct udphdr) + ulen;
 	hlen = sizeof(struct ip6_hdr);
 
+	if (plen > IPV6_MAXPAYLOAD) {
+		m_freem(control);
+		m_freem(m);
+		return (EMSGSIZE);
+	}
+
 	/*
-	 * Calculate data length and get a mbuf
-	 * for UDP and IP6 headers.
+	 * Calculate data length and get a mbuf for UDP, IP6, and possible
+	 * link-layer headers.  Immediate slide the data pointer back forward
+	 * since we won't use that space at this layer.
 	 */
-	M_PREPEND(m, hlen + sizeof(struct udphdr), M_NOWAIT);
+	M_PREPEND(m, hlen + sizeof(struct udphdr) + max_linkhdr, M_NOWAIT);
 	if (m == NULL) {
 		error = ENOBUFS;
 		goto release;
 	}
+	m->m_data += max_linkhdr;
+	m->m_len -= max_linkhdr;
+	m->m_pkthdr.len -= max_linkhdr;
 
 	/*
 	 * Stuff checksum and output datagram.
@@ -884,10 +909,10 @@ udp6_send(struct socket *so, int flags_arg, struct mbuf *m,
 		 * the entire UDPLite packet is covered by the checksum.
 		 */
 		cscov_partial = (cscov == 0) ? 0 : 1;
-	} else if (plen <= 0xffff)
+	} else {
+		MPASS(plen <= IPV6_MAXPAYLOAD);
 		udp6->uh_ulen = htons((u_short)plen);
-	else
-		udp6->uh_ulen = 0;
+	}
 	udp6->uh_sum = 0;
 
 	ip6 = mtod(m, struct ip6_hdr *);
@@ -1058,13 +1083,16 @@ udp6_bind(struct socket *so, struct sockaddr *nam, struct thread *td)
 			in6_sin6_2_sin(&sin, sin6_p);
 			inp->inp_vflag |= INP_IPV4;
 			inp->inp_vflag &= ~INP_IPV6;
-			error = in_pcbbind(inp, &sin, td->td_ucred);
+			error = in_pcbbind(inp, &sin,
+			    V_udp_bind_all_fibs ? 0 : INPBIND_FIB,
+			    td->td_ucred);
 			goto out;
 		}
 #endif
 	}
 
-	error = in6_pcbbind(inp, sin6_p, td->td_ucred);
+	error = in6_pcbbind(inp, sin6_p, V_udp_bind_all_fibs ? 0 : INPBIND_FIB,
+	    td->td_ucred);
 #ifdef INET
 out:
 #endif
@@ -1151,7 +1179,7 @@ udp6_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
 		inp->inp_vflag &= ~INP_IPV6;
 		NET_EPOCH_ENTER(et);
 		INP_HASH_WLOCK(pcbinfo);
-		error = in_pcbconnect(inp, &sin, td->td_ucred, true);
+		error = in_pcbconnect(inp, &sin, td->td_ucred);
 		INP_HASH_WUNLOCK(pcbinfo);
 		NET_EPOCH_EXIT(et);
 		/*

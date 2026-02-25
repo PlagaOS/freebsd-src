@@ -53,7 +53,7 @@ ppc64_uboot_elf_loadfile(char *filename, uint64_t dest,
 	 * No need to sync the icache for modules: this will
 	 * be done by the kernel after relocation.
 	 */
-	if (!strcmp((*result)->f_type, "elf kernel"))
+	if (!strcmp((*result)->f_type, md_kerntype))
 		__syncicache((void *) (*result)->f_addr, (*result)->f_size);
 	return (0);
 }
@@ -88,8 +88,7 @@ ppc64_uboot_elf_exec(struct preloaded_file *fp)
 	panic("exec returned");
 }
 
-struct file_format	uboot_elf64 =
-{
-	ppc64_uboot_elf_loadfile,
-	ppc64_uboot_elf_exec
+struct file_format	uboot_elf64 = {
+	.l_load = ppc64_uboot_elf_loadfile,
+	.l_exec = ppc64_uboot_elf_exec
 };

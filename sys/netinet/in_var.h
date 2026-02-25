@@ -97,8 +97,12 @@ struct in_ifaddr {
 #define IN_LNAOF(in, ifa) \
 	((ntohl((in).s_addr) & ~((struct in_ifaddr *)(ifa)->ia_subnetmask))
 
-#define LLTABLE(ifp)	\
-	((struct in_ifinfo *)(ifp)->if_afdata[AF_INET])->ii_llt
+#ifdef _KERNEL
+#define IN_ARE_MASKED_ADDR_EQUAL(d, a, m)	(		\
+	((((d).s_addr ^ (a).s_addr) & (m).s_addr)) == 0 )
+#endif
+
+#define LLTABLE(ifp)	((struct in_ifinfo *)(ifp)->if_inet)->ii_llt
 /*
  * Hash table for IP addresses.
  */
@@ -454,6 +458,7 @@ int	in_joingroup_locked(struct ifnet *, const struct in_addr *,
 int	in_leavegroup(struct in_multi *, /*const*/ struct in_mfilter *);
 int	in_leavegroup_locked(struct in_multi *,
 	    /*const*/ struct in_mfilter *);
+int	in_mask2len(struct in_addr *);
 int	in_control(struct socket *, u_long, void *, struct ifnet *,
 	    struct thread *);
 int	in_control_ioctl(u_long, void *, struct ifnet *,
@@ -465,9 +470,9 @@ void	ip_input(struct mbuf *);
 void	ip_direct_input(struct mbuf *);
 void	in_ifadown(struct ifaddr *ifa, int);
 struct	mbuf	*ip_tryforward(struct mbuf *);
-void	*in_domifattach(struct ifnet *);
-void	in_domifdetach(struct ifnet *, void *);
 struct rib_head *in_inithead(uint32_t fibnum);
+void	in_ifattach(void *, struct ifnet *);
+
 #ifdef VIMAGE
 void	in_detachhead(struct rib_head *rh);
 #endif

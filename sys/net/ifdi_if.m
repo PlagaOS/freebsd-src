@@ -107,7 +107,7 @@ CODE {
 	}
 
 	static int
-	null_priv_ioctl(if_ctx_t _ctx __unused, u_long command, caddr_t *data __unused)
+	null_priv_ioctl(if_ctx_t _ctx __unused, u_long command, caddr_t data __unused)
 	{
 		return (ENOTSUP);
 	}
@@ -116,6 +116,12 @@ CODE {
 	null_needs_restart(if_ctx_t _ctx __unused, enum iflib_restart_event _event __unused)
 	{
 		return (false);
+	}
+
+	static int
+	null_get_downreason(if_ctx_t _ctx __unused, struct ifdownreason *_ifdr __unused)
+	{
+		return (ENOTSUP);
 	}
 };
 
@@ -364,3 +370,8 @@ METHOD bool needs_restart {
 	if_ctx_t _ctx;
 	enum iflib_restart_event _event;
 } DEFAULT null_needs_restart;
+
+METHOD int get_downreason {
+	if_ctx_t _ctx;
+	struct ifdownreason *_ifdr;
+} DEFAULT null_get_downreason;

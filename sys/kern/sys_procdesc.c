@@ -75,6 +75,7 @@
 #include <sys/procdesc.h>
 #include <sys/resourcevar.h>
 #include <sys/stat.h>
+#include <sys/syscallsubr.h>
 #include <sys/sysproto.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
@@ -96,7 +97,7 @@ static fo_close_t	procdesc_close;
 static fo_fill_kinfo_t	procdesc_fill_kinfo;
 static fo_cmp_t		procdesc_cmp;
 
-static struct fileops procdesc_ops = {
+static const struct fileops procdesc_ops = {
 	.fo_read = invfo_rdwr,
 	.fo_write = invfo_rdwr,
 	.fo_truncate = invfo_truncate,
@@ -118,7 +119,7 @@ static struct fileops procdesc_ops = {
  * died.
  */
 int
-procdesc_find(struct thread *td, int fd, cap_rights_t *rightsp,
+procdesc_find(struct thread *td, int fd, const cap_rights_t *rightsp,
     struct proc **p)
 {
 	struct procdesc *pd;
@@ -129,7 +130,7 @@ procdesc_find(struct thread *td, int fd, cap_rights_t *rightsp,
 	if (error)
 		return (error);
 	if (fp->f_type != DTYPE_PROCDESC) {
-		error = EBADF;
+		error = EINVAL;
 		goto out;
 	}
 	pd = fp->f_data;
@@ -165,7 +166,8 @@ procdesc_pid(struct file *fp_procdesc)
  * Retrieve the PID associated with a process descriptor.
  */
 int
-kern_pdgetpid(struct thread *td, int fd, cap_rights_t *rightsp, pid_t *pidp)
+kern_pdgetpid(struct thread *td, int fd, const cap_rights_t *rightsp,
+    pid_t *pidp)
 {
 	struct file *fp;
 	int error;
@@ -269,6 +271,9 @@ procdesc_free(struct procdesc *pd)
 		KASSERT((pd->pd_flags & PDF_CLOSED),
 		    ("procdesc_free: !PDF_CLOSED"));
 
+		if (pd->pd_pid != -1)
+			proc_id_clear(PROC_ID_PID, pd->pd_pid);
+
 		knlist_destroy(&pd->pd_selinfo.si_note);
 		PROCDESC_LOCK_DESTROY(pd);
 		free(pd, M_PROCDESC);
@@ -317,6 +322,9 @@ procdesc_exit(struct proc *p)
 	}
 	KNOTE_LOCKED(&pd->pd_selinfo.si_note, NOTE_EXIT);
 	PROCDESC_UNLOCK(pd);
+
+	/* Wakeup all waiters for this procdesc' process exit. */
+	wakeup(&p->p_procdesc);
 	return (0);
 }
 
@@ -388,6 +396,7 @@ procdesc_close(struct file *fp, struct thread *td)
 			 */
 			pd->pd_proc = NULL;
 			p->p_procdesc = NULL;
+			pd->pd_pid = -1;
 			procdesc_free(pd);
 
 			/*
@@ -481,10 +490,11 @@ procdesc_kqops_event(struct knote *kn, long hint)
 	return (kn->kn_fflags != 0);
 }
 
-static struct filterops procdesc_kqops = {
+static const struct filterops procdesc_kqops = {
 	.f_isfd = 1,
 	.f_detach = procdesc_kqops_detach,
 	.f_event = procdesc_kqops_event,
+	.f_copy = knote_triv_copy,
 };
 
 static int

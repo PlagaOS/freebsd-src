@@ -85,13 +85,13 @@ static int sockargs(struct mbuf **, char *, socklen_t, int);
  * A reference on the file entry is held upon returning.
  */
 int
-getsock_cap(struct thread *td, int fd, cap_rights_t *rightsp,
+getsock_cap(struct thread *td, int fd, const cap_rights_t *rightsp,
     struct file **fpp, struct filecaps *havecapsp)
 {
 	struct file *fp;
 	int error;
 
-	error = fget_cap(td, fd, rightsp, &fp, havecapsp);
+	error = fget_cap(td, fd, rightsp, NULL, &fp, havecapsp);
 	if (__predict_false(error != 0))
 		return (error);
 	if (__predict_false(fp->f_type != DTYPE_SOCKET)) {
@@ -105,7 +105,8 @@ getsock_cap(struct thread *td, int fd, cap_rights_t *rightsp,
 }
 
 int
-getsock(struct thread *td, int fd, cap_rights_t *rightsp, struct file **fpp)
+getsock(struct thread *td, int fd, const cap_rights_t *rightsp,
+    struct file **fpp)
 {
 	struct file *fp;
 	int error;
@@ -149,6 +150,10 @@ kern_socket(struct thread *td, int domain, int type, int protocol)
 	if ((type & SOCK_CLOEXEC) != 0) {
 		type &= ~SOCK_CLOEXEC;
 		oflag |= O_CLOEXEC;
+	}
+	if ((type & SOCK_CLOFORK) != 0) {
+		type &= ~SOCK_CLOFORK;
+		oflag |= O_CLOFORK;
 	}
 	if ((type & SOCK_NONBLOCK) != 0) {
 		type &= ~SOCK_NONBLOCK;
@@ -199,8 +204,12 @@ kern_bindat(struct thread *td, int dirfd, int fd, struct sockaddr *sa)
 	int error;
 
 #ifdef CAPABILITY_MODE
-	if (IN_CAPABILITY_MODE(td) && (dirfd == AT_FDCWD))
-		return (ECAPMODE);
+	if (dirfd == AT_FDCWD) {
+		if (CAP_TRACING(td))
+			ktrcapfail(CAPFAIL_NAMEI, "AT_FDCWD");
+		if (IN_CAPABILITY_MODE(td))
+			return (ECAPMODE);
+	}
 #endif
 
 	AUDIT_ARG_FD(fd);
@@ -347,7 +356,8 @@ kern_accept4(struct thread *td, int s, struct sockaddr *sa, int flags,
 		goto done;
 #endif
 	error = falloc_caps(td, &nfp, &fd,
-	    (flags & SOCK_CLOEXEC) ? O_CLOEXEC : 0, &fcaps);
+	    ((flags & SOCK_CLOEXEC) != 0 ? O_CLOEXEC : 0) |
+	    ((flags & SOCK_CLOFORK) != 0 ? O_CLOFORK : 0), &fcaps);
 	if (error != 0)
 		goto done;
 	SOCK_LOCK(head);
@@ -430,7 +440,7 @@ int
 sys_accept4(struct thread *td, struct accept4_args *uap)
 {
 
-	if (uap->flags & ~(SOCK_CLOEXEC | SOCK_NONBLOCK))
+	if ((uap->flags & ~(SOCK_CLOEXEC | SOCK_CLOFORK | SOCK_NONBLOCK)) != 0)
 		return (EINVAL);
 
 	return (accept1(td, uap->s, uap->name, uap->anamelen, uap->flags));
@@ -468,8 +478,12 @@ kern_connectat(struct thread *td, int dirfd, int fd, struct sockaddr *sa)
 	int error;
 
 #ifdef CAPABILITY_MODE
-	if (IN_CAPABILITY_MODE(td) && (dirfd == AT_FDCWD))
-		return (ECAPMODE);
+	if (dirfd == AT_FDCWD) {
+		if (CAP_TRACING(td))
+			ktrcapfail(CAPFAIL_NAMEI, "AT_FDCWD");
+		if (IN_CAPABILITY_MODE(td))
+			return (ECAPMODE);
+	}
 #endif
 
 	AUDIT_ARG_FD(fd);
@@ -547,6 +561,10 @@ kern_socketpair(struct thread *td, int domain, int type, int protocol,
 	if ((type & SOCK_CLOEXEC) != 0) {
 		type &= ~SOCK_CLOEXEC;
 		oflag |= O_CLOEXEC;
+	}
+	if ((type & SOCK_CLOFORK) != 0) {
+		type &= ~SOCK_CLOFORK;
+		oflag |= O_CLOFORK;
 	}
 	if ((type & SOCK_NONBLOCK) != 0) {
 		type &= ~SOCK_NONBLOCK;
@@ -646,11 +664,6 @@ sendit(struct thread *td, int s, struct msghdr *mp, int flags)
 	struct sockaddr *to;
 	int error;
 
-#ifdef CAPABILITY_MODE
-	if (IN_CAPABILITY_MODE(td) && (mp->msg_name != NULL))
-		return (ECAPMODE);
-#endif
-
 	if (mp->msg_name != NULL) {
 		error = getsockaddr(&to, mp->msg_name, mp->msg_namelen);
 		if (error != 0) {
@@ -658,6 +671,14 @@ sendit(struct thread *td, int s, struct msghdr *mp, int flags)
 			goto bad;
 		}
 		mp->msg_name = to;
+#ifdef CAPABILITY_MODE
+		if (CAP_TRACING(td))
+			ktrcapfail(CAPFAIL_SOCKADDR, mp->msg_name);
+		if (IN_CAPABILITY_MODE(td)) {
+			error = ECAPMODE;
+			goto bad;
+		}
+#endif
 	} else {
 		to = NULL;
 	}
@@ -707,7 +728,7 @@ kern_sendit(struct thread *td, int s, struct msghdr *mp, int flags,
 	struct uio auio;
 	struct iovec *iov;
 	struct socket *so;
-	cap_rights_t *rights;
+	const cap_rights_t *rights;
 #ifdef KTRACE
 	struct uio *ktruio = NULL;
 #endif
@@ -1209,6 +1230,7 @@ kern_setsockopt(struct thread *td, int s, int level, int name, const void *val,
 {
 	struct socket *so;
 	struct file *fp;
+	struct filecaps fcaps;
 	struct sockopt sopt;
 	int error;
 
@@ -1234,8 +1256,10 @@ kern_setsockopt(struct thread *td, int s, int level, int name, const void *val,
 	}
 
 	AUDIT_ARG_FD(s);
-	error = getsock(td, s, &cap_setsockopt_rights, &fp);
+	error = getsock_cap(td, s, &cap_setsockopt_rights, &fp,
+	    &fcaps);
 	if (error == 0) {
+		sopt.sopt_rights = &fcaps.fc_rights;
 		so = fp->f_data;
 		error = sosetopt(so, &sopt);
 		fdrop(fp, td);
@@ -1273,6 +1297,7 @@ kern_getsockopt(struct thread *td, int s, int level, int name, void *val,
 {
 	struct socket *so;
 	struct file *fp;
+	struct filecaps fcaps;
 	struct sockopt sopt;
 	int error;
 
@@ -1298,8 +1323,9 @@ kern_getsockopt(struct thread *td, int s, int level, int name, void *val,
 	}
 
 	AUDIT_ARG_FD(s);
-	error = getsock(td, s, &cap_getsockopt_rights, &fp);
+	error = getsock_cap(td, s, &cap_getsockopt_rights, &fp, &fcaps);
 	if (error == 0) {
+		sopt.sopt_rights = &fcaps.fc_rights;
 		so = fp->f_data;
 		error = sogetopt(so, &sopt);
 		*valsize = sopt.sopt_valsize;
@@ -1417,7 +1443,9 @@ kern_getpeername(struct thread *td, int fd, struct sockaddr *sa)
 		error = ENOTCONN;
 		goto done;
 	}
+	CURVNET_SET(so->so_vnet);
 	error = sopeeraddr(so, sa);
+	CURVNET_RESTORE();
 #ifdef KTRACE
 	if (error == 0 && KTRPOINT(td, KTR_STRUCT))
 		ktrsockaddr(sa);

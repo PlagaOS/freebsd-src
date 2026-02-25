@@ -56,9 +56,11 @@
 
 #include <machine/machdep.h>
 #include <machine/cpu.h>
+#include <machine/cpu_feat.h>
 #include <machine/debug_monitor.h>
 #include <machine/intr.h>
 #include <machine/smp.h>
+#include <machine/vmparam.h>
 #ifdef VFP
 #include <machine/vfp.h>
 #endif
@@ -90,6 +92,7 @@ static struct {
 } fdt_quirks[] = {
 	{ "arm,foundation-aarch64",	MP_QUIRK_CPULIST },
 	{ "arm,fvp-base",		MP_QUIRK_CPULIST },
+	{ "arm,fvp-base-revc",		MP_QUIRK_CPULIST },
 	/* This is incorrect in some DTS files */
 	{ "arm,vfp-base",		MP_QUIRK_CPULIST },
 	{ NULL, 0 },
@@ -101,19 +104,19 @@ static void ipi_hardclock(void *);
 static void ipi_preempt(void *);
 static void ipi_rendezvous(void *);
 static void ipi_stop(void *);
+static void ipi_off(void *);
 
 #ifdef FDT
 static u_int fdt_cpuid;
 #endif
 
-void mpentry(unsigned long cpuid);
+void mpentry_psci(unsigned long cpuid);
+void mpentry_spintable(void);
 void init_secondary(uint64_t);
-
-/* Synchronize AP startup. */
-static struct mtx ap_boot_mtx;
 
 /* Used to initialize the PCPU ahead of calling init_secondary(). */
 void *bootpcpu;
+uint64_t ap_cpuid;
 
 /* Stacks for AP initialization, discarded once idle threads are started. */
 void *bootstack;
@@ -123,7 +126,7 @@ static void *bootstacks[MAXCPU];
 static volatile int aps_started;
 
 /* Set to 1 once we're ready to let the APs out of the pen. */
-static volatile int aps_ready;
+static volatile int aps_after_dev, aps_ready;
 
 /* Temporary variables for init_secondary()  */
 static void *dpcpu[MAXCPU - 1];
@@ -135,11 +138,53 @@ is_boot_cpu(uint64_t target_cpu)
 	return (PCPU_GET_MPIDR(cpuid_to_pcpu[0]) == (target_cpu & CPU_AFF_MASK));
 }
 
+static bool
+wait_for_aps(void)
+{
+	for (int i = 0, started = 0; i < 2000; i++) {
+		int32_t nstarted;
+
+		nstarted = atomic_load_32(&aps_started);
+		if (nstarted == mp_ncpus - 1)
+			return (true);
+
+		/*
+		 * Don't time out while we are making progress. Some large
+		 * systems can take a while to start all CPUs.
+		 */
+		if (nstarted > started) {
+			i = 0;
+			started = nstarted;
+		}
+		DELAY(1000);
+	}
+
+	return (false);
+}
+
+static void
+release_aps_after_dev(void *dummy __unused)
+{
+	/* Only release CPUs if they exist */
+	if (mp_ncpus == 1)
+		return;
+
+	atomic_store_int(&aps_started, 0);
+	atomic_store_rel_int(&aps_after_dev, 1);
+	/* Wake up the other CPUs */
+	__asm __volatile(
+	    "dsb ishst	\n"
+	    "sev	\n"
+	    ::: "memory");
+
+	wait_for_aps();
+}
+SYSINIT(aps_after_dev, SI_SUB_CONFIGURE, SI_ORDER_MIDDLE + 1,
+    release_aps_after_dev, NULL);
+
 static void
 release_aps(void *dummy __unused)
 {
-	int i, started;
-
 	/* Only release CPUs if they exist */
 	if (mp_ncpus == 1)
 		return;
@@ -150,7 +195,9 @@ release_aps(void *dummy __unused)
 	intr_ipi_setup(IPI_STOP, "stop", ipi_stop, NULL);
 	intr_ipi_setup(IPI_STOP_HARD, "stop hard", ipi_stop, NULL);
 	intr_ipi_setup(IPI_HARDCLOCK, "hardclock", ipi_hardclock, NULL);
+	intr_ipi_setup(IPI_OFF, "off", ipi_off, NULL);
 
+	atomic_store_int(&aps_started, 0);
 	atomic_store_rel_int(&aps_ready, 1);
 	/* Wake up the other CPUs */
 	__asm __volatile(
@@ -160,24 +207,13 @@ release_aps(void *dummy __unused)
 
 	printf("Release APs...");
 
-	started = 0;
-	for (i = 0; i < 2000; i++) {
-		if (atomic_load_acq_int(&smp_started) != 0) {
-			printf("done\n");
-			return;
-		}
-		/*
-		 * Don't time out while we are making progress. Some large
-		 * systems can take a while to start all CPUs.
-		 */
-		if (smp_cpus > started) {
-			i = 0;
-			started = smp_cpus;
-		}
-		DELAY(1000);
-	}
+	if (wait_for_aps())
+		printf("done\n");
+	else
+		printf("APs not started\n");
 
-	printf("APs not started\n");
+	smp_cpus = atomic_load_int(&aps_started) + 1;
+	atomic_store_rel_int(&smp_started, 1);
 }
 SYSINIT(start_aps, SI_SUB_SMP, SI_ORDER_FIRST, release_aps, NULL);
 
@@ -221,8 +257,23 @@ init_secondary(uint64_t cpu)
 	/* Ensure the stores in identify_cpu have completed */
 	atomic_thread_fence_acq_rel();
 
-	/* Signal the BSP and spin until it has released all APs. */
+	/* Detect early CPU feature support */
+	enable_cpu_feat(CPU_FEAT_EARLY_BOOT);
+
+	/* Signal we are waiting for aps_after_dev */
 	atomic_add_int(&aps_started, 1);
+
+	/* Wait for devices to be ready */
+	while (!atomic_load_int(&aps_after_dev))
+		__asm __volatile("wfe");
+
+	install_cpu_errata();
+	enable_cpu_feat(CPU_FEAT_AFTER_DEV);
+
+	/* Signal we are done */
+	atomic_add_int(&aps_started, 1);
+
+	/* Wait until we can run the scheduler */
 	while (!atomic_load_int(&aps_ready))
 		__asm __volatile("wfe");
 
@@ -237,8 +288,6 @@ init_secondary(uint64_t cpu)
 	    ("pmap0 doesn't match cpu %ld's ttbr0", cpu));
 	pcpup->pc_curpmap = pmap0;
 
-	install_cpu_errata();
-
 	intr_pic_init_secondary();
 
 	/* Start per-CPU event timers. */
@@ -249,15 +298,9 @@ init_secondary(uint64_t cpu)
 #endif
 
 	dbg_init();
-	pan_enable();
 
-	mtx_lock_spin(&ap_boot_mtx);
-	atomic_add_rel_32(&smp_cpus, 1);
-	if (smp_cpus == mp_ncpus) {
-		/* enable IPI's, tlb shootdown, freezes etc */
-		atomic_store_rel_int(&smp_started, 1);
-	}
-	mtx_unlock_spin(&ap_boot_mtx);
+	/* Signal the CPU is ready */
+	atomic_add_int(&aps_started, 1);
 
 	kcsan_cpu_init(cpu);
 
@@ -350,6 +393,34 @@ ipi_stop(void *dummy __unused)
 	CTR0(KTR_SMP, "IPI_STOP (restart)");
 }
 
+void stop_mmu(vm_paddr_t, vm_paddr_t) __dead2;
+extern uint32_t mp_cpu_spinloop[];
+extern uint32_t mp_cpu_spinloop_end[];
+extern uint64_t mp_cpu_spin_table_release_addr;
+static void
+ipi_off(void *dummy __unused)
+{
+	CTR0(KTR_SMP, "IPI_OFF");
+	if (psci_present)
+		psci_cpu_off();
+	else {
+		uint64_t release_addr;
+		vm_size_t size;
+
+		size = (vm_offset_t)&mp_cpu_spin_table_release_addr -
+		    (vm_offset_t)mp_cpu_spinloop;
+		release_addr = PCPU_GET(release_addr) - size;
+		isb();
+		invalidate_icache();
+		/* Go catatonic, don't take any interrupts. */
+		intr_disable();
+		stop_mmu(release_addr, pmap_kextract(KERNBASE));
+
+
+	}
+	CTR0(KTR_SMP, "IPI_OFF failed");
+}
+
 struct cpu_group *
 cpu_topo(void)
 {
@@ -420,17 +491,24 @@ enable_cpu_spin(uint64_t cpu, vm_paddr_t entry, vm_paddr_t release_paddr)
 {
 	vm_paddr_t *release_addr;
 
-	release_addr = pmap_mapdev(release_paddr, sizeof(*release_addr));
+	ap_cpuid = cpu & CPU_AFF_MASK;
+
+	release_addr = pmap_mapdev_attr(release_paddr, sizeof(*release_addr),
+	    VM_MEMATTR_DEFAULT);
 	if (release_addr == NULL)
 		return (ENOMEM);
 
 	*release_addr = entry;
+	cpu_dcache_wbinv_range(release_addr, sizeof(*release_addr));
 	pmap_unmapdev(release_addr, sizeof(*release_addr));
 
 	__asm __volatile(
-	    "dsb sy	\n"
 	    "sev	\n"
 	    ::: "memory");
+
+	/* Wait for the target CPU to start */
+	while (atomic_load_64(&ap_cpuid) != 0)
+		__asm __volatile("wfe");
 
 	return (0);
 }
@@ -464,6 +542,7 @@ start_cpu(u_int cpuid, uint64_t target_cpu, int domain, vm_paddr_t release_addr)
 	pcpu_init(pcpup, cpuid, sizeof(struct pcpu));
 	pcpup->pc_mpidr = target_cpu & CPU_AFF_MASK;
 	bootpcpu = pcpup;
+	pcpup->pc_release_addr = release_addr;
 
 	dpcpu[cpuid - 1] = (void *)(pcpup + 1);
 	dpcpu_init(dpcpu[cpuid - 1], cpuid);
@@ -475,7 +554,6 @@ start_cpu(u_int cpuid, uint64_t target_cpu, int domain, vm_paddr_t release_addr)
 	bootstack = (char *)bootstacks[cpuid] + MP_BOOTSTACK_SIZE;
 
 	printf("Starting CPU %u (%lx)\n", cpuid, target_cpu);
-	pa = pmap_extract(kernel_pmap, (vm_offset_t)mpentry);
 
 	/*
 	 * A limited set of hardware we support can only do spintables and
@@ -483,10 +561,13 @@ start_cpu(u_int cpuid, uint64_t target_cpu, int domain, vm_paddr_t release_addr)
 	 * PSCI branch here.
 	 */
 	MPASS(release_addr == 0 || !psci_present);
-	if (release_addr != 0)
+	if (release_addr != 0) {
+		pa = pmap_extract(kernel_pmap, (vm_offset_t)mpentry_spintable);
 		err = enable_cpu_spin(target_cpu, pa, release_addr);
-	else
+	} else {
+		pa = pmap_extract(kernel_pmap, (vm_offset_t)mpentry_psci);
 		err = enable_cpu_psci(target_cpu, pa, cpuid);
+	}
 
 	if (err != 0) {
 		pcpu_destroy(pcpup);
@@ -679,8 +760,6 @@ cpu_mp_start(void)
 {
 	uint64_t mpidr;
 
-	mtx_init(&ap_boot_mtx, "ap boot", NULL, MTX_SPIN);
-
 	/* CPU 0 is always boot CPU. */
 	CPU_SET(0, &all_cpus);
 	mpidr = READ_SPECIALREG(mpidr_el1) & CPU_AFF_MASK;
@@ -703,6 +782,52 @@ cpu_mp_start(void)
 	default:
 		break;
 	}
+}
+
+void
+cpu_mp_stop(void)
+{
+
+	/* Short-circuit for single-CPU */
+	if (CPU_COUNT(&all_cpus) == 1)
+		return;
+
+	KASSERT(PCPU_GET(cpuid) == CPU_FIRST(), ("Not on the first CPU!\n"));
+
+	/*
+	 * If we use spin-table, assume U-boot method for now (single address
+	 * shared by all CPUs).
+	 */
+	if (!psci_present) {
+		int cpu;
+		vm_paddr_t release_addr;
+		void *release_vaddr;
+		vm_size_t size;
+
+		/* Find the shared release address. */
+		CPU_FOREACH(cpu) {
+			release_addr = pcpu_find(cpu)->pc_release_addr;
+			if (release_addr != 0)
+				break;
+		}
+		/* No release address? No way of notifying other CPUs. */
+		if (release_addr == 0)
+			return;
+
+		size = (vm_offset_t)&mp_cpu_spinloop_end -
+		    (vm_offset_t)&mp_cpu_spinloop;
+
+		release_addr -= (vm_offset_t)&mp_cpu_spin_table_release_addr -
+		    (vm_offset_t)mp_cpu_spinloop;
+
+		release_vaddr = pmap_mapdev(release_addr, size);
+		bcopy(mp_cpu_spinloop, release_vaddr, size);
+		cpu_dcache_wbinv_range(release_vaddr, size);
+		pmap_unmapdev(release_vaddr, size);
+		invalidate_icache();
+	}
+	ipi_all_but_self(IPI_OFF);
+	DELAY(1000000);
 }
 
 /* Introduce rest of cores to the world */

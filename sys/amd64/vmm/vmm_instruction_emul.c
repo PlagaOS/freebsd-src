@@ -39,6 +39,8 @@
 
 #include <machine/vmparam.h>
 #include <machine/vmm.h>
+
+#include <dev/vmm/vmm_mem.h>
 #else	/* !_KERNEL */
 #include <sys/types.h>
 #include <sys/errno.h>
@@ -62,30 +64,6 @@
 #include <machine/vmm_instruction_emul.h>
 #include <x86/psl.h>
 #include <x86/specialreg.h>
-
-/* struct vie_op.op_type */
-enum {
-	VIE_OP_TYPE_NONE = 0,
-	VIE_OP_TYPE_MOV,
-	VIE_OP_TYPE_MOVSX,
-	VIE_OP_TYPE_MOVZX,
-	VIE_OP_TYPE_AND,
-	VIE_OP_TYPE_OR,
-	VIE_OP_TYPE_SUB,
-	VIE_OP_TYPE_TWO_BYTE,
-	VIE_OP_TYPE_PUSH,
-	VIE_OP_TYPE_CMP,
-	VIE_OP_TYPE_POP,
-	VIE_OP_TYPE_MOVS,
-	VIE_OP_TYPE_GROUP1,
-	VIE_OP_TYPE_STOS,
-	VIE_OP_TYPE_BITTEST,
-	VIE_OP_TYPE_TWOB_GRP15,
-	VIE_OP_TYPE_ADD,
-	VIE_OP_TYPE_TEST,
-	VIE_OP_TYPE_BEXTR,
-	VIE_OP_TYPE_LAST
-};
 
 /* struct vie_op.op_flags */
 #define	VIE_OP_F_IMM		(1 << 0)  /* 16/32-bit immediate operand */
@@ -149,6 +127,16 @@ static const struct vie_op one_byte_opcodes[256] = {
 	[0x3B] = {
 		.op_byte = 0x3B,
 		.op_type = VIE_OP_TYPE_CMP,
+	},
+	[0x6E] = {
+		.op_byte = 0x6E,
+		.op_type = VIE_OP_TYPE_OUTS,
+		.op_flags = VIE_OP_F_NO_MODRM | VIE_OP_F_NO_GLA_VERIFICATION,
+	},
+	[0x6F] = {
+		.op_byte = 0x6F,
+		.op_type = VIE_OP_TYPE_OUTS,
+		.op_flags = VIE_OP_F_NO_MODRM | VIE_OP_F_NO_GLA_VERIFICATION,
 	},
 	[0x88] = {
 		.op_byte = 0x88,
@@ -233,6 +221,12 @@ static const struct vie_op one_byte_opcodes[256] = {
 		/* XXX Group 1A extended opcode - not just POP */
 		.op_byte = 0x8F,
 		.op_type = VIE_OP_TYPE_POP,
+	},
+	[0xF6] = {
+		/* XXX Group 3 extended opcode - not just TEST */
+		.op_byte = 0xF6,
+		.op_type = VIE_OP_TYPE_TEST,
+		.op_flags = VIE_OP_F_IMM8,
 	},
 	[0xF7] = {
 		/* XXX Group 3 extended opcode - not just TEST */
@@ -583,7 +577,7 @@ emulate_mov(struct vcpu *vcpu, uint64_t gpa, struct vie *vie,
 		/*
 		 * MOV from AX/EAX/RAX to seg:moffset
 		 * A3:		mov moffs16, AX
-		 * A3:		mov moffs32, EAX 
+		 * A3:		mov moffs32, EAX
 		 * REX.W + A3:	mov moffs64, RAX
 		 */
 		error = vie_read_register(vcpu, VM_REG_GUEST_RAX, &val);
@@ -1118,7 +1112,7 @@ emulate_or(struct vcpu *vcpu, uint64_t gpa, struct vie *vie,
 		error = vie_read_register(vcpu, reg, &val1);
 		if (error)
 			break;
-		
+
 		/* get the second operand */
 		error = memread(vcpu, gpa, &val2, size, arg);
 		if (error)
@@ -1282,6 +1276,12 @@ emulate_test(struct vcpu *vcpu, uint64_t gpa, struct vie *vie,
 	error = EINVAL;
 
 	switch (vie->op.op_byte) {
+	case 0xF6:
+		/*
+		 * F6 /0		test r/m8, imm8
+		 */
+		size = 1;	/* override for byte operation */
+		/* FALLTHROUGH */
 	case 0xF7:
 		/*
 		 * F7 /0		test r/m16, imm16
@@ -1468,7 +1468,7 @@ emulate_sub(struct vcpu *vcpu, uint64_t gpa, struct vie *vie,
 	case 0x2B:
 		/*
 		 * SUB r/m from r and store the result in r
-		 * 
+		 *
 		 * 2B/r            SUB r16, r/m16
 		 * 2B/r            SUB r32, r/m32
 		 * REX.W + 2B/r    SUB r64, r/m64
@@ -1912,7 +1912,7 @@ vie_calculate_gla(enum vm_cpu_mode cpu_mode, enum vm_reg_name seg,
 		if (SEG_DESC_UNUSABLE(desc->access))
 			return (-1);
 
-		/* 
+		/*
 		 * The processor generates a #NP exception when a segment
 		 * register is loaded with a selector that points to a
 		 * descriptor that is not present. If this was the case then

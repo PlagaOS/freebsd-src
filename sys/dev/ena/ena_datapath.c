@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2015-2023 Amazon.com, Inc. or its affiliates.
+ * Copyright (c) 2015-2024 Amazon.com, Inc. or its affiliates.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,9 +34,7 @@
 #ifdef DEV_NETMAP
 #include "ena_netmap.h"
 #endif /* DEV_NETMAP */
-#ifdef RSS
 #include <net/rss_config.h>
-#endif /* RSS */
 
 #include <netinet6/ip6_var.h>
 
@@ -77,16 +75,23 @@ ena_cleanup(void *arg, int pending)
 	int qid, ena_qid;
 	int txc, rxc, i;
 
-	if (unlikely((if_getdrvflags(ifp) & IFF_DRV_RUNNING) == 0))
-		return;
-
-	ena_log_io(adapter->pdev, DBG, "MSI-X TX/RX routine\n");
-
 	tx_ring = que->tx_ring;
 	rx_ring = que->rx_ring;
 	qid = que->id;
 	ena_qid = ENA_IO_TXQ_IDX(qid);
 	io_cq = &adapter->ena_dev->io_cq_queues[ena_qid];
+
+	atomic_store_8(&tx_ring->cleanup_running, 1);
+	/* Need to make sure that ENA_FLAG_TRIGGER_RESET is visible to ena_cleanup() and
+	 * that cleanup_running is visible to check_missing_comp_in_tx_queue() to
+	 * prevent the case of accessing CQ concurrently with check_cdesc_in_tx_cq()
+	 */
+	mb();
+	if (unlikely(((if_getdrvflags(ifp) & IFF_DRV_RUNNING) == 0) ||
+	    (ENA_FLAG_ISSET(ENA_FLAG_TRIGGER_RESET, adapter))))
+		return;
+
+	ena_log_io(adapter->pdev, DBG, "MSI-X TX/RX routine\n");
 
 	atomic_store_8(&tx_ring->first_interrupt, 1);
 	atomic_store_8(&rx_ring->first_interrupt, 1);
@@ -95,7 +100,8 @@ ena_cleanup(void *arg, int pending)
 		rxc = ena_rx_cleanup(rx_ring);
 		txc = ena_tx_cleanup(tx_ring);
 
-		if (unlikely((if_getdrvflags(ifp) & IFF_DRV_RUNNING) == 0))
+		if (unlikely(((if_getdrvflags(ifp) & IFF_DRV_RUNNING) == 0) ||
+		    (ENA_FLAG_ISSET(ENA_FLAG_TRIGGER_RESET, adapter))))
 			return;
 
 		if ((txc != ENA_TX_BUDGET) && (rxc != ENA_RX_BUDGET))
@@ -107,6 +113,7 @@ ena_cleanup(void *arg, int pending)
 	    ENA_TX_IRQ_INTERVAL, true, false);
 	counter_u64_add(tx_ring->tx_stats.unmask_interrupt_num, 1);
 	ena_com_unmask_intr(io_cq, &intr_reg);
+	atomic_store_8(&tx_ring->cleanup_running, 0);
 }
 
 void
@@ -200,29 +207,22 @@ ena_get_tx_req_id(struct ena_ring *tx_ring, struct ena_com_io_cq *io_cq,
     uint16_t *req_id)
 {
 	struct ena_adapter *adapter = tx_ring->adapter;
-	int rc;
+	int rc = ena_com_tx_comp_req_id_get(io_cq, req_id);
 
-	rc = ena_com_tx_comp_req_id_get(io_cq, req_id);
-	if (rc == ENA_COM_TRY_AGAIN)
+	if (unlikely(rc == ENA_COM_TRY_AGAIN))
 		return (EAGAIN);
 
-	if (unlikely(rc != 0)) {
-		ena_log(adapter->pdev, ERR, "Invalid req_id %hu in qid %hu\n",
+	rc = validate_tx_req_id(tx_ring, *req_id, rc);
+
+	if (unlikely(tx_ring->tx_buffer_info[*req_id].mbuf == NULL)) {
+		ena_log(adapter->pdev, ERR,
+		    "tx_info doesn't have valid mbuf. req_id %hu qid %hu\n",
 		    *req_id, tx_ring->qid);
-		counter_u64_add(tx_ring->tx_stats.bad_req_id, 1);
-		goto err;
+		ena_trigger_reset(adapter, ENA_REGS_RESET_INV_TX_REQ_ID);
+		rc = EFAULT;
 	}
 
-	if (tx_ring->tx_buffer_info[*req_id].mbuf != NULL)
-		return (0);
-
-	ena_log(adapter->pdev, ERR,
-	    "tx_info doesn't have valid mbuf. req_id %hu qid %hu\n",
-	    *req_id, tx_ring->qid);
-err:
-	ena_trigger_reset(adapter, ENA_REGS_RESET_INV_TX_REQ_ID);
-
-	return (EFAULT);
+	return (rc);
 }
 
 /**
@@ -349,7 +349,6 @@ ena_rx_hash_mbuf(struct ena_ring *rx_ring, struct ena_com_rx_ctx *ena_rx_ctx,
 	if (likely(ENA_FLAG_ISSET(ENA_FLAG_RSS_ACTIVE, adapter))) {
 		mbuf->m_pkthdr.flowid = ena_rx_ctx->hash;
 
-#ifdef RSS
 		/*
 		 * Hardware and software RSS are in agreement only when both are
 		 * configured to Toeplitz algorithm.  This driver configures
@@ -360,7 +359,6 @@ ena_rx_hash_mbuf(struct ena_ring *rx_ring, struct ena_com_rx_ctx *ena_rx_ctx,
 			M_HASHTYPE_SET(mbuf, M_HASHTYPE_OPAQUE_HASH);
 			return;
 		}
-#endif
 
 		if (ena_rx_ctx->frag &&
 		    (ena_rx_ctx->l3_proto != ENA_ETH_IO_L3_PROTO_UNKNOWN)) {
@@ -432,7 +430,9 @@ ena_rx_mbuf(struct ena_ring *rx_ring, struct ena_com_rx_buf_info *ena_bufs,
 	req_id = ena_bufs[buf].req_id;
 	rx_info = &rx_ring->rx_buffer_info[req_id];
 	if (unlikely(rx_info->mbuf == NULL)) {
-		ena_log(pdev, ERR, "NULL mbuf in rx_info");
+		ena_log(pdev, ERR, "NULL mbuf in rx_info. qid %u req_id %u\n",
+		    rx_ring->qid, req_id);
+		ena_trigger_reset(adapter, ENA_REGS_RESET_INV_RX_REQ_ID);
 		return (NULL);
 	}
 
@@ -474,7 +474,8 @@ ena_rx_mbuf(struct ena_ring *rx_ring, struct ena_com_rx_buf_info *ena_bufs,
 		rx_info = &rx_ring->rx_buffer_info[req_id];
 
 		if (unlikely(rx_info->mbuf == NULL)) {
-			ena_log(pdev, ERR, "NULL mbuf in rx_info");
+			ena_log(pdev, ERR, "NULL mbuf in rx_info. qid %u req_id %u\n",
+			    rx_ring->qid, req_id);
 			/*
 			 * If one of the required mbufs was not allocated yet,
 			 * we can break there.
@@ -486,6 +487,7 @@ ena_rx_mbuf(struct ena_ring *rx_ring, struct ena_com_rx_buf_info *ena_bufs,
 			 * with hw ring.
 			 */
 			m_freem(mbuf);
+			ena_trigger_reset(adapter, ENA_REGS_RESET_INV_RX_REQ_ID);
 			return (NULL);
 		}
 
@@ -606,6 +608,8 @@ ena_rx_cleanup(struct ena_ring *rx_ring)
 				counter_u64_add(rx_ring->rx_stats.bad_desc_num,
 				    1);
 				reset_reason = ENA_REGS_RESET_TOO_MANY_RX_DESCS;
+			} else if (rc == ENA_COM_FAULT) {
+				reset_reason = ENA_REGS_RESET_RX_DESCRIPTOR_MALFORMED;
 			} else {
 				counter_u64_add(rx_ring->rx_stats.bad_req_id,
 				    1);

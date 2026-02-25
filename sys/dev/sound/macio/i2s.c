@@ -109,7 +109,7 @@ static device_method_t pcm_i2s_methods[] = {
 	/* Device interface. */
 	DEVMETHOD(device_probe,		i2s_probe),
 	DEVMETHOD(device_attach, 	i2s_attach),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t pcm_i2s_driver = {
@@ -128,7 +128,7 @@ static device_method_t aoagpio_methods[] = {
 	/* Device interface. */
 	DEVMETHOD(device_probe,		aoagpio_probe),
 	DEVMETHOD(device_attach,	aoagpio_attach),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 struct aoagpio_softc {
@@ -241,10 +241,8 @@ i2s_attach(device_t self)
 	 * Register a hook for delayed attach in order to allow
 	 * the I2C controller to attach.
 	 */
-	if ((i2s_delayed_attach = malloc(sizeof(struct intr_config_hook), 
-	    M_TEMP, M_WAITOK | M_ZERO)) == NULL)
-		return (ENOMEM);
-
+	i2s_delayed_attach = malloc(sizeof(struct intr_config_hook),
+	    M_TEMP, M_WAITOK | M_ZERO);
 	i2s_delayed_attach->ich_func = i2s_postattach;
 	i2s_delayed_attach->ich_arg = sc;
 

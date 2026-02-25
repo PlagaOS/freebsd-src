@@ -36,6 +36,7 @@
 #include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/msgbuf.h>
+#include <sys/mqueue.h>
 #include <sys/mutex.h>
 #include <sys/poll.h>
 #include <sys/priv.h>
@@ -53,6 +54,7 @@
 #include <sys/sysent.h>
 #include <sys/sysproto.h>
 #include <sys/time.h>
+#include <sys/unistd.h>
 #include <sys/vmmeter.h>
 #include <sys/vnode.h>
 
@@ -1027,31 +1029,24 @@ linux_nice(struct thread *td, struct linux_nice_args *args)
 int
 linux_setgroups(struct thread *td, struct linux_setgroups_args *args)
 {
+	const int ngrp = args->gidsetsize;
 	struct ucred *newcred, *oldcred;
 	l_gid_t *linux_gidset;
-	gid_t *bsd_gidset;
-	int ngrp, error;
+	int error;
 	struct proc *p;
 
-	ngrp = args->gidsetsize;
-	if (ngrp < 0 || ngrp >= ngroups_max + 1)
+	if (ngrp < 0 || ngrp > ngroups_max)
 		return (EINVAL);
 	linux_gidset = malloc(ngrp * sizeof(*linux_gidset), M_LINUX, M_WAITOK);
 	error = copyin(args->grouplist, linux_gidset, ngrp * sizeof(l_gid_t));
 	if (error)
 		goto out;
+
 	newcred = crget();
-	crextend(newcred, ngrp + 1);
+	crextend(newcred, ngrp);
 	p = td->td_proc;
 	PROC_LOCK(p);
-	oldcred = p->p_ucred;
-	crcopy(newcred, oldcred);
-
-	/*
-	 * cr_groups[0] holds egid. Setting the whole set from
-	 * the supplied set will cause egid to be changed too.
-	 * Keep cr_groups[0] unchanged to prevent that.
-	 */
+	oldcred = crcopysafe(p, newcred);
 
 	if ((error = priv_check_cred(oldcred, PRIV_CRED_SETGROUPS)) != 0) {
 		PROC_UNLOCK(p);
@@ -1059,17 +1054,10 @@ linux_setgroups(struct thread *td, struct linux_setgroups_args *args)
 		goto out;
 	}
 
-	if (ngrp > 0) {
-		newcred->cr_ngroups = ngrp + 1;
-
-		bsd_gidset = newcred->cr_groups;
-		ngrp--;
-		while (ngrp >= 0) {
-			bsd_gidset[ngrp + 1] = linux_gidset[ngrp];
-			ngrp--;
-		}
-	} else
-		newcred->cr_ngroups = 1;
+	newcred->cr_ngroups = ngrp;
+	for (int i = 0; i < ngrp; i++)
+		newcred->cr_groups[i] = linux_gidset[i];
+	newcred->cr_flags |= CRED_FLAG_GROUPSET;
 
 	setsugid(p);
 	proc_set_cred(p, newcred);
@@ -1084,40 +1072,29 @@ out:
 int
 linux_getgroups(struct thread *td, struct linux_getgroups_args *args)
 {
-	struct ucred *cred;
+	const struct ucred *const cred = td->td_ucred;
 	l_gid_t *linux_gidset;
-	gid_t *bsd_gidset;
-	int bsd_gidsetsz, ngrp, error;
+	int ngrp, error;
 
-	cred = td->td_ucred;
-	bsd_gidset = cred->cr_groups;
-	bsd_gidsetsz = cred->cr_ngroups - 1;
+	ngrp = args->gidsetsize;
 
-	/*
-	 * cr_groups[0] holds egid. Returning the whole set
-	 * here will cause a duplicate. Exclude cr_groups[0]
-	 * to prevent that.
-	 */
-
-	if ((ngrp = args->gidsetsize) == 0) {
-		td->td_retval[0] = bsd_gidsetsz;
+	if (ngrp == 0) {
+		td->td_retval[0] = cred->cr_ngroups;
 		return (0);
 	}
-
-	if (ngrp < bsd_gidsetsz)
+	if (ngrp < cred->cr_ngroups)
 		return (EINVAL);
 
-	ngrp = 0;
-	linux_gidset = malloc(bsd_gidsetsz * sizeof(*linux_gidset),
-	    M_LINUX, M_WAITOK);
-	while (ngrp < bsd_gidsetsz) {
-		linux_gidset[ngrp] = bsd_gidset[ngrp + 1];
-		ngrp++;
-	}
+	ngrp = cred->cr_ngroups;
+
+	linux_gidset = malloc(ngrp * sizeof(*linux_gidset), M_LINUX, M_WAITOK);
+	for (int i = 0; i < ngrp; ++i)
+		linux_gidset[i] = cred->cr_groups[i];
 
 	error = copyout(linux_gidset, args->grouplist, ngrp * sizeof(l_gid_t));
 	free(linux_gidset, M_LINUX);
-	if (error)
+
+	if (error != 0)
 		return (error);
 
 	td->td_retval[0] = ngrp;
@@ -1125,16 +1102,16 @@ linux_getgroups(struct thread *td, struct linux_getgroups_args *args)
 }
 
 static bool
-linux_get_dummy_limit(l_uint resource, struct rlimit *rlim)
+linux_get_dummy_limit(struct thread *td, l_uint resource, struct rlimit *rlim)
 {
+	ssize_t size;
+	int res, error;
 
 	if (linux_dummy_rlimits == 0)
 		return (false);
 
 	switch (resource) {
 	case LINUX_RLIMIT_LOCKS:
-	case LINUX_RLIMIT_SIGPENDING:
-	case LINUX_RLIMIT_MSGQUEUE:
 	case LINUX_RLIMIT_RTTIME:
 		rlim->rlim_cur = LINUX_RLIM_INFINITY;
 		rlim->rlim_max = LINUX_RLIM_INFINITY;
@@ -1143,6 +1120,23 @@ linux_get_dummy_limit(l_uint resource, struct rlimit *rlim)
 	case LINUX_RLIMIT_RTPRIO:
 		rlim->rlim_cur = 0;
 		rlim->rlim_max = 0;
+		return (true);
+	case LINUX_RLIMIT_SIGPENDING:
+		error = kernel_sysctlbyname(td,
+		    "kern.sigqueue.max_pending_per_proc",
+		    &res, &size, 0, 0, 0, 0);
+		if (error != 0)
+			return (false);
+		rlim->rlim_cur = res;
+		rlim->rlim_max = res;
+		return (true);
+	case LINUX_RLIMIT_MSGQUEUE:
+		error = kernel_sysctlbyname(td,
+		    "kern.ipc.msgmnb", &res, &size, 0, 0, 0, 0);
+		if (error != 0)
+			return (false);
+		rlim->rlim_cur = res;
+		rlim->rlim_max = res;
 		return (true);
 	default:
 		return (false);
@@ -1181,7 +1175,7 @@ linux_old_getrlimit(struct thread *td, struct linux_old_getrlimit_args *args)
 	struct rlimit bsd_rlim;
 	u_int which;
 
-	if (linux_get_dummy_limit(args->resource, &bsd_rlim)) {
+	if (linux_get_dummy_limit(td, args->resource, &bsd_rlim)) {
 		rlim.rlim_cur = bsd_rlim.rlim_cur;
 		rlim.rlim_max = bsd_rlim.rlim_max;
 		return (copyout(&rlim, args->rlim, sizeof(rlim)));
@@ -1222,7 +1216,7 @@ linux_getrlimit(struct thread *td, struct linux_getrlimit_args *args)
 	struct rlimit bsd_rlim;
 	u_int which;
 
-	if (linux_get_dummy_limit(args->resource, &bsd_rlim)) {
+	if (linux_get_dummy_limit(td, args->resource, &bsd_rlim)) {
 		rlim.rlim_cur = bsd_rlim.rlim_cur;
 		rlim.rlim_max = bsd_rlim.rlim_max;
 		return (copyout(&rlim, args->rlim, sizeof(rlim)));
@@ -1801,6 +1795,14 @@ linux_prctl(struct thread *td, struct linux_prctl_args *args)
 #endif
 		error = EINVAL;
 		break;
+	case LINUX_PR_SET_CHILD_SUBREAPER:
+		if (args->arg2 == 0) {
+			return (kern_procctl(td, P_PID, 0, PROC_REAP_RELEASE,
+			    NULL));
+		}
+
+		return (kern_procctl(td, P_PID, 0, PROC_REAP_ACQUIRE,
+		    NULL));
 	case LINUX_PR_SET_NO_NEW_PRIVS:
 		arg = args->arg2 == 1 ?
 		    PROC_NO_NEW_PRIVS_ENABLE : PROC_NO_NEW_PRIVS_DISABLE;
@@ -2009,7 +2011,7 @@ linux_prlimit64(struct thread *td, struct linux_prlimit64_args *args)
 	int error;
 
 	if (args->new == NULL && args->old != NULL) {
-		if (linux_get_dummy_limit(args->resource, &rlim)) {
+		if (linux_get_dummy_limit(td, args->resource, &rlim)) {
 			lrlim.rlim_cur = rlim.rlim_cur;
 			lrlim.rlim_max = rlim.rlim_max;
 			return (copyout(&lrlim, args->old, sizeof(lrlim)));
@@ -2586,7 +2588,7 @@ linux_seccomp(struct thread *td, struct linux_seccomp_args *args)
  */
 static int
 linux_exec_copyin_args(struct image_args *args, const char *fname,
-    enum uio_seg segflg, l_uintptr_t *argv, l_uintptr_t *envv)
+    l_uintptr_t *argv, l_uintptr_t *envv)
 {
 	char *argp, *envp;
 	l_uintptr_t *ptr, arg;
@@ -2607,7 +2609,7 @@ linux_exec_copyin_args(struct image_args *args, const char *fname,
 	/*
 	 * Copy the file name.
 	 */
-	error = exec_args_add_fname(args, fname, segflg);
+	error = exec_args_add_fname(args, fname, UIO_USERSPACE);
 	if (error != 0)
 		goto err_exit;
 
@@ -2670,8 +2672,8 @@ linux_execve(struct thread *td, struct linux_execve_args *args)
 
 	LINUX_CTR(execve);
 
-	error = linux_exec_copyin_args(&eargs, args->path, UIO_USERSPACE,
-	    args->argp, args->envp);
+	error = linux_exec_copyin_args(&eargs, args->path, args->argp,
+	    args->envp);
 	if (error == 0)
 		error = linux_common_execve(td, &eargs);
 	AUDIT_SYSCALL_EXIT(error == EJUSTRETURN ? 0 : error, td);
@@ -2946,3 +2948,150 @@ linux_ioprio_set(struct thread *td, struct linux_ioprio_set_args *args)
 	}
 	return (error);
 }
+
+/* The only flag is O_NONBLOCK */
+#define B2L_MQ_FLAGS(bflags)	((bflags) != 0 ? LINUX_O_NONBLOCK : 0)
+#define L2B_MQ_FLAGS(lflags)	((lflags) != 0 ? O_NONBLOCK : 0)
+
+int
+linux_mq_open(struct thread *td, struct linux_mq_open_args *args)
+{
+	struct mq_attr attr;
+	int error, flags;
+
+	flags = linux_common_openflags(args->oflag);
+	if ((flags & O_ACCMODE) == O_ACCMODE || (flags & O_EXEC) != 0)
+		return (EINVAL);
+	flags = FFLAGS(flags);
+	if ((flags & O_CREAT) != 0 && args->attr != NULL) {
+		error = copyin(args->attr, &attr, sizeof(attr));
+		if (error != 0)
+			return (error);
+		attr.mq_flags = L2B_MQ_FLAGS(attr.mq_flags);
+	}
+
+	return (kern_kmq_open(td, args->name, flags, args->mode,
+	    args->attr != NULL ? &attr : NULL));
+}
+
+int
+linux_mq_unlink(struct thread *td, struct linux_mq_unlink_args *args)
+{
+	struct kmq_unlink_args bsd_args = {
+		.path = PTRIN(args->name)
+	};
+
+	return (sys_kmq_unlink(td, &bsd_args));
+}
+
+int
+linux_mq_timedsend(struct thread *td, struct linux_mq_timedsend_args *args)
+{
+	struct timespec ts, *abs_timeout;
+	int error;
+
+	if (args->abs_timeout == NULL)
+		abs_timeout = NULL;
+	else {
+		error = linux_get_timespec(&ts, args->abs_timeout);
+		if (error != 0)
+			return (error);
+		abs_timeout = &ts;
+	}
+
+	return (kern_kmq_timedsend(td, args->mqd, PTRIN(args->msg_ptr),
+		args->msg_len, args->msg_prio, abs_timeout));
+}
+
+int
+linux_mq_timedreceive(struct thread *td, struct linux_mq_timedreceive_args *args)
+{
+	struct timespec ts, *abs_timeout;
+	int error;
+
+	if (args->abs_timeout == NULL)
+		abs_timeout = NULL;
+	else {
+		error = linux_get_timespec(&ts, args->abs_timeout);
+		if (error != 0)
+			return (error);
+		abs_timeout = &ts;
+	}
+
+	return (kern_kmq_timedreceive(td, args->mqd, PTRIN(args->msg_ptr),
+		args->msg_len, args->msg_prio, abs_timeout));
+}
+
+int
+linux_mq_notify(struct thread *td, struct linux_mq_notify_args *args)
+{
+	struct sigevent ev, *evp;
+	struct l_sigevent l_ev;
+	int error;
+
+	if (args->sevp == NULL)
+		evp = NULL;
+	else {
+		error = copyin(args->sevp, &l_ev, sizeof(l_ev));
+		if (error != 0)
+			return (error);
+		error = linux_convert_l_sigevent(&l_ev, &ev);
+		if (error != 0)
+			return (error);
+		evp = &ev;
+	}
+
+	return (kern_kmq_notify(td, args->mqd, evp));
+}
+
+int
+linux_mq_getsetattr(struct thread *td, struct linux_mq_getsetattr_args *args)
+{
+	struct mq_attr attr, oattr;
+	int error;
+
+	if (args->attr != NULL) {
+		error = copyin(args->attr, &attr, sizeof(attr));
+		if (error != 0)
+			return (error);
+		attr.mq_flags = L2B_MQ_FLAGS(attr.mq_flags);
+	}
+
+	error = kern_kmq_setattr(td, args->mqd, args->attr != NULL ? &attr : NULL,
+	    &oattr);
+	if (error == 0 && args->oattr != NULL) {
+		oattr.mq_flags = B2L_MQ_FLAGS(oattr.mq_flags);
+		bzero(oattr.__reserved, sizeof(oattr.__reserved));
+		error = copyout(&oattr, args->oattr, sizeof(oattr));
+	}
+
+	return (error);
+}
+
+int
+linux_kcmp(struct thread *td, struct linux_kcmp_args *args)
+{
+	int type;
+
+	switch (args->type) {
+	case LINUX_KCMP_FILE:
+		type = KCMP_FILE;
+		break;
+	case LINUX_KCMP_FILES:
+		type = KCMP_FILES;
+		break;
+	case LINUX_KCMP_SIGHAND:
+		type = KCMP_SIGHAND;
+		break;
+	case LINUX_KCMP_VM:
+		type = KCMP_VM;
+		break;
+	default:
+		return (EINVAL);
+	}
+
+	return (kern_kcmp(td, args->pid1, args->pid2, type, args->idx1,
+	    args->idx));
+}
+
+MODULE_DEPEND(linux, mqueuefs, 1, 1, 1);

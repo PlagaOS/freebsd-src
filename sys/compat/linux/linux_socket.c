@@ -135,7 +135,6 @@ linux_to_bsd_ip_sockopt(int opt)
 		LINUX_RATELIMIT_MSG_NOTTESTED("IPv4 socket option IP_RECVTTL");
 		return (IP_RECVTTL);
 	case LINUX_IP_RECVTOS:
-		LINUX_RATELIMIT_MSG_NOTTESTED("IPv4 socket option IP_RECVTOS");
 		return (IP_RECVTOS);
 	case LINUX_IP_FREEBIND:
 		LINUX_RATELIMIT_MSG_NOTTESTED("IPv4 socket option IP_FREEBIND");
@@ -501,6 +500,11 @@ linux_to_bsd_ip6_sockopt(int opt)
 		    "unsupported IPv6 socket option IPV6_RECVFRAGSIZE (%d)",
 		    opt);
 		return (-2);
+	case LINUX_IPV6_RECVERR:
+		LINUX_RATELIMIT_MSG_OPT1(
+		    "unsupported IPv6 socket option IPV6_RECVERR (%d), you can not get extended reliability info in linux programs",
+		    opt);
+		return (-2);
 
 	/* unknown sockopts */
 	default:
@@ -658,6 +662,8 @@ bsd_to_linux_ip_cmsg_type(int cmsg_type)
 	switch (cmsg_type) {
 	case IP_RECVORIGDSTADDR:
 		return (LINUX_IP_RECVORIGDSTADDR);
+	case IP_RECVTOS:
+		return (LINUX_IP_TOS);
 	}
 	return (-1);
 }
@@ -870,7 +876,8 @@ static const char *linux_netlink_names[] = {
 int
 linux_socket(struct thread *td, struct linux_socket_args *args)
 {
-	int domain, retval_socket, type;
+	int retval_socket, type;
+	sa_family_t domain;
 
 	type = args->type & LINUX_SOCK_TYPE_MASK;
 	if (type < 0 || type > LINUX_SOCK_MAX)
@@ -880,7 +887,7 @@ linux_socket(struct thread *td, struct linux_socket_args *args)
 	if (retval_socket != 0)
 		return (retval_socket);
 	domain = linux_to_bsd_domain(args->domain);
-	if (domain == -1) {
+	if (domain == AF_UNKNOWN) {
 		/* Mask off SOCK_NONBLOCK / CLOEXEC for error messages. */
 		type = args->type & LINUX_SOCK_TYPE_MASK;
 		if (args->domain == LINUX_AF_NETLINK &&
@@ -1852,7 +1859,7 @@ linux_recvmsg_common(struct thread *td, l_int s, struct l_msghdr *msghdr,
 		lcm->cmsg_level = bsd_to_linux_sockopt_level(cm->cmsg_level);
 
 		if (lcm->cmsg_type == -1 ||
-		    cm->cmsg_level == -1) {
+		    lcm->cmsg_level == -1) {
 			LINUX_RATELIMIT_MSG_OPT2(
 			    "unsupported recvmsg cmsg level %d type %d",
 			    cm->cmsg_level, cm->cmsg_type);
@@ -2111,6 +2118,14 @@ linux_setsockopt(struct thread *td, struct linux_setsockopt_args *args)
 		name = linux_to_bsd_ip_sockopt(args->optname);
 		break;
 	case IPPROTO_IPV6:
+		if (args->optname == LINUX_IPV6_RECVERR &&
+		    linux_ignore_ip_recverr) {
+			/*
+			 * XXX: This is a hack to unbreak DNS resolution
+			 *	with glibc 2.30 and above.
+			 */
+			return (0);
+		}
 		name = linux_to_bsd_ip6_sockopt(args->optname);
 		break;
 	case IPPROTO_TCP:
@@ -2131,7 +2146,8 @@ linux_setsockopt(struct thread *td, struct linux_setsockopt_args *args)
 		return (ENOPROTOOPT);
 	}
 
-	if (name == IPV6_NEXTHOP) {
+	switch (name) {
+	case IPV6_NEXTHOP: {
 		len = args->optlen;
 		error = linux_to_bsd_sockaddr(PTRIN(args->optval), &sa, &len);
 		if (error != 0)
@@ -2140,7 +2156,34 @@ linux_setsockopt(struct thread *td, struct linux_setsockopt_args *args)
 		error = kern_setsockopt(td, args->s, level,
 		    name, sa, UIO_SYSSPACE, len);
 		free(sa, M_SONAME);
-	} else {
+		break;
+	}
+	case MCAST_JOIN_GROUP:
+	case MCAST_LEAVE_GROUP:
+	case MCAST_JOIN_SOURCE_GROUP:
+	case MCAST_LEAVE_SOURCE_GROUP: {
+		struct group_source_req req;
+		size_t size;
+
+		size = (name == MCAST_JOIN_SOURCE_GROUP ||
+		    name == MCAST_LEAVE_SOURCE_GROUP) ?
+		    sizeof(struct group_source_req) : sizeof(struct group_req);
+
+		if ((error = copyin(PTRIN(args->optval), &req, size)))
+			return (error);
+		len = sizeof(struct sockaddr_storage);
+		if ((error = linux_to_bsd_sockaddr(
+		    (struct l_sockaddr *)&req.gsr_group, NULL, &len)))
+			return (error);
+		if (size == sizeof(struct group_source_req) &&
+		    (error = linux_to_bsd_sockaddr(
+		    (struct l_sockaddr *)&req.gsr_source, NULL, &len)))
+			return (error);
+		error = kern_setsockopt(td, args->s, level, name, &req,
+		    UIO_SYSSPACE, size);
+		break;
+	}
+	default:
 		error = kern_setsockopt(td, args->s, level,
 		    name, PTRIN(args->optval), UIO_USERSPACE, args->optlen);
 	}
@@ -2164,6 +2207,7 @@ static int
 linux_getsockopt_so_peergroups(struct thread *td,
     struct linux_getsockopt_args *args)
 {
+	l_gid_t *out = PTRIN(args->optval);
 	struct xucred xu;
 	socklen_t xulen, len;
 	int error, i;
@@ -2182,13 +2226,12 @@ linux_getsockopt_so_peergroups(struct thread *td,
 		return (error);
 	}
 
-	/*
-	 * "- 1" to skip the primary group.
-	 */
+	/* "- 1" to skip the primary group. */
 	for (i = 0; i < xu.cr_ngroups - 1; i++) {
-		error = copyout(xu.cr_groups + i + 1,
-		    (void *)(args->optval + i * sizeof(l_gid_t)),
-		    sizeof(l_gid_t));
+		/* Copy to cope with a possible type discrepancy. */
+		const l_gid_t g = xu.cr_groups[i + 1];
+
+		error = copyout(&g, out + i, sizeof(l_gid_t));
 		if (error != 0)
 			return (error);
 	}
@@ -2309,8 +2352,8 @@ linux_getsockopt(struct thread *td, struct linux_getsockopt_args *args)
 			    name, &newval, UIO_SYSSPACE, &len);
 			if (error != 0)
 				return (error);
-			newval = bsd_to_linux_domain(newval);
-			if (newval == -1)
+			newval = bsd_to_linux_domain((sa_family_t)newval);
+			if (newval == AF_UNKNOWN)
 				return (ENOPROTOOPT);
 			return (linux_sockopt_copyout(td, &newval,
 			    len, args));
@@ -2454,7 +2497,7 @@ sendfile_fallback(struct thread *td, struct file *fp, l_int out,
 		out_offset = 0;
 
 	flags = FOF_OFFSET | FOF_NOUPDATE;
-	bufsz = min(count, MAXPHYS);
+	bufsz = min(count, maxphys);
 	buf = malloc(bufsz, M_LINUX, M_WAITOK);
 	bytes_sent = 0;
 	while (bytes_sent < count) {
@@ -2524,6 +2567,13 @@ sendfile_sendfile(struct thread *td, struct file *fp, l_int out,
 		current_offset = *offset;
 	error = fo_sendfile(fp, out, NULL, NULL, current_offset, count,
 	    sbytes, 0, td);
+	if (error == EAGAIN && *sbytes > 0) {
+		/*
+		 * The socket is non-blocking and we didn't finish sending.
+		 * Squash the error, since that's what Linux does.
+		 */
+		error = 0;
+	}
 	if (error == 0) {
 		current_offset += *sbytes;
 		if (offset != NULL)

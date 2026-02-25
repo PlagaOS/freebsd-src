@@ -36,8 +36,8 @@ CFLAGS+=	-DNDEBUG
 TARGET_ARCH?=	${MACHINE_ARCH}
 BUILD_ARCH?=	${MACHINE_ARCH}
 
-# Armv6 and armv7 uses hard float abi, unless the CPUTYPE has soft in it.
-# For all other targets, we stick with 'unknown'.
+# Arm uses hard float abi, unless the CPUTYPE has soft in it.  For all other
+# targets, we stick with 'unknown'.
 .if ${TARGET_ARCH:Marm*}
 .if !defined(CPUTYPE) || ${CPUTYPE:M*soft*} == ""
 TARGET_TRIPLE_ABI=-gnueabihf
@@ -109,11 +109,20 @@ CFLAGS+=	-fdata-sections
 LDFLAGS+=	-Wl,-dead_strip
 .else
 LDFLAGS+=	-Wl,--gc-sections
+# XXX: --gc-sections strips the ELF brand note and on RISC-V the OS/ABI ends up
+# as NONE, so for statically-linked binaries, i.e. lacking an interpreter,
+# get_brandinfo finds nothing and (f)execve fails with ENOEXEC. Work around
+# this by manually setting the OS/ABI field via the emulation.
+.if ${MACHINE_ARCH:Mriscv64*} != "" && ${NO_SHARED:Uno:tl} != "no" && \
+    (${.MAKE.OS} == "FreeBSD" || !defined(BOOTSTRAPPING))
+LDFLAGS+=	-Wl,-m,elf64lriscv_fbsd
+.endif
 .endif
 
-CXXSTD?=	c++17
+CXXSTD=		c++17
 CXXFLAGS+=	-fno-exceptions
 CXXFLAGS+=	-fno-rtti
+CXXFLAGS+=	-fvisibility-inlines-hidden
 .if ${.MAKE.OS} == "FreeBSD" || !defined(BOOTSTRAPPING)
 CXXFLAGS.clang+= -stdlib=libc++
 .else

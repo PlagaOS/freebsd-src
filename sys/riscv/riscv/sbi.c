@@ -132,6 +132,11 @@ sbi_print_version(void)
 	case (SBI_IMPL_ID_BBL):
 		printf("SBI: Berkely Boot Loader %lu\n", sbi_impl_version);
 		break;
+	case (SBI_IMPL_ID_OPENSBI):
+		major = sbi_impl_version >> OPENSBI_VERSION_MAJOR_OFFSET;
+		minor = sbi_impl_version & OPENSBI_VERSION_MINOR_MASK;
+		printf("SBI: OpenSBI v%u.%u\n", major, minor);
+		break;
 	case (SBI_IMPL_ID_XVISOR):
 		printf("SBI: eXtensible Versatile hypervISOR %lu\n",
 		    sbi_impl_version);
@@ -146,10 +151,24 @@ sbi_print_version(void)
 	case (SBI_IMPL_ID_DIOSIX):
 		printf("SBI: Diosix %lu\n", sbi_impl_version);
 		break;
-	case (SBI_IMPL_ID_OPENSBI):
-		major = sbi_impl_version >> OPENSBI_VERSION_MAJOR_OFFSET;
-		minor = sbi_impl_version & OPENSBI_VERSION_MINOR_MASK;
-		printf("SBI: OpenSBI v%u.%u\n", major, minor);
+	case (SBI_IMPL_ID_COFFER):
+		printf("SBI: Coffer %lu\n", sbi_impl_version);
+		break;
+	case (SBI_IMPL_ID_XEN_PROJECT):
+		printf("SBI: Xen Project %lu\n", sbi_impl_version);
+		break;
+	case (SBI_IMPL_ID_POLARFIRE_HSS):
+		printf("SBI: PolarFire Hart Software Services %lu\n",
+		    sbi_impl_version);
+		break;
+	case (SBI_IMPL_ID_COREBOOT):
+		printf("SBI: coreboot %lu\n", sbi_impl_version);
+		break;
+	case (SBI_IMPL_ID_OREBOOT):
+		printf("SBI: oreboot %lu\n", sbi_impl_version);
+		break;
+	case (SBI_IMPL_ID_BHYVE):
+		printf("SBI: bhyve %lu\n", sbi_impl_version);
 		break;
 	default:
 		printf("SBI: Unrecognized Implementation: %lu\n", sbi_impl_id);
@@ -332,10 +351,10 @@ sbi_identify(driver_t *driver, device_t parent)
 {
 	device_t dev;
 
-	if (device_find_child(parent, "sbi", -1) != NULL)
+	if (device_find_child(parent, "sbi", DEVICE_UNIT_ANY) != NULL)
 		return;
 
-	dev = BUS_ADD_CHILD(parent, 0, "sbi", -1);
+	dev = BUS_ADD_CHILD(parent, 0, "sbi", DEVICE_UNIT_ANY);
 	if (dev == NULL)
 		device_printf(parent, "Can't add sbi child\n");
 }
@@ -370,7 +389,7 @@ sbi_attach(device_t dev)
 #ifdef SMP
 	di = malloc(sizeof(*di), M_DEVBUF, M_WAITOK | M_ZERO);
 	resource_list_init(&di->rl);
-	child = device_add_child(dev, "sbi_ipi", -1);
+	child = device_add_child(dev, "sbi_ipi", DEVICE_UNIT_ANY);
 	if (child == NULL) {
 		device_printf(dev, "Could not add sbi_ipi child\n");
 		return (ENXIO);

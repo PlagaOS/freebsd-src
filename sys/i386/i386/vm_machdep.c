@@ -91,7 +91,8 @@ get_pcb_user_save_td(struct thread *td)
 
 	p = td->td_kstack + td->td_kstack_pages * PAGE_SIZE -
 	    roundup2(cpu_max_ext_state_size, XSAVE_AREA_ALIGN);
-	KASSERT((p % XSAVE_AREA_ALIGN) == 0, ("Unaligned pcb_user_save area"));
+	KASSERT(__is_aligned(p, XSAVE_AREA_ALIGN),
+	    ("Unaligned pcb_user_save area"));
 	return ((union savefpu *)p);
 }
 
@@ -375,16 +376,6 @@ cpu_thread_clean(struct thread *td)
 }
 
 void
-cpu_thread_swapin(struct thread *td)
-{
-}
-
-void
-cpu_thread_swapout(struct thread *td)
-{
-}
-
-void
 cpu_thread_alloc(struct thread *td)
 {
 	struct pcb *pcb;
@@ -490,16 +481,6 @@ int
 cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
     stack_t *stack)
 {
-
-	/* 
-	 * Do any extra cleaning that needs to be done.
-	 * The thread may have optional components
-	 * that are not present in a fresh thread.
-	 * This may be a recycled thread so make it look
-	 * as though it's newly allocated.
-	 */
-	cpu_thread_clean(td);
-
 	/*
 	 * Set the trap frame to point at the beginning of the entry
 	 * function.
@@ -521,7 +502,7 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 }
 
 int
-cpu_set_user_tls(struct thread *td, void *tls_base)
+cpu_set_user_tls(struct thread *td, void *tls_base, int thr_flags __unused)
 {
 	struct segment_descriptor sd;
 	uint32_t base;
@@ -552,6 +533,13 @@ cpu_set_user_tls(struct thread *td, void *tls_base)
 	}
 	critical_exit();
 	return (0);
+}
+
+void
+cpu_update_pcb(struct thread *td)
+{
+	MPASS(td == curthread);
+	td->td_pcb->pcb_gs = rgs();
 }
 
 /*

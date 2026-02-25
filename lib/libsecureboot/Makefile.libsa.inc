@@ -1,4 +1,3 @@
-
 BRSSL_CFLAGS+= -DNO_STDIO
 
 .include "Makefile.inc"
@@ -23,8 +22,8 @@ SRCS+= \
 
 # Add includes required by efi part
 CFLAGS+= \
+	-I${SRCTOP}/sys/contrib/edk2/Include \
 	-I${SRCTOP}/stand/efi/include \
-	-I${SRCTOP}/lib/libsecureboot/efi/include \
 	-I${SRCTOP}/stand/efi/include/${MACHINE}
 .endif
 

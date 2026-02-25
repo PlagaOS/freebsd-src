@@ -40,7 +40,7 @@
  * API version for out-of-tree consumers like grub-bhyve for making compile
  * time decisions.
  */
-#define	VMMAPI_VERSION	0200	/* 2 digit major followed by 2 digit minor */
+#define	VMMAPI_VERSION	0300	/* 2 digit major followed by 2 digit minor */
 
 struct iovec;
 struct vcpu;
@@ -64,16 +64,12 @@ enum vm_mmap_style {
 #define	VM_MEM_F_INCORE	0x01	/* include guest memory in core file */
 #define	VM_MEM_F_WIRED	0x02	/* guest memory is wired */
 
-/*
- * Identifiers for memory segments:
- * - vm_setup_memory() uses VM_SYSMEM for the system memory segment.
- * - the remaining identifiers can be used to create devmem segments.
- */
-enum {
-	VM_SYSMEM,
-	VM_BOOTROM,
-	VM_FRAMEBUFFER,
-	VM_PCIROM,
+/* Memory size and allocation policy for a single NUMA domain. */
+struct vm_mem_domain {
+	size_t size;
+	int ds_policy;
+	domainset_t *ds_mask;
+	size_t ds_size;
 };
 
 __BEGIN_DECLS
@@ -117,6 +113,10 @@ int	vm_munmap_memseg(struct vmctx *ctx, vm_paddr_t gpa, size_t len);
 
 int	vm_create(const char *name);
 struct vmctx *vm_open(const char *name);
+#define	VMMAPI_OPEN_CREATE	0x01	/* create if the VM does not exist */
+#define	VMMAPI_OPEN_REINIT	0x02	/* reinitialize the VM if it exists */
+#define	VMMAPI_OPEN_CREATE_DESTROY_ON_CLOSE	0x04	/* Destroy the VM when closing vmm_ctl */
+struct vmctx *vm_openf(const char *name, int flags);
 void	vm_close(struct vmctx *ctx);
 void	vm_destroy(struct vmctx *ctx);
 int	vm_limit_rights(struct vmctx *ctx);
@@ -124,28 +124,34 @@ struct vcpu *vm_vcpu_open(struct vmctx *ctx, int vcpuid);
 void	vm_vcpu_close(struct vcpu *vcpu);
 int	vcpu_id(struct vcpu *vcpu);
 int	vm_parse_memsize(const char *optarg, size_t *memsize);
-int	vm_setup_memory(struct vmctx *ctx, size_t len, enum vm_mmap_style s);
+int vm_setup_memory(struct vmctx *ctx, size_t len, enum vm_mmap_style s);
+int vm_setup_memory_domains(struct vmctx *ctx, enum vm_mmap_style s,
+			    struct vm_mem_domain *doms, int ndoms);
 void	*vm_map_gpa(struct vmctx *ctx, vm_paddr_t gaddr, size_t len);
 /* inverse operation to vm_map_gpa - extract guest address from host pointer */
 vm_paddr_t vm_rev_map_gpa(struct vmctx *ctx, void *addr);
+#ifdef __amd64__
 int	vm_get_gpa_pmap(struct vmctx *, uint64_t gpa, uint64_t *pte, int *num);
 int	vm_gla2gpa(struct vcpu *vcpu, struct vm_guest_paging *paging,
 		   uint64_t gla, int prot, uint64_t *gpa, int *fault);
+#endif
 int	vm_gla2gpa_nofault(struct vcpu *vcpu,
 		   struct vm_guest_paging *paging, uint64_t gla, int prot,
 		   uint64_t *gpa, int *fault);
 uint32_t vm_get_lowmem_limit(struct vmctx *ctx);
-void	vm_set_lowmem_limit(struct vmctx *ctx, uint32_t limit);
 void	vm_set_memflags(struct vmctx *ctx, int flags);
 int	vm_get_memflags(struct vmctx *ctx);
 const char *vm_get_name(struct vmctx *ctx);
 size_t	vm_get_lowmem_size(struct vmctx *ctx);
+vm_paddr_t vm_get_highmem_base(struct vmctx *ctx);
 size_t	vm_get_highmem_size(struct vmctx *ctx);
+#ifdef __amd64__
 int	vm_set_desc(struct vcpu *vcpu, int reg,
 		    uint64_t base, uint32_t limit, uint32_t access);
 int	vm_get_desc(struct vcpu *vcpu, int reg,
 		    uint64_t *base, uint32_t *limit, uint32_t *access);
 int	vm_get_seg_desc(struct vcpu *vcpu, int reg, struct seg_desc *seg_desc);
+#endif
 int	vm_set_register(struct vcpu *vcpu, int reg, uint64_t val);
 int	vm_get_register(struct vcpu *vcpu, int reg, uint64_t *retval);
 int	vm_set_register_set(struct vcpu *vcpu, unsigned int count,
@@ -155,6 +161,21 @@ int	vm_get_register_set(struct vcpu *vcpu, unsigned int count,
 int	vm_run(struct vcpu *vcpu, struct vm_run *vmrun);
 int	vm_suspend(struct vmctx *ctx, enum vm_suspend_how how);
 int	vm_reinit(struct vmctx *ctx);
+int	vm_raise_msi(struct vmctx *ctx, uint64_t addr, uint64_t msg,
+    int bus, int slot, int func);
+#if defined(__aarch64__)
+int	vm_attach_vgic(struct vmctx *ctx, uint64_t dist_start, size_t dist_size,
+    uint64_t redist_start, size_t redist_size);
+int	vm_inject_exception(struct vcpu *vcpu, uint64_t esr, uint64_t far);
+#elif defined(__riscv)
+int	vm_attach_aplic(struct vmctx *ctx, uint64_t mem_start, size_t mem_size);
+int	vm_inject_exception(struct vcpu *vcpu, uint64_t scause);
+#endif
+#if defined(__aarch64__) || defined(__riscv)
+int	vm_assert_irq(struct vmctx *ctx, uint32_t irq);
+int	vm_deassert_irq(struct vmctx *ctx, uint32_t irq);
+#endif
+#ifdef __amd64__
 int	vm_apicid2vcpu(struct vmctx *ctx, int apicid);
 int	vm_inject_exception(struct vcpu *vcpu, int vector,
     int errcode_valid, uint32_t errcode, int restart_instruction);
@@ -165,14 +186,15 @@ int	vm_ioapic_assert_irq(struct vmctx *ctx, int irq);
 int	vm_ioapic_deassert_irq(struct vmctx *ctx, int irq);
 int	vm_ioapic_pulse_irq(struct vmctx *ctx, int irq);
 int	vm_ioapic_pincount(struct vmctx *ctx, int *pincount);
-int	vm_readwrite_kernemu_device(struct vcpu *vcpu,
-	    vm_paddr_t gpa, bool write, int size, uint64_t *value);
 int	vm_isa_assert_irq(struct vmctx *ctx, int atpic_irq, int ioapic_irq);
 int	vm_isa_deassert_irq(struct vmctx *ctx, int atpic_irq, int ioapic_irq);
 int	vm_isa_pulse_irq(struct vmctx *ctx, int atpic_irq, int ioapic_irq);
 int	vm_isa_set_irq_trigger(struct vmctx *ctx, int atpic_irq,
 	    enum vm_intr_trigger trigger);
 int	vm_inject_nmi(struct vcpu *vcpu);
+int	vm_readwrite_kernemu_device(struct vcpu *vcpu,
+	    vm_paddr_t gpa, bool write, int size, uint64_t *value);
+#endif
 int	vm_capability_name2type(const char *capname);
 const char *vm_capability_type2name(int type);
 int	vm_get_capability(struct vcpu *vcpu, enum vm_cap_type cap,
@@ -202,6 +224,7 @@ uint64_t *vm_get_stats(struct vcpu *vcpu, struct timeval *ret_tv,
 		       int *ret_entries);
 const char *vm_get_stat_desc(struct vmctx *ctx, int index);
 
+#ifdef __amd64__
 int	vm_get_x2apic_state(struct vcpu *vcpu, enum x2apic_state *s);
 int	vm_set_x2apic_state(struct vcpu *vcpu, enum x2apic_state s);
 
@@ -219,15 +242,18 @@ int	vm_get_hpet_capabilities(struct vmctx *ctx, uint32_t *capabilities);
 int	vm_copy_setup(struct vcpu *vcpu, struct vm_guest_paging *pg,
 	    uint64_t gla, size_t len, int prot, struct iovec *iov, int iovcnt,
 	    int *fault);
+#endif
 void	vm_copyin(struct iovec *guest_iov, void *host_dst, size_t len);
 void	vm_copyout(const void *host_src, struct iovec *guest_iov, size_t len);
 void	vm_copy_teardown(struct iovec *iov, int iovcnt);
 
+#ifdef __amd64__
 /* RTC */
 int	vm_rtc_write(struct vmctx *ctx, int offset, uint8_t value);
 int	vm_rtc_read(struct vmctx *ctx, int offset, uint8_t *retval);
 int	vm_rtc_settime(struct vmctx *ctx, time_t secs);
 int	vm_rtc_gettime(struct vmctx *ctx, time_t *secs);
+#endif
 
 /* Reset vcpu register state */
 int	vcpu_reset(struct vcpu *vcpu);

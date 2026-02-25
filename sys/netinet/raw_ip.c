@@ -30,7 +30,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
@@ -50,6 +49,7 @@
 #include <sys/signalvar.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
+#include <sys/stdarg.h>
 #include <sys/sx.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
@@ -75,7 +75,6 @@
 
 #include <netipsec/ipsec_support.h>
 
-#include <machine/stdarg.h>
 #include <security/mac/mac_framework.h>
 
 extern ipproto_input_t *ip_protox[];
@@ -107,16 +106,16 @@ int	(*ng_ipfw_input_p)(struct mbuf **, struct ip_fw_args *, bool);
  */
 
 /*
- * The socket used to communicate with the multicast routing daemon.
+ * A per-VNET flag indicating whether multicast routing is enabled.
  */
-VNET_DEFINE(struct socket *, ip_mrouter);
+VNET_DEFINE(bool, ip_mrouting_enabled);
 
 /*
  * The various mrouter and rsvp functions.
  */
 int (*ip_mrouter_set)(struct socket *, struct sockopt *);
 int (*ip_mrouter_get)(struct socket *, struct sockopt *);
-int (*ip_mrouter_done)(void);
+void (*ip_mrouter_done)(struct socket *);
 int (*ip_mforward)(struct ip *, struct ifnet *, struct mbuf *,
 		   struct ip_moptions *);
 int (*mrt_ioctl)(u_long, caddr_t, int);
@@ -127,6 +126,12 @@ int (*rsvp_input_p)(struct mbuf **, int *, int);
 int (*ip_rsvp_vif)(struct socket *, struct sockopt *);
 void (*ip_rsvp_force_done)(struct socket *);
 #endif /* INET */
+
+#define	V_rip_bind_all_fibs	VNET(rip_bind_all_fibs)
+VNET_DEFINE(int, rip_bind_all_fibs) = 1;
+SYSCTL_INT(_net_inet_raw, OID_AUTO, bind_all_fibs, CTLFLAG_VNET | CTLFLAG_RDTUN,
+    &VNET_NAME(rip_bind_all_fibs), 0,
+    "Bound sockets receive traffic from all FIBs");
 
 u_long	rip_sendspace = 9216;
 SYSCTL_ULONG(_net_inet_raw, OID_AUTO, maxdgram, CTLFLAG_RW,
@@ -302,7 +307,9 @@ rip_input(struct mbuf **mp, int *offp, int proto)
 	struct mbuf *m = *mp;
 	struct inpcb *inp;
 	struct sockaddr_in ripsrc;
-	int appended;
+	int appended, fib;
+
+	M_ASSERTPKTHDR(m);
 
 	*mp = NULL;
 	appended = 0;
@@ -312,6 +319,7 @@ rip_input(struct mbuf **mp, int *offp, int proto)
 	ripsrc.sin_family = AF_INET;
 	ripsrc.sin_addr = ctx.ip->ip_src;
 
+	fib = M_GETFIB(m);
 	ifp = m->m_pkthdr.rcvif;
 
 	inpi.hash = INP_PCBHASH_RAW(proto, ctx.ip->ip_src.s_addr,
@@ -326,6 +334,12 @@ rip_input(struct mbuf **mp, int *offp, int proto)
 			 */
 			continue;
 		}
+		if (V_rip_bind_all_fibs == 0 && fib != inp->inp_inc.inc_fibnum)
+			/*
+			 * Sockets bound to a specific FIB can only receive
+			 * packets from that FIB.
+			 */
+			continue;
 		appended += rip_append(inp, ctx.ip, m, &ripsrc);
 	}
 
@@ -343,6 +357,9 @@ rip_input(struct mbuf **mp, int *offp, int proto)
 			 * and fall through into normal filter path if so.
 			 */
 			continue;
+		if (V_rip_bind_all_fibs == 0 && fib != inp->inp_inc.inc_fibnum)
+			continue;
+
 		/*
 		 * If this raw socket has multicast state, and we
 		 * have received a multicast, check if this socket
@@ -584,7 +601,7 @@ rip_send(struct socket *so, int pruflags, struct mbuf *m, struct sockaddr *nam,
 		 * but we got this limitation from the beginning of history.
 		 */
 		if (ip->ip_id == 0)
-			ip_fillid(ip);
+			ip_fillid(ip, V_ip_random_id);
 
 		/*
 		 * XXX prevent ip_output from overwriting header fields.
@@ -625,8 +642,6 @@ rip_send(struct socket *so, int pruflags, struct mbuf *m, struct sockaddr *nam,
  *
  * When adding new socket options here, make sure to add access control
  * checks here as necessary.
- *
- * XXX-BZ inp locking?
  */
 int
 rip_ctloutput(struct socket *so, struct sockopt *sopt)
@@ -635,11 +650,10 @@ rip_ctloutput(struct socket *so, struct sockopt *sopt)
 	int	error, optval;
 
 	if (sopt->sopt_level != IPPROTO_IP) {
-		if ((sopt->sopt_level == SOL_SOCKET) &&
-		    (sopt->sopt_name == SO_SETFIB)) {
-			inp->inp_inc.inc_fibnum = so->so_fibnum;
-			return (0);
-		}
+		if (sopt->sopt_dir == SOPT_SET &&
+		    sopt->sopt_level == SOL_SOCKET &&
+		    sopt->sopt_name == SO_SETFIB)
+			return (ip_ctloutput(so, sopt));
 		return (EINVAL);
 	}
 
@@ -666,7 +680,6 @@ rip_ctloutput(struct socket *so, struct sockopt *sopt)
 			break;
 
 		case IP_DUMMYNET3:	/* generic dummynet v.3 functions */
-		case IP_DUMMYNET_GET:
 			if (ip_dn_ctl_ptr != NULL)
 				error = ip_dn_ctl_ptr(sopt);
 			else
@@ -707,10 +720,12 @@ rip_ctloutput(struct socket *so, struct sockopt *sopt)
 					    sizeof optval);
 			if (error)
 				break;
+			INP_WLOCK(inp);
 			if (optval)
 				inp->inp_flags |= INP_HDRINCL;
 			else
 				inp->inp_flags &= ~INP_HDRINCL;
+			INP_WUNLOCK(inp);
 			break;
 
 		case IP_FW3:	/* generic ipfw v.3 functions */
@@ -731,9 +746,6 @@ rip_ctloutput(struct socket *so, struct sockopt *sopt)
 			break;
 
 		case IP_DUMMYNET3:	/* generic dummynet v.3 functions */
-		case IP_DUMMYNET_CONFIGURE:
-		case IP_DUMMYNET_DEL:
-		case IP_DUMMYNET_FLUSH:
 			if (ip_dn_ctl_ptr != NULL)
 				error = ip_dn_ctl_ptr(sopt);
 			else
@@ -848,8 +860,8 @@ rip_detach(struct socket *so)
 	    ("rip_detach: not closed"));
 
 	/* Disable mrouter first */
-	if (so == V_ip_mrouter && ip_mrouter_done)
-		ip_mrouter_done();
+	if (ip_mrouter_done != NULL)
+		ip_mrouter_done(so);
 
 	INP_WLOCK(inp);
 	INP_HASH_WLOCK(&V_ripcbinfo);

@@ -1,3 +1,4 @@
+.include <src.opts.mk>
 
 CONFS=	misc/mail.rc
 PROG=	mail
@@ -17,5 +18,8 @@ WARNS?=	2
 etc-mailrc:
 	cd ${.CURDIR}/misc; ${INSTALL} -o root -g wheel \
 	    -m 644 ${EFILES} ${DESTDIR}/etc
+
+HAS_TESTS=
+SUBDIR.${MK_TESTS}=	tests
 
 .include <bsd.prog.mk>

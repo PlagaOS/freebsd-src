@@ -1,6 +1,9 @@
 libicp_la_CCASFLAGS = $(AM_CCASFLAGS)
 libicp_la_CFLAGS    = $(AM_CFLAGS) $(KERNEL_CFLAGS) $(LIBRARY_CFLAGS)
 
+libicp_la_CPPFLAGS  = $(AM_CPPFLAGS) $(LIBZPOOL_CPPFLAGS)
+libicp_la_CPPFLAGS += -I$(top_srcdir)/module/icp/include
+
 noinst_LTLIBRARIES += libicp.la
 
 nodist_libicp_la_SOURCES = \
@@ -18,13 +21,10 @@ nodist_libicp_la_SOURCES = \
 	module/icp/algs/blake3/blake3_impl.c \
 	module/icp/algs/edonr/edonr.c \
 	module/icp/algs/modes/modes.c \
-	module/icp/algs/modes/cbc.c \
 	module/icp/algs/modes/gcm_generic.c \
 	module/icp/algs/modes/gcm_pclmulqdq.c \
 	module/icp/algs/modes/gcm.c \
-	module/icp/algs/modes/ctr.c \
 	module/icp/algs/modes/ccm.c \
-	module/icp/algs/modes/ecb.c \
 	module/icp/algs/sha2/sha2_generic.c \
 	module/icp/algs/sha2/sha256_impl.c \
 	module/icp/algs/sha2/sha512_impl.c \
@@ -34,13 +34,11 @@ nodist_libicp_la_SOURCES = \
 	module/icp/illumos-crypto.c \
 	module/icp/io/aes.c \
 	module/icp/io/sha2_mod.c \
-	module/icp/io/skein_mod.c \
 	module/icp/core/kcf_sched.c \
 	module/icp/core/kcf_prov_lib.c \
 	module/icp/core/kcf_callprov.c \
 	module/icp/core/kcf_mech_tabs.c \
-	module/icp/core/kcf_prov_tabs.c \
-	module/zfs/zfs_impl.c
+	module/icp/core/kcf_prov_tabs.c
 
 if TARGET_CPU_AARCH64
 nodist_libicp_la_SOURCES += \
@@ -73,6 +71,7 @@ nodist_libicp_la_SOURCES += \
 	module/icp/asm-x86_64/aes/aes_aesni.S \
 	module/icp/asm-x86_64/modes/gcm_pclmulqdq.S \
 	module/icp/asm-x86_64/modes/aesni-gcm-x86_64.S \
+	module/icp/asm-x86_64/modes/aesni-gcm-avx2-vaes.S \
 	module/icp/asm-x86_64/modes/ghash-x86_64.S \
 	module/icp/asm-x86_64/sha2/sha256-x86_64.S \
 	module/icp/asm-x86_64/sha2/sha512-x86_64.S \

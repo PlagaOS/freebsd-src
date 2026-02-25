@@ -31,10 +31,12 @@ options 	INET6			# IPv6 communications protocols
 options 	TCP_HHOOK		# hhook(9) framework for TCP
 options 	IPSEC_SUPPORT		# Allow kldload of ipsec and tcpmd5
 options 	ROUTE_MPATH		# Multipath routing support
+options		FIB_ALGO		# Modular fib lookups
 options 	TCP_OFFLOAD		# TCP offload
 options 	TCP_BLACKBOX		# Enhanced TCP event logging
 options 	TCP_RFC7413		# TCP Fast Open
 options 	SCTP_SUPPORT		# Allow kldload of SCTP
+options 	KERN_TLS		# TLS transmit & receive offload
 options 	FFS			# Berkeley Fast Filesystem
 options 	SOFTUPDATES		# Enable FFS soft updates support
 options 	UFS_ACL			# Support for access control lists
@@ -83,16 +85,22 @@ device		rcons
 # pseudo devices
 device		clk
 device		hwreset
+device		nvmem
 device		phy
 device		regulator
 device		syscon
 device		syscon_power
 device		riscv_syscon
 
+# CPU frequency control
+device		cpufreq
+
 # Bus drivers
 device		pci
+device		xlnx_pcib		# Xilinx PCIe Controller
 
 # Block devices
+device		ahci
 device		scbus
 device		da
 
@@ -118,12 +126,15 @@ device		uhci			# UHCI USB interface
 device		ehci			# EHCI USB interface (USB 2.0)
 device		xhci			# XHCI USB interface (USB 3.0)
 device		usb			# USB Bus (required)
+device		usbhid			# USB HID Transport
+device		hkbd			# Keyboard
 device		ukbd			# Keyboard
 device		umass			# Disks/Mass storage - Requires scbus and da
 
 # HID support
 options 	HID_DEBUG	# enable debug msgs
 device		hid		# Generic HID support
+device		hidbus		# Generic HID Bus
 
 # Serial (COM) ports
 device		uart		# Generic UART driver
@@ -132,6 +143,7 @@ device		uart_ns8250	# ns8250-type UART driver
 
 # Console
 device		vt
+device		vt_efifb
 device		kbdmux
 
 # RTC
@@ -147,26 +159,19 @@ device		axidma		# Xilinx AXI DMA Controller
 
 # GPIO
 device		gpio
+device		fdt_pinctrl
 
 # SPI
 device		spibus
 device		spigen
+device		xilinx_spi	# Xilinx AXI SPI Controller
 
 # Debugging support.  Always need this:
 options 	KDB			# Enable kernel debugger support.
 options 	KDB_TRACE		# Print a stack trace for a panic.
 # For full debugger support use (turn off in stable branch):
-options 	DDB			# Support DDB.
-options 	GDB			# Support remote GDB.
-options 	DEADLKRES		# Enable the deadlock resolver
-options 	INVARIANTS		# Enable calls of extra sanity checking
-options 	INVARIANT_SUPPORT	# Extra sanity checks of internal structures, required by INVARIANTS
-options 	WITNESS			# Enable checks to detect deadlocks and cycles
-options 	WITNESS_SKIPSPIN	# Don't run witness on spinlocks for speed
-options 	MALLOC_DEBUG_MAXZONES=8	# Separate malloc(9) zones
-options 	ALT_BREAK_TO_DEBUGGER	# Enter debugger on keyboard escape sequence
+include "std.debug"
 # options 	EARLY_PRINTF=sbi
-options 	VERBOSE_SYSINIT=0	# Support debug.verbose_sysinit, off by default
 
 # Kernel dump features.
 options 	EKCD			# Support for encrypted kernel dumps
@@ -195,6 +200,10 @@ device		mmcsd			# MMC/SD flash cards
 # Note that 'bpf' is required for DHCP.
 device		bpf		# Berkeley packet filter
 
+# random(4)
+options 	RANDOM_ENABLE_KBD
+options 	RANDOM_ENABLE_MOUSE
+
 # Flattened Device Tree
 options 	FDT
 
@@ -202,7 +211,13 @@ options 	FDT
 device		iicbus		# Bus support, required for iicoc below.
 device		iicoc		# OpenCores I2C controller support
 
+# random(4)
+device		tpm			# Trusted Platform Module
+options 	RANDOM_ENABLE_TPM	# enable entropy from TPM 2.0
+
 # Include SoC specific configuration
 include		"std.allwinner"
+include		"std.cvitek"
+include		"std.eswin"
 include		"std.sifive"
 include		"std.starfive"

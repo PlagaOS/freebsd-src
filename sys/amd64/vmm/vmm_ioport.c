@@ -32,12 +32,14 @@
 #include <machine/vmm.h>
 #include <machine/vmm_instruction_emul.h>
 
+#include <dev/vmm/vmm_ktr.h>
+#include <dev/vmm/vmm_vm.h>
+
 #include "vatpic.h"
 #include "vatpit.h"
 #include "vpmtmr.h"
 #include "vrtc.h"
 #include "vmm_ioport.h"
-#include "vmm_ktr.h"
 
 #define	MAX_IOPORTS		1280
 
@@ -100,7 +102,7 @@ static int
 emulate_inout_port(struct vcpu *vcpu, struct vm_exit *vmexit, bool *retu)
 {
 	ioport_handler_func_t handler;
-	uint32_t mask, val;
+	uint32_t mask, val = 0;
 	int error;
 
 	/*
@@ -144,9 +146,49 @@ emulate_inout_port(struct vcpu *vcpu, struct vm_exit *vmexit, bool *retu)
 }
 
 static int
+decode_segment(struct vcpu *vcpu, enum vm_reg_name *segment)
+{
+	struct vm_guest_paging *paging;
+	struct vie vie;
+	struct vm_exit *vme;
+	int err;
+	int fault;
+
+	vme = vm_exitinfo(vcpu);
+	paging = &vme->u.inout_str.paging;
+
+	vie_init(&vie, NULL, 0);
+	err = vmm_fetch_instruction(vcpu, paging,
+	    vme->rip + vme->u.inout_str.cs_base, VIE_INST_SIZE, &vie, &fault);
+	if (err || fault)
+		return (err);
+
+	err = vmm_decode_instruction(vcpu, VIE_INVALID_GLA, paging->cpu_mode,
+	    vme->u.inout_str.cs_d, &vie);
+
+	if (err || vie.op.op_type != VIE_OP_TYPE_OUTS)
+		return (EINVAL);
+	if (vie.segment_override)
+		*segment = vie.segment_register;
+	else
+		*segment = VM_REG_GUEST_DS;
+
+	return (0);
+}
+
+static int
 emulate_inout_str(struct vcpu *vcpu, struct vm_exit *vmexit, bool *retu)
 {
+	int err;
+
 	*retu = true;
+	if (vmexit->u.inout_str.seg_name == VM_REG_LAST) {
+		err = decode_segment(vcpu, &vmexit->u.inout_str.seg_name);
+		if (err)
+			return (err);
+		return (vm_get_seg_desc(vcpu, vmexit->u.inout_str.seg_name,
+		    &vmexit->u.inout_str.seg_desc));
+	}
 	return (0);	/* Return to userspace to finish emulation */
 }
 

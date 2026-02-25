@@ -71,6 +71,8 @@ KMODLOAD?=	/sbin/kldload
 KMODUNLOAD?=	/sbin/kldunload
 KMODISLOADED?=	/sbin/kldstat -q -n
 OBJCOPY?=	objcopy
+XARGS?=		xargs
+XARGS_J?=	-J
 
 .include "kmod.opts.mk"
 .include <bsd.sysdir.mk>
@@ -107,7 +109,8 @@ LINUXKPI_GENSRCS+= \
 
 LINUXKPI_INCLUDES+= \
 	-I${SYSDIR}/compat/linuxkpi/common/include \
-	-I${SYSDIR}/compat/linuxkpi/dummy/include
+	-I${SYSDIR}/compat/linuxkpi/dummy/include \
+	-include ${SYSDIR}/compat/linuxkpi/common/include/linux/kconfig.h
 
 CFLAGS+=	${WERROR}
 CFLAGS+=	-D_KERNEL
@@ -275,12 +278,12 @@ ${FULLPROG}: ${OBJS} ${BLOB_OBJS}
 	grep -v '^#' < ${EXPORT_SYMS} > export_syms
 .endif
 	${AWK} -f ${SYSDIR}/conf/kmod_syms.awk ${.TARGET} \
-	    export_syms | xargs -J% ${OBJCOPY} % ${.TARGET}
+	    export_syms | ${XARGS} ${XARGS_J} % ${OBJCOPY} % ${.TARGET}
 .endif
 .endif # defined(EXPORT_SYMS)
 .if defined(PREFIX_SYMS)
 	${AWK} -v prefix=${PREFIX_SYMS} -f ${SYSDIR}/conf/kmod_syms_prefix.awk \
-	    ${.TARGET} /dev/null | xargs -J% ${OBJCOPY} % ${.TARGET}
+	    ${.TARGET} /dev/null | ${XARGS} ${XARGS_J} % ${OBJCOPY} % ${.TARGET}
 .endif
 .if !defined(DEBUG_FLAGS) && ${__KLD_SHARED} == no
 	${OBJCOPY} --strip-debug ${.TARGET}
@@ -300,6 +303,25 @@ all: ${PROG}
 beforedepend: ${_ILINKS}
 beforebuild: ${_ILINKS}
 
+.if ${MK_REPRODUCIBLE_PATHS} != "no"
+PREFIX_SYSDIR=/usr/src/sys
+CFLAGS+= -ffile-prefix-map=${SYSDIR}=${PREFIX_SYSDIR}
+.if defined(KERNBUILDDIR)
+PREFIX_KERNBUILDDIR=/usr/obj/usr/src/${MACHINE}.${MACHINE_CPUARCH}/sys/${KERNBUILDDIR:T}
+PREFIX_OBJDIR=${PREFIX_KERNBUILDDIR}/modules/usr/src/sys/modules/${.OBJDIR:T}
+CFLAGS+= -ffile-prefix-map=${KERNBUILDDIR}=${PREFIX_KERNBUILDDIR}
+.else
+PREFIX_OBJDIR=/usr/obj/usr/src/${MACHINE}.${MACHINE_CPUARCH}/sys/modules/${.OBJDIR:T}
+.endif
+CFLAGS+= -ffile-prefix-map=${.OBJDIR}=${PREFIX_OBJDIR}
+.if defined(SYSROOT)
+CFLAGS+= -ffile-prefix-map=${SYSROOT}=/sysroot
+.endif
+.else
+PREFIX_SYSDIR=${SYSDIR}
+PREFIX_OBJDIR=${.OBJDIR}
+.endif
+
 # Ensure that the links exist without depending on it when it exists which
 # causes all the modules to be rebuilt when the directory pointed to changes.
 # Ensure that debug info references the path in the source tree.
@@ -308,9 +330,9 @@ beforebuild: ${_ILINKS}
 OBJS_DEPEND_GUESS+=	${_link}
 .endif
 .if ${_link} == "machine"
-CFLAGS+= -fdebug-prefix-map=./machine=${SYSDIR}/${MACHINE}/include
+CFLAGS+= -fdebug-prefix-map=./machine=${PREFIX_SYSDIR}/${MACHINE}/include
 .else
-CFLAGS+= -fdebug-prefix-map=./${_link}=${SYSDIR}/${_link}/include
+CFLAGS+= -fdebug-prefix-map=./${_link}=${PREFIX_SYSDIR}/${_link}/include
 .endif
 .endfor
 
@@ -361,7 +383,7 @@ afterinstall: _kldxref
 _kldxref: .PHONY
 	${KLDXREF_CMD} ${DESTDIR}${KMODDIR}
 .if defined(NO_ROOT) && defined(METALOG)
-	echo ".${DISTBASE}${KMODDIR}/linker.hints type=file mode=0644 uname=root gname=wheel" | \
+	echo ".${DISTBASE}${KMODDIR}/linker.hints type=file uname=root gname=wheel mode=0644" | \
 	    cat -l >> ${METALOG}
 .endif
 .endif
@@ -403,8 +425,10 @@ ${_src}:
 .endfor
 .endif
 
-# Add the sanitizer C flags
-CFLAGS+=	${SAN_CFLAGS}
+KASAN_ENABLED=	${KERN_OPTS:MKASAN}
+KCSAN_ENABLED=	${KERN_OPTS:MKCSAN}
+KMSAN_ENABLED=	${KERN_OPTS:MKMSAN}
+KUBSAN_ENABLED=	${KERN_OPTS:MKUBSAN}
 
 # Add the gcov flags
 CFLAGS+=	${GCOV_CFLAGS}
@@ -448,7 +472,7 @@ CLEANFILES+=	${_i}
 .m.h:	${SYSDIR}/tools/makeobjops.awk
 	${AWK} -f ${SYSDIR}/tools/makeobjops.awk ${.IMPSRC} -h
 
-.for _i in mii pccard
+.for _i in mii
 .if !empty(SRCS:M${_i}devs.h)
 CLEANFILES+=	${_i}devs.h
 ${_i}devs.h: ${SYSDIR}/tools/${_i}devs2h.awk ${SYSDIR}/dev/${_i}/${_i}devs
@@ -524,13 +548,13 @@ assym.inc: ${SYSDIR}/kern/genassym.sh
 	sh ${SYSDIR}/kern/genassym.sh genassym.o > ${.TARGET}
 genassym.o: ${SYSDIR}/${MACHINE}/${MACHINE}/genassym.c offset.inc
 genassym.o: ${SRCS:Mopt_*.h}
-	${CC} -c ${CFLAGS:N-flto*:N-fno-common:N-fsanitize*:N-fno-sanitize*} -fcommon \
+	${CC} -c ${NOSAN_CFLAGS:N-flto*:N-fno-common} -fcommon \
 	    ${SYSDIR}/${MACHINE}/${MACHINE}/genassym.c
 offset.inc: ${SYSDIR}/kern/genoffset.sh genoffset.o
 	sh ${SYSDIR}/kern/genoffset.sh genoffset.o > ${.TARGET}
 genoffset.o: ${SYSDIR}/kern/genoffset.c
 genoffset.o: ${SRCS:Mopt_*.h}
-	${CC} -c ${CFLAGS:N-flto*:N-fno-common:N-fsanitize*:N-fno-sanitize*} -fcommon \
+	${CC} -c ${NOSAN_CFLAGS:N-flto*:N-fno-common} -fcommon \
 	    ${SYSDIR}/kern/genoffset.c
 
 CLEANDEPENDFILES+=	${_ILINKS}

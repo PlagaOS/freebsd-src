@@ -112,14 +112,15 @@ SYSCTL_COUNTER_U64(_vfs_fusefs_stats, OID_AUTO, node_count, CTLFLAG_RD,
 int	fuse_data_cache_mode = FUSE_CACHE_WT;
 
 /*
- * DEPRECATED
- * This sysctl is no longer needed as of fuse protocol 7.23.  Individual
+ * OBSOLETE
+ * This sysctl is no longer needed as of fuse protocol 7.23.  Now, individual
  * servers can select the cache behavior they need for each mountpoint:
  * - writethrough: the default
  * - writeback: set FUSE_WRITEBACK_CACHE in fuse_init_out.flags
  * - uncached: set FOPEN_DIRECT_IO for every file
- * The sysctl is retained primarily for use by jails supporting older FUSE
- * protocols.  It may be removed entirely once FreeBSD 11.3 and 12.0 are EOL.
+ * The sysctl is retained primarily due to the enduring popularity of libfuse2,
+ * which is frozen at protocol version 7.19.  As of 4-April-2024, 90% of
+ * FreeBSD ports that use libfuse still bind to libfuse2.
  */
 SYSCTL_PROC(_vfs_fusefs, OID_AUTO, data_cache_mode,
     CTLTYPE_INT | CTLFLAG_MPSAFE | CTLFLAG_RW,
@@ -296,6 +297,8 @@ fuse_vnode_get(struct mount *mp,
     __enum_uint8(vtype) vtyp)
 {
 	struct thread *td = curthread;
+	bool exportable = fuse_get_mpdata(mp)->dataflags & FSESS_EXPORT_SUPPORT;
+
 	/* 
 	 * feo should only be NULL for the root directory, which (when libfuse
 	 * is used) always has generation 0
@@ -307,6 +310,23 @@ fuse_vnode_get(struct mount *mp,
 		fuse_warn(fuse_get_mpdata(mp), FSESS_WARN_ILLEGAL_INODE,
 			"Assigned same inode to both parent and child.");
 		return EIO;
+	}
+	if (feo && feo->nodeid != feo->attr.ino && exportable) {
+		/*
+		 * NFS servers (both kernelspace and userspace) rely on
+		 * VFS_VGET to lookup inodes.  But that's only possible if the
+		 * file's inode number matches its nodeid, which isn't
+		 * necessarily the case for FUSE.  If they don't match, then we
+		 * can complete the current operation, but future VFS_VGET
+		 * operations will almost certainly return spurious results.
+		 * Warn the operator.
+		 *
+		 * But only warn the operator if the file system reports
+		 * NFS-compatibility, because that's the only time that this
+		 * matters, and dumb fuse servers abound.
+		 */
+		fuse_warn(fuse_get_mpdata(mp), FSESS_WARN_INODE_MISMATCH,
+		    "file has different inode number and nodeid.");
 	}
 
 	err = fuse_vnode_alloc(mp, td, nodeid, vtyp, vpp);
@@ -353,7 +373,7 @@ void
 fuse_vnode_open(struct vnode *vp, int32_t fuse_open_flags, struct thread *td)
 {
 	if (vnode_vtype(vp) == VREG)
-		vnode_create_vobject(vp, 0, td);
+		vnode_create_vobject(vp, VNODE_NO_SIZE, td);
 }
 
 int

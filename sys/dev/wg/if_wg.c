@@ -251,9 +251,6 @@ struct wg_softc {
 
 #define MAX_LOOPS	8
 #define MTAG_WGLOOP	0x77676c70 /* wglp */
-#ifndef ENOKEY
-#define	ENOKEY	ENOTCAPABLE
-#endif
 
 #define	GROUPTASK_DRAIN(gtask)			\
 	gtaskqueue_drain((gtask)->gt_taskqueue, &(gtask)->gt_task)
@@ -315,10 +312,14 @@ static void wg_timers_run_send_keepalive(void *);
 static void wg_timers_run_new_handshake(void *);
 static void wg_timers_run_zero_key_material(void *);
 static void wg_timers_run_persistent_keepalive(void *);
-static int wg_aip_add(struct wg_softc *, struct wg_peer *, sa_family_t, const void *, uint8_t);
+static int wg_aip_add(struct wg_softc *, struct wg_peer *, sa_family_t,
+    const void *, uint8_t);
+static int wg_aip_del(struct wg_softc *, struct wg_peer *, sa_family_t,
+    const void *, uint8_t);
 static struct wg_peer *wg_aip_lookup(struct wg_softc *, sa_family_t, void *);
 static void wg_aip_remove_all(struct wg_softc *, struct wg_peer *);
-static struct wg_peer *wg_peer_alloc(struct wg_softc *, const uint8_t [WG_KEY_SIZE]);
+static struct wg_peer *wg_peer_create(struct wg_softc *,
+    const uint8_t [WG_KEY_SIZE], int *);
 static void wg_peer_free_deferred(struct noise_remote *);
 static void wg_peer_destroy(struct wg_peer *);
 static void wg_peer_destroy_all(struct wg_softc *);
@@ -381,18 +382,26 @@ static void wg_module_deinit(void);
 
 /* TODO Peer */
 static struct wg_peer *
-wg_peer_alloc(struct wg_softc *sc, const uint8_t pub_key[WG_KEY_SIZE])
+wg_peer_create(struct wg_softc *sc, const uint8_t pub_key[WG_KEY_SIZE],
+    int *errp)
 {
 	struct wg_peer *peer;
 
 	sx_assert(&sc->sc_lock, SX_XLOCKED);
 
 	peer = malloc(sizeof(*peer), M_WG, M_WAITOK | M_ZERO);
+
 	peer->p_remote = noise_remote_alloc(sc->sc_local, peer, pub_key);
-	peer->p_tx_bytes = counter_u64_alloc(M_WAITOK);
-	peer->p_rx_bytes = counter_u64_alloc(M_WAITOK);
+	if ((*errp = noise_remote_enable(peer->p_remote)) != 0) {
+		noise_remote_free(peer->p_remote, NULL);
+		free(peer, M_WG);
+		return (NULL);
+	}
+
 	peer->p_id = peer_counter++;
 	peer->p_sc = sc;
+	peer->p_tx_bytes = counter_u64_alloc(M_WAITOK);
+	peer->p_rx_bytes = counter_u64_alloc(M_WAITOK);
 
 	cookie_maker_init(&peer->p_cookie, pub_key);
 
@@ -423,6 +432,13 @@ wg_peer_alloc(struct wg_softc *sc, const uint8_t pub_key[WG_KEY_SIZE])
 	LIST_INIT(&peer->p_aips);
 	peer->p_aips_num = 0;
 
+	TAILQ_INSERT_TAIL(&sc->sc_peers, peer, p_entry);
+	sc->sc_peers_num++;
+
+	if (if_getlinkstate(sc->sc_ifp) == LINK_STATE_UP)
+		wg_timers_enable(peer);
+
+	DPRINTF(sc, "Peer %" PRIu64 " created\n", peer->p_id);
 	return (peer);
 }
 
@@ -513,11 +529,48 @@ wg_peer_get_endpoint(struct wg_peer *peer, struct wg_endpoint *e)
 	rw_runlock(&peer->p_endpoint_lock);
 }
 
+static int
+wg_aip_addrinfo(struct wg_aip *aip, const void *baddr, uint8_t cidr)
+{
+#if defined(INET) || defined(INET6)
+	struct aip_addr *addr, *mask;
+
+	addr = &aip->a_addr;
+	mask = &aip->a_mask;
+#endif
+	switch (aip->a_af) {
+#ifdef INET
+	case AF_INET:
+		if (cidr > 32) cidr = 32;
+		addr->in = *(const struct in_addr *)baddr;
+		mask->ip = htonl(~((1LL << (32 - cidr)) - 1) & 0xffffffff);
+		addr->ip &= mask->ip;
+		addr->length = mask->length = offsetof(struct aip_addr, in) + sizeof(struct in_addr);
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		if (cidr > 128) cidr = 128;
+		addr->in6 = *(const struct in6_addr *)baddr;
+		in6_prefixlen2mask(&mask->in6, cidr);
+		for (int i = 0; i < 4; i++)
+			addr->ip6[i] &= mask->ip6[i];
+		addr->length = mask->length = offsetof(struct aip_addr, in6) + sizeof(struct in6_addr);
+		break;
+#endif
+	default:
+		return (EAFNOSUPPORT);
+	}
+
+	return (0);
+}
+
 /* Allowed IP */
 static int
-wg_aip_add(struct wg_softc *sc, struct wg_peer *peer, sa_family_t af, const void *addr, uint8_t cidr)
+wg_aip_add(struct wg_softc *sc, struct wg_peer *peer, sa_family_t af,
+    const void *baddr, uint8_t cidr)
 {
-	struct radix_node_head	*root;
+	struct radix_node_head	*root = NULL;
 	struct radix_node	*node;
 	struct wg_aip		*aip;
 	int			 ret = 0;
@@ -526,33 +579,14 @@ wg_aip_add(struct wg_softc *sc, struct wg_peer *peer, sa_family_t af, const void
 	aip->a_peer = peer;
 	aip->a_af = af;
 
-	switch (af) {
-#ifdef INET
-	case AF_INET:
-		if (cidr > 32) cidr = 32;
-		root = sc->sc_aip4;
-		aip->a_addr.in = *(const struct in_addr *)addr;
-		aip->a_mask.ip = htonl(~((1LL << (32 - cidr)) - 1) & 0xffffffff);
-		aip->a_addr.ip &= aip->a_mask.ip;
-		aip->a_addr.length = aip->a_mask.length = offsetof(struct aip_addr, in) + sizeof(struct in_addr);
-		break;
-#endif
-#ifdef INET6
-	case AF_INET6:
-		if (cidr > 128) cidr = 128;
-		root = sc->sc_aip6;
-		aip->a_addr.in6 = *(const struct in6_addr *)addr;
-		in6_prefixlen2mask(&aip->a_mask.in6, cidr);
-		for (int i = 0; i < 4; i++)
-			aip->a_addr.ip6[i] &= aip->a_mask.ip6[i];
-		aip->a_addr.length = aip->a_mask.length = offsetof(struct aip_addr, in6) + sizeof(struct in6_addr);
-		break;
-#endif
-	default:
+	ret = wg_aip_addrinfo(aip, baddr, cidr);
+	if (ret != 0) {
 		free(aip, M_WG);
-		return (EAFNOSUPPORT);
+		return (ret);
 	}
 
+	root = af == AF_INET ? sc->sc_aip4 : sc->sc_aip6;
+	MPASS(root != NULL);
 	RADIX_NODE_HEAD_LOCK(root);
 	node = root->rnh_addaddr(&aip->a_addr, &aip->a_mask, &root->rh, aip->a_nodes);
 	if (node == aip->a_nodes) {
@@ -576,6 +610,58 @@ wg_aip_add(struct wg_softc *sc, struct wg_peer *peer, sa_family_t af, const void
 	}
 	RADIX_NODE_HEAD_UNLOCK(root);
 	return (ret);
+}
+
+static int
+wg_aip_del(struct wg_softc *sc, struct wg_peer *peer, sa_family_t af,
+    const void *baddr, uint8_t cidr)
+{
+	struct radix_node_head	*root = NULL;
+	struct radix_node	*dnode __diagused, *node;
+	struct wg_aip		 *aip, addr;
+	int			 ret = 0;
+
+	/*
+	 * We need to be sure that all padding is cleared, as it is above when
+	 * new AllowedIPs are added, since we want to do a direct comparison.
+	 */
+	memset(&addr, 0, sizeof(addr));
+	addr.a_af = af;
+
+	ret = wg_aip_addrinfo(&addr, baddr, cidr);
+	if (ret != 0)
+		return (ret);
+
+	root = af == AF_INET ? sc->sc_aip4 : sc->sc_aip6;
+
+	MPASS(root != NULL);
+	RADIX_NODE_HEAD_LOCK(root);
+
+	node = root->rnh_lookup(&addr.a_addr, &addr.a_mask, &root->rh);
+	if (node == NULL) {
+		RADIX_NODE_HEAD_UNLOCK(root);
+		return (0);
+	}
+
+	aip = (struct wg_aip *)node;
+	if (aip->a_peer != peer) {
+		/*
+		 * They could have specified an allowed-ip that belonged to a
+		 * different peer, in which case our job is done because the
+		 * AllowedIP has been removed.
+		 */
+		RADIX_NODE_HEAD_UNLOCK(root);
+		return (0);
+	}
+
+	dnode = root->rnh_deladdr(&aip->a_addr, &aip->a_mask, &root->rh);
+	MPASS(dnode == node);
+	RADIX_NODE_HEAD_UNLOCK(root);
+
+	LIST_REMOVE(aip, a_entry);
+	peer->p_aips_num--;
+	free(aip, M_WG);
+	return (0);
 }
 
 static struct wg_peer *
@@ -1677,6 +1763,31 @@ error:
 	}
 }
 
+#ifdef DEV_NETMAP
+/*
+ * Hand a packet to the netmap RX ring, via netmap's
+ * freebsd_generic_rx_handler().
+ */
+static void
+wg_deliver_netmap(if_t ifp, struct mbuf *m, int af)
+{
+	struct ether_header *eh;
+
+	M_PREPEND(m, ETHER_HDR_LEN, M_NOWAIT);
+	if (__predict_false(m == NULL)) {
+		if_inc_counter(ifp, IFCOUNTER_IQDROPS, 1);
+		return;
+	}
+
+	eh = mtod(m, struct ether_header *);
+	eh->ether_type = af == AF_INET ?
+	    htons(ETHERTYPE_IP) : htons(ETHERTYPE_IPV6);
+	memcpy(eh->ether_shost, "\x02\x02\x02\x02\x02\x02", ETHER_ADDR_LEN);
+	memcpy(eh->ether_dhost, "\xff\xff\xff\xff\xff\xff", ETHER_ADDR_LEN);
+	if_input(ifp, m);
+}
+#endif
+
 static void
 wg_deliver_in(struct wg_peer *peer)
 {
@@ -1685,6 +1796,7 @@ wg_deliver_in(struct wg_peer *peer)
 	struct wg_packet	*pkt;
 	struct mbuf		*m;
 	struct epoch_tracker	 et;
+	int			 af;
 
 	while ((pkt = wg_queue_dequeue_serial(&peer->p_decrypt_serial)) != NULL) {
 		if (atomic_load_acq_int(&pkt->p_state) != WG_PACKET_CRYPTED)
@@ -1710,19 +1822,25 @@ wg_deliver_in(struct wg_peer *peer)
 		if (m->m_pkthdr.len == 0)
 			goto done;
 
-		MPASS(pkt->p_af == AF_INET || pkt->p_af == AF_INET6);
+		af = pkt->p_af;
+		MPASS(af == AF_INET || af == AF_INET6);
 		pkt->p_mbuf = NULL;
 
 		m->m_pkthdr.rcvif = ifp;
 
 		NET_EPOCH_ENTER(et);
-		BPF_MTAP2_AF(ifp, m, pkt->p_af);
+		BPF_MTAP2_AF(ifp, m, af);
 
 		CURVNET_SET(if_getvnet(ifp));
 		M_SETFIB(m, if_getfib(ifp));
-		if (pkt->p_af == AF_INET)
+#ifdef DEV_NETMAP
+		if ((if_getcapenable(ifp) & IFCAP_NETMAP) != 0)
+			wg_deliver_netmap(ifp, m, af);
+		else
+#endif
+		if (af == AF_INET)
 			netisr_dispatch(NETISR_IP, m);
-		if (pkt->p_af == AF_INET6)
+		else if (af == AF_INET6)
 			netisr_dispatch(NETISR_IPV6, m);
 		CURVNET_RESTORE();
 		NET_EPOCH_EXIT(et);
@@ -2115,7 +2233,7 @@ wg_xmit(if_t ifp, struct mbuf *m, sa_family_t af, uint32_t mtu)
 	BPF_MTAP2_AF(ifp, m, pkt->p_af);
 
 	if (__predict_false(peer == NULL)) {
-		rc = ENOKEY;
+		rc = ENETUNREACH;
 		goto err_xmit;
 	}
 
@@ -2168,11 +2286,33 @@ determine_af_and_pullup(struct mbuf **m, sa_family_t *af)
 }
 
 static int
+determine_ethertype_and_pullup(struct mbuf **m, int *etp)
+{
+	struct ether_header *eh;
+
+	*m = m_pullup(*m, sizeof(struct ether_header));
+	if (__predict_false(*m == NULL))
+		return (ENOBUFS);
+	eh = mtod(*m, struct ether_header *);
+	*etp = ntohs(eh->ether_type);
+	if (*etp != ETHERTYPE_IP && *etp != ETHERTYPE_IPV6)
+		return (EAFNOSUPPORT);
+	return (0);
+}
+
+/*
+ * This should only be invoked by netmap, via nm_os_generic_xmit_frame(), to
+ * transmit packets from the netmap TX ring.
+ */
+static int
 wg_transmit(if_t ifp, struct mbuf *m)
 {
 	sa_family_t af;
-	int ret;
+	int et, ret;
 	struct mbuf *defragged;
+
+	KASSERT((if_getcapenable(ifp) & IFCAP_NETMAP) != 0,
+	    ("%s: ifp %p is not in netmap mode", __func__, ifp));
 
 	defragged = m_defrag(m, M_NOWAIT);
 	if (defragged)
@@ -2183,13 +2323,94 @@ wg_transmit(if_t ifp, struct mbuf *m)
 		return (ENOBUFS);
 	}
 
+	ret = determine_ethertype_and_pullup(&m, &et);
+	if (ret) {
+		xmit_err(ifp, m, NULL, AF_UNSPEC);
+		return (ret);
+	}
+	m_adj(m, sizeof(struct ether_header));
+
 	ret = determine_af_and_pullup(&m, &af);
 	if (ret) {
 		xmit_err(ifp, m, NULL, AF_UNSPEC);
 		return (ret);
 	}
-	return (wg_xmit(ifp, m, af, if_getmtu(ifp)));
+
+	/*
+	 * netmap only gets to see transient errors, since it handles errors by
+	 * refusing to advance the transmit ring and retrying later.
+	 */
+	ret = wg_xmit(ifp, m, af, if_getmtu(ifp));
+	if (ret == ENOBUFS)
+		return (ret);
+	return (0);
 }
+
+#ifdef DEV_NETMAP
+/*
+ * This should only be invoked by netmap, via nm_os_send_up(), to process
+ * packets from the host TX ring.
+ */
+static void
+wg_if_input(if_t ifp, struct mbuf *m)
+{
+	int et;
+
+	KASSERT((if_getcapenable(ifp) & IFCAP_NETMAP) != 0,
+	    ("%s: ifp %p is not in netmap mode", __func__, ifp));
+
+	if (determine_ethertype_and_pullup(&m, &et) != 0) {
+		if_inc_counter(ifp, IFCOUNTER_IERRORS, 1);
+		m_freem(m);
+		return;
+	}
+	CURVNET_SET(if_getvnet(ifp));
+	switch (et) {
+	case ETHERTYPE_IP:
+		m_adj(m, sizeof(struct ether_header));
+		netisr_dispatch(NETISR_IP, m);
+		break;
+	case ETHERTYPE_IPV6:
+		m_adj(m, sizeof(struct ether_header));
+		netisr_dispatch(NETISR_IPV6, m);
+		break;
+	default:
+		__assert_unreachable();
+	}
+	CURVNET_RESTORE();
+}
+
+/*
+ * Deliver a packet to the host RX ring.  Because the interface is in netmap
+ * mode, the if_transmit() call should pass the packet to netmap_transmit().
+ */
+static int
+wg_xmit_netmap(if_t ifp, struct mbuf *m, int af)
+{
+	struct ether_header *eh;
+
+	if (__predict_false(if_tunnel_check_nesting(ifp, m, MTAG_WGLOOP,
+	    MAX_LOOPS))) {
+		printf("%s:%d\n", __func__, __LINE__);
+		if_inc_counter(ifp, IFCOUNTER_IERRORS, 1);
+		m_freem(m);
+		return (ELOOP);
+	}
+
+	M_PREPEND(m, ETHER_HDR_LEN, M_NOWAIT);
+	if (__predict_false(m == NULL)) {
+		if_inc_counter(ifp, IFCOUNTER_IQDROPS, 1);
+		return (ENOBUFS);
+	}
+
+	eh = mtod(m, struct ether_header *);
+	eh->ether_type = af == AF_INET ?
+	    htons(ETHERTYPE_IP) : htons(ETHERTYPE_IPV6);
+	memcpy(eh->ether_shost, "\x06\x06\x06\x06\x06\x06", ETHER_ADDR_LEN);
+	memcpy(eh->ether_dhost, "\xff\xff\xff\xff\xff\xff", ETHER_ADDR_LEN);
+	return (if_transmit(ifp, m));
+}
+#endif /* DEV_NETMAP */
 
 static int
 wg_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst, struct route *ro)
@@ -2199,14 +2420,20 @@ wg_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst, struct route *ro
 	int ret;
 	struct mbuf *defragged;
 
-	if (dst->sa_family == AF_UNSPEC)
+	/* BPF writes need to be handled specially. */
+	if (dst->sa_family == AF_UNSPEC || dst->sa_family == pseudo_AF_HDRCMPLT)
 		memcpy(&af, dst->sa_data, sizeof(af));
 	else
-		af = dst->sa_family;
+		af = RO_GET_FAMILY(ro, dst);
 	if (af == AF_UNSPEC) {
 		xmit_err(ifp, m, NULL, af);
 		return (EAFNOSUPPORT);
 	}
+
+#ifdef DEV_NETMAP
+	if ((if_getcapenable(ifp) & IFCAP_NETMAP) != 0)
+		return (wg_xmit_netmap(ifp, m, af));
+#endif
 
 	defragged = m_defrag(m, M_NOWAIT);
 	if (defragged)
@@ -2222,10 +2449,8 @@ wg_output(if_t ifp, struct mbuf *m, const struct sockaddr *dst, struct route *ro
 		xmit_err(ifp, m, NULL, AF_UNSPEC);
 		return (ret);
 	}
-	if (parsed_af != af) {
-		xmit_err(ifp, m, NULL, AF_UNSPEC);
-		return (EAFNOSUPPORT);
-	}
+
+	MPASS(parsed_af == af);
 	mtu = (ro != NULL && ro->ro_mtu > 0) ? ro->ro_mtu : if_getmtu(ifp);
 	return (wg_xmit(ifp, m, parsed_af, mtu));
 }
@@ -2240,7 +2465,7 @@ wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 	size_t size;
 	struct noise_remote *remote;
 	struct wg_peer *peer = NULL;
-	bool need_insert = false;
+	bool need_cleanup = false;
 
 	sx_assert(&sc->sc_lock, SX_XLOCKED);
 
@@ -2272,8 +2497,10 @@ wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 		wg_aip_remove_all(sc, peer);
 	}
 	if (peer == NULL) {
-		peer = wg_peer_alloc(sc, pub_key);
-		need_insert = true;
+		peer = wg_peer_create(sc, pub_key, &err);
+		if (peer == NULL)
+			goto out;
+		need_cleanup = true;
 	}
 	if (nvlist_exists_binary(nvl, "endpoint")) {
 		endpoint = nvlist_get_binary(nvl, "endpoint", &size);
@@ -2307,8 +2534,20 @@ wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 
 		aipl = nvlist_get_nvlist_array(nvl, "allowed-ips", &allowedip_count);
 		for (size_t idx = 0; idx < allowedip_count; idx++) {
+			sa_family_t ipaf;
+			int ipflags;
+
 			if (!nvlist_exists_number(aipl[idx], "cidr"))
 				continue;
+
+			ipaf = AF_UNSPEC;
+			ipflags = 0;
+			if (nvlist_exists_number(aipl[idx], "flags"))
+				ipflags = nvlist_get_number(aipl[idx], "flags");
+			if ((ipflags & ~WGALLOWEDIP_VALID_FLAGS) != 0) {
+				err = EOPNOTSUPP;
+				goto out;
+			}
 			cidr = nvlist_get_number(aipl[idx], "cidr");
 			if (nvlist_exists_binary(aipl[idx], "ipv4")) {
 				addr = nvlist_get_binary(aipl[idx], "ipv4", &size);
@@ -2316,34 +2555,36 @@ wg_peer_add(struct wg_softc *sc, const nvlist_t *nvl)
 					err = EINVAL;
 					goto out;
 				}
-				if ((err = wg_aip_add(sc, peer, AF_INET, addr, cidr)) != 0)
-					goto out;
+
+				ipaf = AF_INET;
 			} else if (nvlist_exists_binary(aipl[idx], "ipv6")) {
 				addr = nvlist_get_binary(aipl[idx], "ipv6", &size);
 				if (addr == NULL || cidr > 128 || size != sizeof(struct in6_addr)) {
 					err = EINVAL;
 					goto out;
 				}
-				if ((err = wg_aip_add(sc, peer, AF_INET6, addr, cidr)) != 0)
-					goto out;
+
+				ipaf = AF_INET6;
 			} else {
 				continue;
 			}
+
+			MPASS(ipaf != AF_UNSPEC);
+			if ((ipflags & WGALLOWEDIP_REMOVE_ME) != 0) {
+				err = wg_aip_del(sc, peer, ipaf, addr, cidr);
+			} else {
+				err = wg_aip_add(sc, peer, ipaf, addr, cidr);
+			}
+
+			if (err != 0)
+				goto out;
 		}
-	}
-	if (need_insert) {
-		if ((err = noise_remote_enable(peer->p_remote)) != 0)
-			goto out;
-		TAILQ_INSERT_TAIL(&sc->sc_peers, peer, p_entry);
-		sc->sc_peers_num++;
-		if (if_getlinkstate(sc->sc_ifp) == LINK_STATE_UP)
-			wg_timers_enable(peer);
 	}
 	if (remote != NULL)
 		noise_remote_put(remote);
 	return (0);
 out:
-	if (need_insert) /* If we fail, only destroy if it was new. */
+	if (need_cleanup) /* If we fail, only destroy if it was new. */
 		wg_peer_destroy(peer);
 	if (remote != NULL)
 		noise_remote_put(remote);
@@ -2784,13 +3025,16 @@ wg_clone_create(struct if_clone *ifc, char *name, size_t len,
 	if_setreassignfn(ifp, wg_reassign);
 	if_setqflushfn(ifp, wg_qflush);
 	if_settransmitfn(ifp, wg_transmit);
+#ifdef DEV_NETMAP
+	if_setinputfn(ifp, wg_if_input);
+#endif
 	if_setoutputfn(ifp, wg_output);
 	if_setioctlfn(ifp, wg_ioctl);
 	if_attach(ifp);
 	bpfattach(ifp, DLT_NULL, sizeof(uint32_t));
 #ifdef INET6
-	ND_IFINFO(ifp)->flags &= ~ND6_IFF_AUTO_LINKLOCAL;
-	ND_IFINFO(ifp)->flags |= ND6_IFF_NO_DAD;
+	if_getinet6(ifp)->nd_flags &= ~ND6_IFF_AUTO_LINKLOCAL;
+	if_getinet6(ifp)->nd_flags |= ND6_IFF_NO_DAD;
 #endif
 	sx_xlock(&wg_sx);
 	LIST_INSERT_HEAD(&wg_list, sc, sc_entry);
@@ -2994,9 +3238,9 @@ wg_module_init(void)
 		[PR_METHOD_REMOVE] = wg_prison_remove,
 	};
 
-	if ((wg_packet_zone = uma_zcreate("wg packet", sizeof(struct wg_packet),
-	     NULL, NULL, NULL, NULL, 0, 0)) == NULL)
-		return (ENOMEM);
+	wg_packet_zone = uma_zcreate("wg packet", sizeof(struct wg_packet),
+	     NULL, NULL, NULL, NULL, 0, 0);
+
 	ret = crypto_init();
 	if (ret != 0)
 		return (ret);

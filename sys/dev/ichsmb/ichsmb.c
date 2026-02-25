@@ -112,7 +112,8 @@ ichsmb_attach(device_t dev)
 	mtx_init(&sc->mutex, device_get_nameunit(dev), "ichsmb", MTX_DEF);
 
 	/* Add child: an instance of the "smbus" device */
-	if ((sc->smb = device_add_child(dev, DRIVER_SMBUS, -1)) == NULL) {
+	if ((sc->smb = device_add_child(dev, DRIVER_SMBUS,
+	    DEVICE_UNIT_ANY)) == NULL) {
 		device_printf(dev, "no \"%s\" child found\n", DRIVER_SMBUS);
 		error = ENXIO;
 		goto fail;
@@ -130,7 +131,8 @@ ichsmb_attach(device_t dev)
 	}
 
 	/* Attach children when interrupts are available */
-	return (bus_delayed_attach_children(dev));
+	bus_delayed_attach_children(dev);
+	return (0);
 fail:
 	mtx_destroy(&sc->mutex);
 	return (error);
@@ -695,11 +697,21 @@ ichsmb_detach(device_t dev)
 	error = bus_generic_detach(dev);
 	if (error)
 		return (error);
-	device_delete_child(dev, sc->smb);
 	ichsmb_release_resources(sc);
 	mtx_destroy(&sc->mutex);
 	
 	return 0;
+}
+
+int
+ichsmb_shutdown(device_t dev)
+{
+	const sc_p sc = device_get_softc(dev);
+
+	/* Disable interrupts */
+	bus_write_1(sc->io_res, ICH_HST_CNT, 0);
+
+	return (0);
 }
 
 DRIVER_MODULE(smbus, ichsmb, smbus_driver, 0, 0);

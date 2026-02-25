@@ -1,10 +1,18 @@
-
 .PATH: ${.CURDIR}/../../include
+
+# XXX We need to include this to avoid installing MIT KRB5 includes on
+# XXX Heimdal systems. Remove the following line when Heimdal is finally
+# XXX removed.
+.include <src.opts.mk>
 
 LIB=		egacy
 SRC=
 INCSGROUPS=	INCS SYSINCS CASPERINC UFSINCS FFSINCS MSDOSFSINCS DISKINCS
 INCSGROUPS+=	MACHINESYSINCS RPCINCS
+.if ${MK_MITKRB5} != "no"
+INCSGROUPS+=	EDITINC K5GSSRPCINC GSSAPIINC
+INCSGROUPS+=	K5GSSAPIINC K52GSSAPIINC KRB5INC
+.endif
 INCS=
 
 SYSINCSDIR=	${INCLUDEDIR}/sys
@@ -16,6 +24,16 @@ MSDOSFSINCSDIR=	${INCLUDEDIR}/fs/msdosfs
 DISKINCSDIR=	${INCLUDEDIR}/sys/disk
 MACHINESYSINCSDIR=	${INCLUDEDIR}/machine
 RPCINCSDIR=	${INCLUDEDIR}/rpc
+.if ${MK_MITKRB5} != "no"
+EDITINCDIR=	${INCLUDEDIR}/edit/readline
+K5GSSRPCINCDIR=	${INCLUDEDIR}/gssrpc
+GSSAPIINCDIR=	${INCLUDEDIR}/gssapi
+K5GSSAPIINCDIR=	${INCLUDEDIR}/gssapi_krb5
+K52GSSAPIINCDIR=${INCLUDEDIR}/gssapi_krb5/gssapi
+KRB5INCDIR=	${INCLUDEDIR}/krb5
+KDB5INCDIR=	${INCLUDEDIR}/kdb5
+KADM5INCDIR=	${INCLUDEDIR}/kadm5
+.endif
 
 BOOTSTRAPPING?=	0
 
@@ -67,6 +85,10 @@ INCS+=		stdlib.h
 SRCS+=		reallocarray.c
 .endif
 
+.if !exists(${HOST_INCLUDE_ROOT}/stdckdint.h)
+INCS+=		stdckdint.h
+.endif
+
 .if exists(${HOST_INCLUDE_ROOT}/sys/stat.h)
 _WITH_UTIMENS!= grep -c utimensat ${HOST_INCLUDE_ROOT}/sys/stat.h || true
 .else
@@ -76,6 +98,9 @@ _WITH_UTIMENS= 0
 SYSINCS+=	stat.h
 SRCS+=		futimens.c utimensat.c
 .endif
+
+# Define ptraddr_t for bootstrapping
+INCS+=		stddef.h
 
 _WITH_EXPLICIT_BZERO!= cat ${HOST_INCLUDE_ROOT}/strings.h ${HOST_INCLUDE_ROOT}/string.h | grep -c explicit_bzero || true
 .if ${_WITH_EXPLICIT_BZERO} == 0
@@ -213,8 +238,11 @@ CFLAGS.closefrom.c+=	-DSTDC_HEADERS -DHAVE_SYS_DIR_H -DHAVE_DIRENT_H \
 	-DHAVE_DIRFD -DHAVE_SYSCONF
 # Provide getprogname/setprograme
 SRCS+=	progname.c
-# Stub implementations of fflagstostr/strtofflags
-SRCS+=	fflags.c
+# Provide fflagstostr/strtofflags for mtree and makefs
+# On macOS we use the host's so conflate host and target flags, which ideally
+# we'd avoid, but in practice these align for many flags, including
+# SF_IMMUTABLE, the only flag we currently set during install.
+SRCS+=	strtofflags.c
 
 # macOS has a standalone cross-build implementation, but Linux can use the same
 # ELF one as FreeBSD
@@ -249,10 +277,61 @@ subr_capability.c: ${SRCTOP}/sys/kern/subr_capability.c
 	cp ${.ALLSRC} ${.TARGET}
 SRCS+=	subr_capability.c
 CLEANFILES+=	subr_capability.c
+
+# Headers needed for msdosfs use in makefs
+SYSINCS+=	${SRCTOP}/sys/sys/_callout.h
+SYSINCS+=	${SRCTOP}/sys/sys/_lock.h
+SYSINCS+=	${SRCTOP}/sys/sys/_lockmgr.h
+SYSINCS+=	${SRCTOP}/sys/sys/_task.h
 .endif # ${MAKE.OS} != "FreeBSD"
 
 CASPERINC+=	${SRCTOP}/lib/libcasper/services/cap_fileargs/cap_fileargs.h
 CASPERINC+=	${SRCTOP}/lib/libcasper/services/cap_net/cap_net.h
+
+.if ${MK_MITKRB5} != "no"
+EDITINC+=	${SRCTOP}/contrib/libedit/readline/readline.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/auth.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/auth_gss.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/auth_gssapi.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/auth_unix.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/clnt.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/netdb.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/pmap_clnt.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/pmap_prot.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/pmap_rmt.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/rpc_msg.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/rpc.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/svc_auth.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/svc.h
+K5GSSRPCINC+=	${SRCTOP}/krb5/include/gssrpc/types.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/xdr.h
+K5GSSRPCINC+=	${SRCTOP}/crypto/krb5/src/include/gssrpc/xdr.h
+GSSAPIINC+=	${SRCTOP}/crypto/krb5/src/lib/gssapi/krb5/gssapi_krb5.h
+GSSAPIINC+=	${SRCTOP}/crypto/krb5/src/lib/gssapi/generic/gssapi_alloc.h
+GSSAPIINC+=	${SRCTOP}/crypto/krb5/src/lib/gssapi/generic/gssapi_generic.h
+GSSAPIINC+=	${SRCTOP}/crypto/krb5/src/lib/gssapi/generic/gssapi_ext.h
+K5GSSAPIINC+=	${SRCTOP}/crypto/krb5/src/include/gssapi.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/ccselect_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/certauth_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/clpreauth_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/hostrealm_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/kadm5_auth_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/kadm5_hook_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/kdcpolicy_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/kdcpreauth_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/localauth_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/locate_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/preauth_plugin.h
+KRB5INC+=	${SRCTOP}/crypto/krb5/src/include/krb5/pwqual_plugin.h
+INCS+=		${SRCTOP}/crypto/krb5/src/include/gssapi.h
+INCS+=		${SRCTOP}/crypto/krb5/src/include/kdb.h
+INCS+=		${SRCTOP}/crypto/krb5/src/include/krb5.h
+INCS+=		${SRCTOP}/crypto/krb5/src/include/krad.h
+INCS+=		${SRCTOP}/crypto/krb5/src/util/et/com_err.h
+INCS+=		${SRCTOP}/crypto/krb5/src/util/verto/verto-module.h
+INCS+=		${SRCTOP}/crypto/krb5/src/util/verto/verto.h
+.endif
 
 .if empty(SRCS)
 SRCS=		dummy.c
@@ -275,7 +354,15 @@ MSDOSFSINCS+=	${SRCTOP}/sys/fs/msdosfs/fat.h
 MSDOSFSINCS+=	${SRCTOP}/sys/fs/msdosfs/msdosfsmount.h
 DISKINCS+=	${SRCTOP}/sys/sys/disk/bsd.h
 
+.if ${.MAKE.OS} == "FreeBSD"
+# Needed to build most of the things below, which include sys/cdefs.h either
+# directly or transitively
+SYSINCS+=	${SRCTOP}/sys/sys/_visible.h
+SYSINCS+=	${SRCTOP}/sys/sys/cdefs.h
+.endif
+
 # Needed to build config (since it uses libnv)
+SYSINCS+=	${SRCTOP}/sys/sys/_nv.h
 SYSINCS+=	${SRCTOP}/sys/sys/nv.h ${SRCTOP}/sys/sys/cnv.h \
 		${SRCTOP}/sys/sys/dnv.h ${SRCTOP}/sys/sys/nv_namespace.h
 
@@ -305,6 +392,10 @@ SYSINCS+=	${SRCTOP}/sys/sys/ctf.h
 SYSINCS+=	${SRCTOP}/sys/sys/kbio.h
 # for kldxref:
 SYSINCS+=	${SRCTOP}/sys/sys/module.h
+.if ${.MAKE.OS} != "FreeBSD"
+# for libmd:
+SYSINCS+=	${SRCTOP}/sys/sys/md4.h
+.endif
 
 # We want to run the build with only ${WORLDTMP} in $PATH to ensure we don't
 # accidentally run tools that are incompatible but happen to be in $PATH.
@@ -333,7 +424,7 @@ _LINK_HOST_TOOL=	ln -sfn
 # When building on FreeBSD we always copy the host tools instead of linking
 # into WORLDTMP to avoid issues with incompatible libraries (see r364030).
 # Note: we could create links if we don't intend to update the current machine.
-_COPY_HOST_TOOL=	cp -pf
+_COPY_HOST_TOOL=	install -p
 .else
 # However, this is not necessary on Linux/macOS. Additionally, copying the host
 # tools to another directory with cp -p results in freezes on macOS Big Sur for
@@ -418,7 +509,9 @@ INSTALLDIR_LIST= \
 	bin \
 	lib/geom \
 	usr/include/casper \
+	usr/include/openssl \
 	usr/include/private/ucl \
+	usr/include/private/yaml \
 	usr/include/private/zstd \
 	usr/lib \
 	usr/libdata/pkgconfig \

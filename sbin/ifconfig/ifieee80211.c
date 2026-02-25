@@ -133,8 +133,10 @@
 #define	IEEE80211_FVHT_VHT	0x000000001	/* CONF: VHT supported */
 #define	IEEE80211_FVHT_USEVHT40	0x000000002	/* CONF: Use VHT40 */
 #define	IEEE80211_FVHT_USEVHT80	0x000000004	/* CONF: Use VHT80 */
-#define	IEEE80211_FVHT_USEVHT160 0x000000008	/* CONF: Use VHT160 */
-#define	IEEE80211_FVHT_USEVHT80P80 0x000000010	/* CONF: Use VHT 80+80 */
+#define	IEEE80211_FVHT_USEVHT80P80 0x000000008	/* CONF: Use VHT 80+80 */
+#define	IEEE80211_FVHT_USEVHT160 0x000000010	/* CONF: Use VHT160 */
+#define	IEEE80211_FVHT_STBC_TX  0x00000020	/* CONF: STBC tx enabled */
+#define	IEEE80211_FVHT_STBC_RX  0x00000040	/* CONF: STBC rx enabled */
 #endif
 
 /* Helper macros unified. */
@@ -196,8 +198,10 @@ static int gottxparams = 0;
 static struct ieee80211_channel curchan;
 static int gotcurchan = 0;
 static struct ifmediareq *global_ifmr;
+
+/* HT */
 static int htconf = 0;
-static	int gothtconf = 0;
+static int gothtconf = 0;
 
 static void
 gethtconf(if_ctx *ctx)
@@ -211,7 +215,7 @@ gethtconf(if_ctx *ctx)
 
 /* VHT */
 static int vhtconf = 0;
-static	int gotvhtconf = 0;
+static int gotvhtconf = 0;
 
 static void
 getvhtconf(if_ctx *ctx)
@@ -1976,13 +1980,11 @@ set80211vhtconf(if_ctx *ctx, const char *val __unused, int d)
 {
 	if (get80211val(ctx, IEEE80211_IOC_VHTCONF, &vhtconf) < 0)
 		errx(-1, "cannot set VHT setting");
-	printf("%s: vhtconf=0x%08x, d=%d\n", __func__, vhtconf, d);
 	if (d < 0) {
 		d = -d;
 		vhtconf &= ~d;
 	} else
 		vhtconf |= d;
-	printf("%s: vhtconf is now 0x%08x\n", __func__, vhtconf);
 	set80211(ctx, IEEE80211_IOC_VHTCONF, vhtconf, 0, NULL);
 }
 
@@ -2296,7 +2298,7 @@ regdomain_addchans(if_ctx *ctx, struct ieee80211req_chaninfo *ci,
 			memset(c, 0, sizeof(*c));
 			c->ic_freq = freq;
 			c->ic_flags = flags;
-		if (c->ic_flags & IEEE80211_CHAN_DFS)
+			if (c->ic_flags & IEEE80211_CHAN_DFS)
 				c->ic_maxregpower = nb->maxPowerDFS;
 			else
 				c->ic_maxregpower = nb->maxPower;
@@ -2777,6 +2779,177 @@ printwmeinfo(if_ctx *ctx, const char *tag, const u_int8_t *ie)
 }
 
 static void
+printhecap(if_ctx *ctx, const char *tag, const uint8_t *ie)
+{
+	const struct ieee80211_he_cap_elem *hecap;
+	const struct ieee80211_he_mcs_nss_supp *mcsnss;
+	unsigned int i;
+	uint8_t chw;
+
+	printf("%s", tag);
+	if (!ctx->args->verbose)
+		return;
+
+	/* Check that the right size. */
+	if (ie[1] < 1 + sizeof(*hecap) + 4) {
+		printf("<err: he_cap inval. length %#0x>", ie[1]);
+		return;
+	}
+	/* Skip Element ID, Length, EID Extension. */
+	hecap = (const struct ieee80211_he_cap_elem *)(ie + 3);
+
+	/* XXX-BZ we need to somehow decode each field? */
+	printf("<mac_cap");
+	for (i = 0; i < nitems(hecap->mac_cap_info); i++)
+		printf(" %#04x", hecap->mac_cap_info[i]);
+	printf(" phy_cap");
+	for (i = 0; i < nitems(hecap->phy_cap_info); i++)
+		printf(" %#04x", hecap->phy_cap_info[i]);
+
+	chw = hecap->phy_cap_info[0];
+	ie = (const uint8_t *)(const void *)(hecap + 1);
+	mcsnss = (const struct ieee80211_he_mcs_nss_supp *)ie;
+	/* Cannot use <=  as < is a delimiter. */
+	printf(" rx/tx_he_mcs map: loweq80 %#06x/%#06x",
+	    mcsnss->rx_mcs_80, mcsnss->tx_mcs_80);
+	ie += 2;
+	if ((chw & (1<<2)) != 0) {
+		printf(" 160 %#06x/%#06x",
+		    mcsnss->rx_mcs_160, mcsnss->tx_mcs_160);
+		ie += 2;
+	}
+	if ((chw & (1<<3)) != 0) {
+		printf(" 80+80 %#06x/%#06x",
+		    mcsnss->rx_mcs_80p80, mcsnss->tx_mcs_80p80);
+		ie += 2;
+	}
+	/* TODO: ppet = (struct ... *)ie; */
+
+	printf(">");
+}
+
+static void
+printheoper(if_ctx *ctx, const char *tag, const uint8_t *ie)
+{
+	printf("%s", tag);
+	if (ctx->args->verbose) {
+		const struct ieee80211_he_operation *heoper;
+		uint32_t params;
+
+		/* Check that the right size. */
+		if (ie[1] < 1 + sizeof(*heoper)) {
+			printf("<err: he_oper inval. length %#0x>", ie[1]);
+			return;
+		}
+		/* Skip Element ID, Length, EID Extension. */
+		heoper = (const struct ieee80211_he_operation *)(ie + 3);
+
+		/* XXX-BZ we need to somehow decode each field? */
+		params = heoper->he_oper_params & 0x00ffffff;
+		printf("<params %#08x", params);
+		printf(" bss_col %#04x", (heoper->he_oper_params & 0xff000000) >> 24);
+		printf(" mcs_nss %#06x", heoper->he_mcs_nss_set);
+		if ((params & (1 << 14)) != 0) {
+			printf(" vht_op 0-3");
+		}
+		if ((params & (1 << 15)) != 0) {
+			printf(" max_coh_bssid 0-1");
+		}
+		if ((params & (1 << 17)) != 0) {
+			printf(" 6ghz_op 0-5");
+		}
+		printf(">");
+	}
+}
+
+static void
+printmuedcaparamset(if_ctx *ctx, const char *tag, const uint8_t *ie)
+{
+	static const char *acnames[] = { "BE", "BK", "VO", "VI" };
+	const struct ieee80211_mu_edca_param_set *mu_edca;
+	int i;
+
+	printf("%s", tag);
+	if (!ctx->args->verbose)
+		return;
+
+	/* Check that the right size. */
+	if (ie[1] != 1 + sizeof(*mu_edca)) {
+		printf("<err: mu_edca inval. length %#04x>", ie[1]);
+		return;
+	}
+	/* Skip Element ID, Length, EID Extension. */
+	mu_edca = (const struct ieee80211_mu_edca_param_set *)(ie + 3);
+
+	printf("<qosinfo 0x%x", mu_edca->mu_qos_info);
+	ie++;
+	for (i = 0; i < WME_NUM_AC; i++) {
+		const struct ieee80211_he_mu_edca_param_ac_rec *ac =
+		    &mu_edca->param_ac_recs[i];
+
+		printf(" %s[aifsn %u ecwmin %u ecwmax %u timer %u]", acnames[i],
+		    ac->aifsn,
+		    _IEEE80211_MASKSHIFT(ac->ecw_min_max, WME_PARAM_LOGCWMIN),
+		    _IEEE80211_MASKSHIFT(ac->ecw_min_max, WME_PARAM_LOGCWMAX),
+		    ac->mu_edca_timer);
+	}
+	printf(">");
+}
+
+static void
+printsupopclass(if_ctx *ctx, const char *tag, const u_int8_t *ie)
+{
+	uint8_t len, i;
+
+	printf("%s", tag);
+	if (!ctx->args->verbose)
+		return;
+
+	/* Check that the right size. */
+	len = ie[1];
+	if (len < 2) {
+		printf("<err: sup_op_class inval. length %#04x>", ie[1]);
+		return;
+	}
+
+	ie += 2;
+	i = 0;
+	printf("<cur op class %u", *ie);
+	i++;
+	if (i < len && *(ie + i) != 130)
+		printf(" op classes");
+	while (i < len && *(ie + i) != 130) {
+		printf(" %u", *(ie + i));
+		i++;
+	}
+	if (i > 1 && i < len && *(ie + i) != 130) {
+		printf(" parsing error at %#0x>", i);
+		return;
+	}
+	/* Skip OneHundredAndThirty Delimiter. */
+	i++;
+	if (i < len && *(ie + i) != 0)
+		printf(" ext seq");
+	while (i < len && *(ie + i) != 0) {
+		printf(" %u", *(ie + i));
+		i++;
+	}
+	if (i > 1 && i < len && *(ie + i) != 0) {
+		printf(" parsing error at %#0x>", i);
+		return;
+	}
+	/* Skip Zero Delimiter. */
+	i++;
+	if ((i + 1) < len)
+		printf(" duple seq");
+	while ((i + 1) < len) {
+		printf(" %u/%u", *(ie + i), *(ie + i + 1));
+		i += 2;
+	}
+	printf(">");
+}
+
+static void
 printvhtcap(if_ctx *ctx, const char *tag, const u_int8_t *ie)
 {
 	printf("%s", tag);
@@ -2784,7 +2957,7 @@ printvhtcap(if_ctx *ctx, const char *tag, const u_int8_t *ie)
 		const struct ieee80211_vht_cap *vhtcap;
 		uint32_t vhtcap_info;
 
-		/* Check that the the right size. */
+		/* Check that the right size. */
 		if (ie[1] != sizeof(*vhtcap)) {
 			printf("<err: vht_cap inval. length>");
 			return;
@@ -2814,7 +2987,7 @@ printvhtinfo(if_ctx *ctx, const char *tag, const u_int8_t *ie)
 	if (ctx->args->verbose) {
 		const struct ieee80211_vht_operation *vhtinfo;
 
-		/* Check that the the right size. */
+		/* Check that the right size. */
 		if (ie[1] != sizeof(*vhtinfo)) {
 			printf("<err: vht_operation inval. length>");
 			return;
@@ -3134,6 +3307,12 @@ rsn_cipher(const u_int8_t *sel)
 		return "AES-CCMP";
 	case RSN_SEL(RSN_CSE_WRAP):
 		return "AES-OCB";
+	case RSN_SEL(RSN_CSE_GCMP_128):
+		return "AES-GCMP";
+	case RSN_SEL(RSN_CSE_CCMP_256):
+		return "AES-CCMP-256";
+	case RSN_SEL(RSN_CSE_GCMP_256):
+		return "AES-GCMP-256";
 	}
 	return "?";
 #undef WPA_SEL
@@ -3150,6 +3329,10 @@ rsn_keymgmt(const u_int8_t *sel)
 		return "8021X-UNSPEC";
 	case RSN_SEL(RSN_ASE_8021X_PSK):
 		return "8021X-PSK";
+	case RSN_SEL(RSN_ASE_8021X_UNSPEC_SHA256):
+		return "8021X-UNSPEC-SHA256";
+	case RSN_SEL(RSN_ASE_8021X_PSK_SHA256):
+		return "8021X-PSK-256";
 	case RSN_SEL(RSN_ASE_NONE):
 		return "NONE";
 	}
@@ -3198,6 +3381,33 @@ printrsnie(if_ctx *ctx, const char *tag, const u_int8_t *ie, size_t ielen)
 		/* XXXPMKID */
 		printf(">");
 	}
+}
+
+static void
+printrsnxe(if_ctx *ctx, const char *tag, const u_int8_t *ie, size_t ielen)
+{
+	size_t n;
+
+	printf("%s", tag);
+	if (!ctx->args->verbose)
+		return;
+
+	ie += 2, ielen -= 2;
+
+	n = (*ie & 0x0f);
+	printf("<%zu", n + 1);
+
+	/* We do not yet know about more than n=1 (0). */
+	if (n != 0)
+		goto end;
+
+	if (*ie & 0x10)
+		printf(" PTWTOPS");
+	if (*ie & 0x20)
+		printf(" SAE h-t-e");
+
+end:
+	printf(">");
 }
 
 #define BE_READ_2(p)					\
@@ -3577,7 +3787,22 @@ iswpsoui(const uint8_t *frm)
 }
 
 static const char *
-iename(int elemid)
+ie_ext_name(uint8_t ext_elemid)
+{
+	static char iename_buf[32];
+
+	switch (ext_elemid) {
+	case IEEE80211_ELEMID_EXT_HE_CAPA:		return " HECAP";
+	case IEEE80211_ELEMID_EXT_HE_OPER:		return " HEOPER";
+	case IEEE80211_ELEMID_EXT_MU_EDCA_PARAM_SET:	return " MU_EDCA_PARAM_SET";
+	}
+	snprintf(iename_buf, sizeof(iename_buf), " ELEMID_EXT_%d",
+	    ext_elemid & 0xff);
+	return (const char *) iename_buf;
+}
+
+static const char *
+iename(uint8_t elemid, const u_int8_t *vp)
 {
 	static char iename_buf[64];
 	switch (elemid) {
@@ -3599,6 +3824,8 @@ iename(int elemid)
 	case IEEE80211_ELEMID_IBSSDFS:	return " IBSSDFS";
 	case IEEE80211_ELEMID_RESERVED_47:
 					return " RESERVED_47";
+	case IEEE80211_ELEMID_SUP_OP_CLASS:
+					return " SUP_OP_CLASS";
 	case IEEE80211_ELEMID_MOBILITY_DOMAIN:
 					return " MOBILITY_DOMAIN";
 	case IEEE80211_ELEMID_RRM_ENACAPS:
@@ -3608,10 +3835,40 @@ iename(int elemid)
 	case IEEE80211_ELEMID_TPC:	return " TPC";
 	case IEEE80211_ELEMID_CCKM:	return " CCKM";
 	case IEEE80211_ELEMID_EXTCAP:	return " EXTCAP";
+	case IEEE80211_ELEMID_RSN_EXT:	return " RSNXE";
+	case IEEE80211_ELEMID_EXTFIELD:
+		if (vp[1] >= 1)
+			return ie_ext_name(vp[2]);
+		break;
 	}
-	snprintf(iename_buf, sizeof(iename_buf), " UNKNOWN_ELEMID_%d",
+	snprintf(iename_buf, sizeof(iename_buf), " ELEMID_%d",
 	    elemid);
 	return (const char *) iename_buf;
+}
+
+static void
+printexties(if_ctx *ctx, const u_int8_t *vp, unsigned int maxcols)
+{
+	const int verbose = ctx->args->verbose;
+
+	if (vp[1] < 1)
+		return;
+
+	switch (vp[2]) {
+	case IEEE80211_ELEMID_EXT_HE_CAPA:
+		printhecap(ctx, " HECAP", vp);
+		break;
+	case IEEE80211_ELEMID_EXT_HE_OPER:
+		printheoper(ctx, " HEOPER", vp);
+		break;
+	case IEEE80211_ELEMID_EXT_MU_EDCA_PARAM_SET:
+		printmuedcaparamset(ctx, " MU_EDCA_PARAM_SET", vp);
+		break;
+	default:
+		if (verbose)
+			printie(ctx, iename(vp[0], vp), vp, 2+vp[1], maxcols);
+		break;
+	}
 }
 
 static void
@@ -3665,6 +3922,9 @@ printies(if_ctx *ctx, const u_int8_t *vp, int ielen, unsigned int maxcols)
 		case IEEE80211_ELEMID_HTCAP:
 			printhtcap(ctx, " HTCAP", vp);
 			break;
+		case IEEE80211_ELEMID_SUP_OP_CLASS:
+			printsupopclass(ctx, " SUP_OP_CLASS", vp);
+			break;
 		case IEEE80211_ELEMID_HTINFO:
 			if (verbose)
 				printhtinfo(ctx, " HTINFO", vp);
@@ -3691,9 +3951,15 @@ printies(if_ctx *ctx, const u_int8_t *vp, int ielen, unsigned int maxcols)
 		case IEEE80211_ELEMID_APCHANREP:
 			printapchanrep(ctx, " APCHANREP", vp, 2+vp[1]);
 			break;
+		case IEEE80211_ELEMID_RSN_EXT:
+			printrsnxe(ctx, " RSNXE", vp, 2+vp[1]);
+			break;
+		case IEEE80211_ELEMID_EXTFIELD:
+			printexties(ctx, vp, maxcols);
+			break;
 		default:
 			if (verbose)
-				printie(ctx, iename(vp[0]), vp, 2+vp[1], maxcols);
+				printie(ctx, iename(vp[0], vp), vp, 2+vp[1], maxcols);
 			break;
 		}
 		ielen -= 2+vp[1];
@@ -4745,6 +5011,9 @@ printcipher(int s, struct ieee80211req *ireq, int keylenop)
 	case IEEE80211_CIPHER_AES_CCM:
 		printf("AES-CCM");
 		break;
+	case IEEE80211_CIPHER_AES_GCM_128:
+		printf("AES-GCM");
+		break;
 	case IEEE80211_CIPHER_CKIP:
 		printf("CKIP");
 		break;
@@ -4759,6 +5028,17 @@ printcipher(int s, struct ieee80211req *ireq, int keylenop)
 #endif
 
 static void
+printkey_index(uint16_t keyix, char *buf, size_t buflen)
+{
+	buf[0] = '\0';
+	if (keyix == IEEE80211_KEYIX_NONE) {
+		snprintf(buf, buflen, "ucast");
+	} else {
+		snprintf(buf, buflen, "%u", keyix+1);
+	}
+}
+
+static void
 printkey(if_ctx *ctx, const struct ieee80211req_key *ik)
 {
 	static const uint8_t zerodata[IEEE80211_KEYBUF_SIZE];
@@ -4766,38 +5046,43 @@ printkey(if_ctx *ctx, const struct ieee80211req_key *ik)
 	int printcontents;
 	const int verbose = ctx->args->verbose;
 	const bool printkeys = ctx->args->printkeys;
+	char keyix[16];
 
 	printcontents = printkeys &&
 		(memcmp(ik->ik_keydata, zerodata, keylen) != 0 || verbose);
 	if (printcontents)
 		LINE_BREAK();
+	printkey_index(ik->ik_keyix, keyix, sizeof(keyix));
 	switch (ik->ik_type) {
 	case IEEE80211_CIPHER_WEP:
 		/* compatibility */
-		LINE_CHECK("wepkey %u:%s", ik->ik_keyix+1,
+		LINE_CHECK("wepkey %s:%s", keyix,
 		    keylen <= 5 ? "40-bit" :
 		    keylen <= 13 ? "104-bit" : "128-bit");
 		break;
 	case IEEE80211_CIPHER_TKIP:
 		if (keylen > 128/8)
 			keylen -= 128/8;	/* ignore MIC for now */
-		LINE_CHECK("TKIP %u:%u-bit", ik->ik_keyix+1, 8*keylen);
+		LINE_CHECK("TKIP %s:%u-bit", keyix, 8*keylen);
 		break;
 	case IEEE80211_CIPHER_AES_OCB:
-		LINE_CHECK("AES-OCB %u:%u-bit", ik->ik_keyix+1, 8*keylen);
+		LINE_CHECK("AES-OCB %s:%u-bit", keyix, 8*keylen);
 		break;
 	case IEEE80211_CIPHER_AES_CCM:
-		LINE_CHECK("AES-CCM %u:%u-bit", ik->ik_keyix+1, 8*keylen);
+		LINE_CHECK("AES-CCM %s:%u-bit", keyix, 8*keylen);
+		break;
+	case IEEE80211_CIPHER_AES_GCM_128:
+		LINE_CHECK("AES-GCM %s:%u-bit", keyix, 8*keylen);
 		break;
 	case IEEE80211_CIPHER_CKIP:
-		LINE_CHECK("CKIP %u:%u-bit", ik->ik_keyix+1, 8*keylen);
+		LINE_CHECK("CKIP %s:%u-bit", keyix, 8*keylen);
 		break;
 	case IEEE80211_CIPHER_NONE:
-		LINE_CHECK("NULL %u:%u-bit", ik->ik_keyix+1, 8*keylen);
+		LINE_CHECK("NULL %s:%u-bit", keyix, 8*keylen);
 		break;
 	default:
-		LINE_CHECK("UNKNOWN (0x%x) %u:%u-bit",
-			ik->ik_type, ik->ik_keyix+1, 8*keylen);
+		LINE_CHECK("UNKNOWN (0x%x) %s:%u-bit",
+			ik->ik_type, keyix, 8*keylen);
 		break;
 	}
 	if (printcontents) {
@@ -4880,6 +5165,7 @@ ieee80211_status(if_ctx *ctx)
 {
 	int s = ctx->io_s;
 	static const uint8_t zerobssid[IEEE80211_ADDR_LEN];
+	uint8_t bssid[IEEE80211_ADDR_LEN];
 	enum ieee80211_opmode opmode = get80211opmode(ctx);
 	int i, num, wpa, wme, bgscan, bgscaninterval, val, len, wepmode;
 	uint8_t data[32];
@@ -4930,10 +5216,10 @@ ieee80211_status(if_ctx *ctx)
 	} else if (verbose)
 		printf(" channel UNDEF");
 
-	if (get80211(ctx, IEEE80211_IOC_BSSID, data, IEEE80211_ADDR_LEN) >= 0 &&
-	    (memcmp(data, zerobssid, sizeof(zerobssid)) != 0 || verbose)) {
-		printf(" bssid %s", ether_ntoa((struct ether_addr *)data));
-		printbssidname((struct ether_addr *)data);
+	if (get80211(ctx, IEEE80211_IOC_BSSID, bssid, IEEE80211_ADDR_LEN) >= 0 &&
+	    (memcmp(bssid, zerobssid, sizeof(zerobssid)) != 0 || verbose)) {
+		printf(" bssid %s", ether_ntoa((struct ether_addr *)bssid));
+		printbssidname((struct ether_addr *)bssid);
 	}
 
 	if (get80211len(ctx, IEEE80211_IOC_STATIONNAME, data, sizeof(data), &len) != -1) {
@@ -5080,13 +5366,28 @@ ieee80211_status(if_ctx *ctx)
 			memset(&ik, 0, sizeof(ik));
 			ik.ik_keyix = i;
 			if (get80211(ctx, IEEE80211_IOC_WPAKEY, &ik, sizeof(ik)) < 0) {
-				warn("WEP support, but can get keys!");
+				warn("WEP support, but cannot get keys!");
 				goto end;
 			}
 			if (ik.ik_keylen != 0) {
 				if (verbose)
 					LINE_BREAK();
 				printkey(ctx, &ik);
+			}
+		}
+		if (opmode == IEEE80211_M_STA && wpa >= 2) {
+			struct ieee80211req_key ik;
+			int error;
+
+			memset(&ik, 0, sizeof(ik));
+			ik.ik_keyix = IEEE80211_KEYIX_NONE;
+			memcpy(ik.ik_macaddr, bssid, sizeof(ik.ik_macaddr));
+			error = get80211(ctx, IEEE80211_IOC_WPAKEY, &ik, sizeof(ik));
+			if (error == 0 && ik.ik_keylen != 0) {
+				if (verbose)
+					LINE_BREAK();
+				printkey(ctx, &ik);
+				i++;
 			}
 		}
 		if (i > 0 && verbose)
@@ -5416,26 +5717,27 @@ end:
 
 	if (IEEE80211_IS_CHAN_VHT(c) || verbose) {
 		getvhtconf(ctx);
-		if (vhtconf & IEEE80211_FVHT_VHT)
+		if (vhtconf & IEEE80211_FVHT_VHT) {
 			LINE_CHECK("vht");
-		else
+
+			if (vhtconf & IEEE80211_FVHT_USEVHT40)
+				LINE_CHECK("vht40");
+			else
+				LINE_CHECK("-vht40");
+			if (vhtconf & IEEE80211_FVHT_USEVHT80)
+				LINE_CHECK("vht80");
+			else
+				LINE_CHECK("-vht80");
+			if (vhtconf & IEEE80211_FVHT_USEVHT160)
+				LINE_CHECK("vht160");
+			else
+				LINE_CHECK("-vht160");
+			if (vhtconf & IEEE80211_FVHT_USEVHT80P80)
+				LINE_CHECK("vht80p80");
+			else
+				LINE_CHECK("-vht80p80");
+		} else if (verbose)
 			LINE_CHECK("-vht");
-		if (vhtconf & IEEE80211_FVHT_USEVHT40)
-			LINE_CHECK("vht40");
-		else
-			LINE_CHECK("-vht40");
-		if (vhtconf & IEEE80211_FVHT_USEVHT80)
-			LINE_CHECK("vht80");
-		else
-			LINE_CHECK("-vht80");
-		if (vhtconf & IEEE80211_FVHT_USEVHT160)
-			LINE_CHECK("vht160");
-		else
-			LINE_CHECK("-vht160");
-		if (vhtconf & IEEE80211_FVHT_USEVHT80P80)
-			LINE_CHECK("vht80p80");
-		else
-			LINE_CHECK("-vht80p80");
 	}
 
 	if (get80211val(ctx, IEEE80211_IOC_WME, &wme) != -1) {
@@ -6029,7 +6331,7 @@ static struct cmd ieee80211_cmds[] = {
 	DEF_CMD("ht",		3,	set80211htconf),	/* NB: 20+40 */
 	DEF_CMD("-ht",		0,	set80211htconf),
 	DEF_CMD("vht",		IEEE80211_FVHT_VHT,		set80211vhtconf),
-	DEF_CMD("-vht",		0,				set80211vhtconf),
+	DEF_CMD("-vht",		-IEEE80211_FVHT_VHT,		set80211vhtconf),
 	DEF_CMD("vht40",	IEEE80211_FVHT_USEVHT40,	set80211vhtconf),
 	DEF_CMD("-vht40",	-IEEE80211_FVHT_USEVHT40,	set80211vhtconf),
 	DEF_CMD("vht80",	IEEE80211_FVHT_USEVHT80,	set80211vhtconf),
@@ -6038,6 +6340,12 @@ static struct cmd ieee80211_cmds[] = {
 	DEF_CMD("-vht160",	-IEEE80211_FVHT_USEVHT160,	set80211vhtconf),
 	DEF_CMD("vht80p80",	IEEE80211_FVHT_USEVHT80P80,	set80211vhtconf),
 	DEF_CMD("-vht80p80",	-IEEE80211_FVHT_USEVHT80P80,	set80211vhtconf),
+	DEF_CMD("vhtstbctx",	IEEE80211_FVHT_STBC_TX,		set80211vhtconf),
+	DEF_CMD("-vhtstbctx",	-IEEE80211_FVHT_STBC_TX,	set80211vhtconf),
+	DEF_CMD("vhtstbcrx",	IEEE80211_FVHT_STBC_RX,		set80211vhtconf),
+	DEF_CMD("-vhtstbcrx",	-IEEE80211_FVHT_STBC_RX,	set80211vhtconf),
+	DEF_CMD("vhtstbc",	(IEEE80211_FVHT_STBC_TX|IEEE80211_FVHT_STBC_RX),	set80211vhtconf),
+	DEF_CMD("-vhtstbc",	-(IEEE80211_FVHT_STBC_TX|IEEE80211_FVHT_STBC_RX),	set80211vhtconf),
 	DEF_CMD("rifs",		1,	set80211rifs),
 	DEF_CMD("-rifs",	0,	set80211rifs),
 	DEF_CMD("smps",		IEEE80211_HTCAP_SMPS_ENA,	set80211smps),

@@ -33,6 +33,7 @@
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
+#include <sys/msan.h>
 #include <sys/proc.h>
 #include <sys/smp.h>
 #include <sys/dtrace_impl.h>
@@ -67,6 +68,8 @@ dtrace_invop(uintptr_t addr, struct trapframe *frame, void **scratch)
 	struct thread *td;
 	dtrace_invop_hdlr_t *hdlr;
 	int rval;
+
+	kmsan_mark(frame, sizeof(*frame), KMSAN_STATE_INITED);
 
 	td = curthread;
 	td->t_dtrace_trapframe = frame;
@@ -137,31 +140,6 @@ void
 dtrace_toxic_ranges(void (*func)(uintptr_t base, uintptr_t limit))
 {
 	(*func)(0, la57 ? (uintptr_t)addr_P5Tmap : (uintptr_t)addr_P4Tmap);
-}
-
-void
-dtrace_xcall(processorid_t cpu, dtrace_xcall_t func, void *arg)
-{
-	cpuset_t cpus;
-
-	if (cpu == DTRACE_CPUALL)
-		cpus = all_cpus;
-	else
-		CPU_SETOF(cpu, &cpus);
-
-	smp_rendezvous_cpus(cpus, smp_no_rendezvous_barrier, func,
-	    smp_no_rendezvous_barrier, arg);
-}
-
-static void
-dtrace_sync_func(void)
-{
-}
-
-void
-dtrace_sync(void)
-{
-        dtrace_xcall(DTRACE_CPUALL, (dtrace_xcall_t)dtrace_sync_func, NULL);
 }
 
 #ifdef notyet

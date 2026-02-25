@@ -42,11 +42,11 @@ SRCS=	archive_acl.c					\
 	archive_entry_stat.c				\
 	archive_entry_strmode.c				\
 	archive_entry_xattr.c				\
-	archive_getdate.c				\
 	archive_hmac.c					\
 	archive_match.c					\
 	archive_options.c				\
 	archive_pack_dev.c				\
+	archive_parse_date.c				\
 	archive_pathmatch.c				\
 	archive_ppmd7.c					\
 	archive_ppmd8.c					\
@@ -101,6 +101,7 @@ SRCS=	archive_acl.c					\
 	archive_read_support_format_zip.c		\
 	archive_string.c				\
 	archive_string_sprintf.c			\
+	archive_time.c					\
 	archive_util.c					\
 	archive_version_details.c			\
 	archive_virtual.c				\
@@ -183,12 +184,13 @@ MAN=	archive_entry.3					\
 	archive_write_new.3				\
 	archive_write_open.3				\
 	archive_write_set_options.3			\
-	cpio.5						\
 	libarchive.3					\
 	libarchive_changes.3				\
-	libarchive_internals.3				\
-	libarchive-formats.5				\
-	tar.5
+	libarchive_internals.3
+
+MANNODEV=	cpio.5			\
+		libarchive-formats.5	\
+		tar.5
 
 # Symlink the man pages under each function name.
 MLINKS+=	archive_entry.3 archive_entry_clear.3

@@ -2,7 +2,7 @@ dist_noinst_man_MANS = \
 	%D%/man1/cstyle.1
 
 dist_man_MANS = \
-	%D%/man1/arcstat.1 \
+	%D%/man1/zarcstat.1 \
 	%D%/man1/raidz_test.1 \
 	%D%/man1/test-runner.1 \
 	%D%/man1/zhack.1 \
@@ -50,6 +50,7 @@ dist_man_MANS = \
 	%D%/man8/zfs-redact.8 \
 	%D%/man8/zfs-release.8 \
 	%D%/man8/zfs-rename.8 \
+	%D%/man8/zfs-rewrite.8 \
 	%D%/man8/zfs-rollback.8 \
 	%D%/man8/zfs-send.8 \
 	%D%/man8/zfs-set.8 \
@@ -62,7 +63,6 @@ dist_man_MANS = \
 	%D%/man8/zfs-userspace.8 \
 	%D%/man8/zfs-wait.8 \
 	%D%/man8/zfs_ids_to_path.8 \
-	%D%/man8/zfs_prepare_disk.8 \
 	%D%/man8/zgenhostid.8 \
 	%D%/man8/zinject.8 \
 	%D%/man8/zpool.8 \
@@ -73,6 +73,7 @@ dist_man_MANS = \
 	%D%/man8/zpool-create.8 \
 	%D%/man8/zpool-destroy.8 \
 	%D%/man8/zpool-detach.8 \
+	%D%/man8/zpool-ddtprune.8 \
 	%D%/man8/zpool-events.8 \
 	%D%/man8/zpool-export.8 \
 	%D%/man8/zpool-get.8 \
@@ -84,6 +85,7 @@ dist_man_MANS = \
 	%D%/man8/zpool-list.8 \
 	%D%/man8/zpool-offline.8 \
 	%D%/man8/zpool-online.8 \
+	%D%/man8/zpool-prefetch.8 \
 	%D%/man8/zpool-reguid.8 \
 	%D%/man8/zpool-remove.8 \
 	%D%/man8/zpool-reopen.8 \
@@ -115,16 +117,28 @@ endif
 
 nodist_man_MANS = \
 	%D%/man8/zed.8 \
-	%D%/man8/zfs-mount-generator.8
+	%D%/man8/zfs-mount-generator.8 \
+	%D%/man8/zfs_prepare_disk.8
 
 dist_noinst_DATA += $(dist_noinst_man_MANS) $(dist_man_MANS)
 
 SUBSTFILES += $(nodist_man_MANS)
 
-CHECKS += mancheck
-mancheck:
-	$(top_srcdir)/scripts/mancheck.sh $(srcdir)/%D%
+MANFILES = $(dist_noinst_man_MANS) $(dist_man_MANS) $(nodist_man_MANS)
 
+PHONY += mancheck
+
+mancheck_verbose = $(mancheck_verbose_@AM_V@)
+mancheck_verbose_ = $(mancheck_verbose_@AM_DEFAULT_V@)
+mancheck_verbose_0 = @echo MANCHECK $(_MTGT);
+
+_MTGT = $(subst ^,/,$(subst mancheck-,,$@))
+mancheck-%:
+	$(mancheck_verbose)scripts/mancheck.sh $(_MTGT)
+
+mancheck: $(foreach manfile, $(MANFILES), $(addprefix mancheck-,$(subst /,^,$(manfile))))
+
+CHECKS += mancheck
 
 if BUILD_LINUX
 # The manual pager in most Linux distros defaults to "BSD" when .Os is blank,

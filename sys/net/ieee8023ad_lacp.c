@@ -42,8 +42,8 @@
 #include <sys/kernel.h> /* hz */
 #include <sys/socket.h> /* for net/if.h */
 #include <sys/sockio.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
-#include <machine/stdarg.h>
 #include <sys/lock.h>
 #include <sys/rwlock.h>
 #include <sys/taskqueue.h>
@@ -1036,6 +1036,18 @@ lacp_select_active_aggregator(struct lacp_softc *lsc)
 	}
 }
 
+static int
+lacp_pm_compare(const void *p1, const void *p2)
+{
+	struct lacp_port *const *a = p1;
+	struct lacp_port *const *b = p2;
+	int left, right;
+
+	left = (*a)->lp_ifp->if_index;
+	right = (*b)->lp_ifp->if_index;
+	return ((left > right) - (left < right));
+}
+
 /*
  * Updated the inactive portmap array with the new list of ports and
  * make it live.
@@ -1079,11 +1091,23 @@ lacp_update_portmap(struct lacp_softc *lsc)
 
 #ifdef NUMA
 		for (i = 0; i < MAXMEMDOM; i++) {
-			if (p->pm_numa[i].count != 0)
+			if (p->pm_numa[i].count != 0) {
 				p->pm_num_dom++;
+				if (p->pm_numa[i].count > 1) {
+					qsort(&p->pm_numa[i].map[0],
+					    p->pm_numa[i].count,
+					    sizeof(p->pm_numa[i].map[0]),
+					    lacp_pm_compare);
+				}
+			}
 		}
 #endif
 		speed = lacp_aggregator_bandwidth(la);
+	}
+
+	if (p->pm_count > 1) {
+		qsort(&p->pm_map[0], p->pm_count,
+		    sizeof(p->pm_map[0]), lacp_pm_compare);
 	}
 	sc->sc_ifp->if_baudrate = speed;
 	EVENTHANDLER_INVOKE(ifnet_event, sc->sc_ifp,
@@ -1137,6 +1161,7 @@ lacp_compose_key(struct lacp_port *lp)
 		case IFM_100_T2:
 		case IFM_100_T:
 		case IFM_100_SGMII:
+		case IFM_100_BX:
 			key = IFM_100_TX;
 			break;
 		case IFM_1000_SX:
@@ -1146,6 +1171,7 @@ lacp_compose_key(struct lacp_port *lp)
 		case IFM_1000_KX:
 		case IFM_1000_SGMII:
 		case IFM_1000_CX_SGMII:
+		case IFM_1000_BX:
 			key = IFM_1000_SX;
 			break;
 		case IFM_10G_LR:
@@ -1262,6 +1288,8 @@ lacp_compose_key(struct lacp_port *lp)
 		case IFM_400G_DR4:
 		case IFM_400G_AUI8_AC:
 		case IFM_400G_AUI8:
+		case IFM_400G_SR8:
+		case IFM_400G_CR8:
 			key = IFM_400G_FR8;
 			break;
 		default:

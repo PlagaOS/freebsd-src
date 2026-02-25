@@ -44,6 +44,7 @@
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mutex.h>
+#include <sys/splash.h>
 #include <sys/power.h>
 #include <sys/priv.h>
 #include <sys/proc.h>
@@ -118,18 +119,21 @@ static const struct terminal_class vt_termclass = {
 
 /* Bell pitch/duration. */
 #define	VT_BELLDURATION	(SBT_1S / 20)
-#define	VT_BELLPITCH	(1193182 / 800) /* Approx 1491Hz */
+#define	VT_BELLPITCH	800
 
 #define	VT_UNIT(vw)	((vw)->vw_device->vd_unit * VT_MAXWINDOWS + \
 			(vw)->vw_number)
 
 static SYSCTL_NODE(_kern, OID_AUTO, vt, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
-    "vt(9) parameters");
+    "vt(4) parameters");
 static VT_SYSCTL_INT(enable_altgr, 1, "Enable AltGr key (Do not assume R.Alt as Alt)");
 static VT_SYSCTL_INT(enable_bell, 0, "Enable bell");
-static VT_SYSCTL_INT(debug, 0, "vt(9) debug level");
+static VT_SYSCTL_INT(debug, 0, "vt(4) debug level");
 static VT_SYSCTL_INT(deadtimer, 15, "Time to wait busy process in VT_PROCESS mode");
 static VT_SYSCTL_INT(suspendswitch, 1, "Switch to VT0 before suspend");
+
+/* Slow down and dont rely on timers and interrupts */
+static VT_SYSCTL_INT(slow_down, 0, "Non-zero make console slower and synchronous.");
 
 /* Allow to disable some keyboard combinations. */
 static VT_SYSCTL_INT(kbd_halt, 1, "Enable halt keyboard combination.  "
@@ -191,8 +195,8 @@ static void vt_update_static(void *);
 #ifndef SC_NO_CUTPASTE
 static void vt_mouse_paste(void);
 #endif
-static void vt_suspend_handler(void *priv);
-static void vt_resume_handler(void *priv);
+static void vt_suspend_handler(void *priv, enum power_stype stype);
+static void vt_resume_handler(void *priv, enum power_stype stype);
 
 SET_DECLARE(vt_drv_set, struct vt_driver);
 
@@ -800,11 +804,11 @@ vt_machine_kbdevent(struct vt_device *vd, int c)
 		return (1);
 	case SPCLKEY | STBY: /* XXX Not present in kbdcontrol parser. */
 		/* Put machine into Stand-By mode. */
-		power_pm_suspend(POWER_SLEEP_STATE_STANDBY);
+		power_pm_suspend(POWER_SSTATE_TRANSITION_STANDBY);
 		return (1);
 	case SPCLKEY | SUSP: /* kbdmap(5) keyword `susp`. */
 		/* Suspend machine. */
-		power_pm_suspend(POWER_SLEEP_STATE_SUSPEND);
+		power_pm_suspend(POWER_SSTATE_TRANSITION_SUSPEND);
 		return (1);
 	}
 
@@ -872,7 +876,9 @@ vt_processkey(keyboard_t *kbd, struct vt_device *vd, int c)
 {
 	struct vt_window *vw = vd->vd_curwindow;
 
+#ifdef RANDOM_ENABLE_KBD
 	random_harvest_queue(&c, sizeof(c), RANDOM_KEYBOARD);
+#endif
 #if VT_ALT_TO_ESC_HACK
 	if (c & RELKEY) {
 		switch (c & ~RELKEY) {
@@ -946,6 +952,9 @@ vt_processkey(keyboard_t *kbd, struct vt_device *vd, int c)
 			VT_UNLOCK(vd);
 			break;
 		}
+		case BKEY | BTAB: /* Back tab (usually, shift+tab). */
+			terminal_input_special(vw->vw_terminal, TKEY_BTAB);
+			break;
 		case FKEY | F(1):  case FKEY | F(2):  case FKEY | F(3):
 		case FKEY | F(4):  case FKEY | F(5):  case FKEY | F(6):
 		case FKEY | F(7):  case FKEY | F(8):  case FKEY | F(9):
@@ -1134,6 +1143,13 @@ vtterm_bell(struct terminal *tm)
 	sysbeep(vw->vw_bell_pitch, vw->vw_bell_duration);
 }
 
+/*
+ * Beep with user-provided frequency and duration as specified by a KDMKTONE
+ * ioctl (compatible with Linux).  The frequency is specified as a 8254 PIT
+ * divisor for a 1.19MHz clock.
+ *
+ * See https://tldp.org/LDP/lpg/node83.html.
+ */
 static void
 vtterm_beep(struct terminal *tm, u_int param)
 {
@@ -1147,6 +1163,7 @@ vtterm_beep(struct terminal *tm, u_int param)
 		return;
 	}
 
+	/* XXX period unit is supposed to be "timer ticks." */
 	period = ((param >> 16) & 0xffff) * SBT_1MS;
 	freq = 1193182 / (param & 0xffff);
 
@@ -1648,6 +1665,12 @@ vtterm_done(struct terminal *tm)
 		}
 		vd->vd_flags &= ~VDF_SPLASH;
 		vt_flush(vd);
+	} else if (vt_slow_down > 0) {
+		int i, j;
+		for (i = 0; i < vt_slow_down; i++) {
+			for (j = 0; j < 1000; j++)
+				vt_flush(vd);
+		}
 	} else if (!(vd->vd_flags & VDF_ASYNC)) {
 		vt_flush(vd);
 	}
@@ -1657,18 +1680,28 @@ vtterm_done(struct terminal *tm)
 static void
 vtterm_splash(struct vt_device *vd)
 {
+	struct splash_info *si;
+	uintptr_t image;
 	vt_axis_t top, left;
 
-	/* Display a nice boot splash. */
+	si = MD_FETCH(preload_kmdp, MODINFOMD_SPLASH, struct splash_info *);
 	if (!(vd->vd_flags & VDF_TEXTMODE) && (boothowto & RB_MUTE)) {
-		top = (vd->vd_height - vt_logo_height) / 2;
-		left = (vd->vd_width - vt_logo_width) / 2;
-		switch (vt_logo_depth) {
-		case 1:
-			/* XXX: Unhardcode colors! */
+		if (si == NULL) {
+			top = (vd->vd_height - vt_logo_height) / 2;
+			left = (vd->vd_width - vt_logo_width) / 2;
 			vd->vd_driver->vd_bitblt_bmp(vd, vd->vd_curwindow,
 			    vt_logo_image, NULL, vt_logo_width, vt_logo_height,
 			    left, top, TC_WHITE, TC_BLACK);
+		} else {
+			if (si->si_depth != 4)
+				return;
+			image = (uintptr_t)si + sizeof(struct splash_info);
+			image = roundup2(image, 8);
+			top = (vd->vd_height - si->si_height) / 2;
+			left = (vd->vd_width - si->si_width) / 2;
+			vd->vd_driver->vd_bitblt_argb(vd, vd->vd_curwindow,
+			    (unsigned char *)image, si->si_width, si->si_height,
+			    left, top);
 		}
 		vd->vd_flags |= VDF_SPLASH;
 	}
@@ -1774,14 +1807,10 @@ parse_font_info(struct font_info *fi)
 static void
 vt_init_font(void *arg)
 {
-	caddr_t kmdp;
 	struct font_info *fi;
 	struct vt_font *font;
 
-	kmdp = preload_search_by_type("elf kernel");
-	if (kmdp == NULL)
-		kmdp = preload_search_by_type("elf64 kernel");
-	fi = MD_FETCH(kmdp, MODINFOMD_FONT, struct font_info *);
+	fi = MD_FETCH(preload_kmdp, MODINFOMD_FONT, struct font_info *);
 
 	font = parse_font_info(fi);
 	if (font != NULL)
@@ -1793,14 +1822,10 @@ SYSINIT(vt_init_font, SI_SUB_KMEM, SI_ORDER_ANY, vt_init_font, &vt_consdev);
 static void
 vt_init_font_static(void)
 {
-	caddr_t kmdp;
 	struct font_info *fi;
 	struct vt_font *font;
 
-	kmdp = preload_search_by_type("elf kernel");
-	if (kmdp == NULL)
-		kmdp = preload_search_by_type("elf64 kernel");
-	fi = MD_FETCH(kmdp, MODINFOMD_FONT, struct font_info *);
+	fi = MD_FETCH(preload_kmdp, MODINFOMD_FONT, struct font_info *);
 
 	font = parse_font_info_static(fi);
 	if (font != NULL)
@@ -1941,6 +1966,9 @@ vtterm_cngetc(struct terminal *tm)
 				vw->vw_flags &= ~VWF_SCROLL;
 				VTBUF_SLCK_DISABLE(&vw->vw_buf);
 			}
+			break;
+		case SPCLKEY | BTAB: /* Back tab (usually, shift+tab). */
+			vw->vw_kbdsq = "\x1b[Z";
 			break;
 		/* XXX: KDB can handle history. */
 		case SPCLKEY | FKEY | F(50): /* Arrow up. */
@@ -3024,9 +3052,9 @@ skip_thunk:
 				DPRINTF(5, "reset WAIT_ACQ, ");
 			return (0);
 		} else if (mode->mode == VT_PROCESS) {
-			if (!ISSIGVALID(mode->relsig) ||
-			    !ISSIGVALID(mode->acqsig) ||
-			    !ISSIGVALID(mode->frsig)) {
+			if (!(_SIG_VALID(mode->relsig) &&
+			    _SIG_VALID(mode->acqsig) &&
+			    (mode->frsig == 0 || _SIG_VALID(mode->frsig)))) {
 				DPRINTF(5, "error EINVAL\n");
 				return (EINVAL);
 			}
@@ -3310,7 +3338,7 @@ vt_replace_backend(const struct vt_driver *drv, void *softc)
 }
 
 static void
-vt_suspend_handler(void *priv)
+vt_suspend_handler(void *priv, enum power_stype stype)
 {
 	struct vt_device *vd;
 
@@ -3321,7 +3349,7 @@ vt_suspend_handler(void *priv)
 }
 
 static void
-vt_resume_handler(void *priv)
+vt_resume_handler(void *priv, enum power_stype stype)
 {
 	struct vt_device *vd;
 

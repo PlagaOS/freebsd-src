@@ -411,7 +411,7 @@ sysctl_warn_reuse(const char *func, struct sysctl_oid *leaf)
 	(void)sbuf_new(&sb, buf, sizeof(buf), SBUF_FIXEDLEN | SBUF_INCLUDENUL);
 	sbuf_set_drain(&sb, sbuf_printf_drain, NULL);
 
-	sbuf_printf(&sb, "%s: can't re-use a leaf (", __func__);
+	sbuf_printf(&sb, "%s: can't re-use a leaf (", func);
 
 	rc = sysctl_search_oid(nodes, leaf);
 	if (rc > 0) {
@@ -516,7 +516,7 @@ sysctl_register_oid(struct sysctl_oid *oidp)
 	/* check for non-auto OID number collision */
 	if (oidp->oid_number >= 0 && oidp->oid_number < CTL_AUTO_START &&
 	    oid_number >= CTL_AUTO_START) {
-		printf("sysctl: OID number(%d) is already in use for '%s'\n",
+		panic("sysctl: OID number(%d) is already in use for '%s'\n",
 		    oidp->oid_number, oidp->oid_name);
 	}
 	/* update the OID number, if any */
@@ -651,17 +651,15 @@ sysctl_ctx_free(struct sysctl_ctx_list *clist)
 		return(EBUSY);
 	}
 	/* Now really delete the entries */
-	e = TAILQ_FIRST(clist);
-	while (e != NULL) {
-		e1 = TAILQ_NEXT(e, link);
+	TAILQ_FOREACH_SAFE(e, clist, link, e1) {
 		error = sysctl_remove_oid_locked(e->entry, 1, 0);
 		if (error)
 			panic("sysctl_remove_oid: corrupt tree, entry: %s",
 			    e->entry->oid_name);
 		free(e, M_SYSCTLOID);
-		e = e1;
 	}
 	SYSCTL_WUNLOCK();
+	TAILQ_INIT(clist);
 	return (error);
 }
 
@@ -1621,8 +1619,8 @@ static SYSCTL_NODE(_sysctl, CTL_SYSCTL_OIDLABEL, oidlabel, CTLFLAG_RD |
 int
 sysctl_handle_bool(SYSCTL_HANDLER_ARGS)
 {
-	uint8_t temp;
 	int error;
+	uint8_t temp;
 
 	/*
 	 * Attempt to get a coherent snapshot by making a copy of the data.
@@ -1632,16 +1630,40 @@ sysctl_handle_bool(SYSCTL_HANDLER_ARGS)
 	else
 		temp = arg2 ? 1 : 0;
 
-	error = SYSCTL_OUT(req, &temp, sizeof(temp));
+	/*
+	 * In order to support backwards-compatible conversion of integer knobs
+	 * that are used as booleans to true boolean knobs, whose internal state
+	 * is stored as a 'bool' and not an 'int', if exactly 4 bytes remain in
+	 * the output buffer, we assume that the caller expected an 'int'
+	 * instead of a 'uint8_t'.
+	 */
+	if (req->oldlen - req->oldidx == sizeof(int)) {
+		int temp_int = temp;
+
+		error = SYSCTL_OUT(req, &temp_int, sizeof(temp_int));
+	} else
+		error = SYSCTL_OUT(req, &temp, sizeof(temp));
 	if (error || !req->newptr)
 		return (error);
 
 	if (!arg1)
 		error = EPERM;
 	else {
-		error = SYSCTL_IN(req, &temp, sizeof(temp));
-		if (!error)
-			*(bool *)arg1 = temp ? 1 : 0;
+		/*
+		 * Conversely, if the input buffer has exactly 4 bytes to read,
+		 * use them all to produce a bool.
+		 */
+		if (req->newlen - req->newidx == sizeof(int)) {
+			int temp_int;
+
+			error = SYSCTL_IN(req, &temp_int, sizeof(temp_int));
+			if (error == 0)
+				*(bool *)arg1 = temp_int != 0 ? 1 : 0;
+		} else {
+			error = SYSCTL_IN(req, &temp, sizeof(temp));
+			if (error == 0)
+				*(bool *)arg1 = temp != 0 ? 1 : 0;
+		}
 	}
 	return (error);
 }
@@ -1887,8 +1909,7 @@ int
 sysctl_handle_string(SYSCTL_HANDLER_ARGS)
 {
 	char *tmparg;
-	size_t outlen;
-	int error = 0, ro_string = 0;
+	int error = 0;
 
 	/*
 	 * If the sysctl isn't writable and isn't a preallocated tunable that
@@ -1900,33 +1921,32 @@ sysctl_handle_string(SYSCTL_HANDLER_ARGS)
 	 */
 	if ((oidp->oid_kind & (CTLFLAG_WR | CTLFLAG_TUN)) == 0 ||
 	    arg2 == 0 || kdb_active) {
-		arg2 = strlen((char *)arg1) + 1;
-		ro_string = 1;
-	}
+		size_t outlen;
 
-	if (req->oldptr != NULL) {
-		if (ro_string) {
-			tmparg = arg1;
-			outlen = strlen(tmparg) + 1;
-		} else {
+		if (arg2 == 0)
+			outlen = arg2 = strlen(arg1) + 1;
+		else
+			outlen = strnlen(arg1, arg2 - 1) + 1;
+
+		tmparg = req->oldptr != NULL ? arg1 : NULL;
+		error = SYSCTL_OUT(req, tmparg, outlen);
+	} else {
+		size_t outlen;
+
+		if (req->oldptr != NULL) {
 			tmparg = malloc(arg2, M_SYSCTLTMP, M_WAITOK);
 			sx_slock(&sysctlstringlock);
 			memcpy(tmparg, arg1, arg2);
 			sx_sunlock(&sysctlstringlock);
-			outlen = strlen(tmparg) + 1;
-		}
-
-		error = SYSCTL_OUT(req, tmparg, outlen);
-
-		if (!ro_string)
-			free(tmparg, M_SYSCTLTMP);
-	} else {
-		if (!ro_string)
+			outlen = strnlen(tmparg, arg2 - 1) + 1;
+		} else {
+			tmparg = NULL;
 			sx_slock(&sysctlstringlock);
-		outlen = strlen((char *)arg1) + 1;
-		if (!ro_string)
+			outlen = strnlen(arg1, arg2 - 1) + 1;
 			sx_sunlock(&sysctlstringlock);
-		error = SYSCTL_OUT(req, NULL, outlen);
+		}
+		error = SYSCTL_OUT(req, tmparg, outlen);
+		free(tmparg, M_SYSCTLTMP);
 	}
 	if (error || !req->newptr)
 		return (error);
@@ -2372,7 +2392,7 @@ sysctl_root(SYSCTL_HANDLER_ARGS)
 			priv = PRIV_SYSCTL_WRITEJAIL;
 #ifdef VIMAGE
 		else if ((oid->oid_kind & CTLFLAG_VNET) &&
-		     prison_owns_vnet(req->td->td_ucred))
+		     prison_owns_vnet(req->td->td_ucred->cr_prison))
 			priv = PRIV_SYSCTL_WRITEJAIL;
 #endif
 		else
@@ -2518,8 +2538,9 @@ userland_sysctl(struct thread *td, int *name, u_int namelen, void *old,
     size_t *oldlenp, int inkernel, const void *new, size_t newlen,
     size_t *retval, int flags)
 {
-	int error = 0, memlocked;
 	struct sysctl_req req;
+	int error = 0;
+	bool memlocked;
 
 	bzero(&req, sizeof req);
 
@@ -2551,9 +2572,10 @@ userland_sysctl(struct thread *td, int *name, u_int namelen, void *old,
 	if (KTRPOINT(curthread, KTR_SYSCTL))
 		ktrsysctl(name, namelen);
 #endif
-	memlocked = 0;
-	if (req.oldptr && req.oldlen > 4 * PAGE_SIZE) {
-		memlocked = 1;
+	memlocked = false;
+	if (req.oldptr != NULL && req.oldlen > 4 * PAGE_SIZE &&
+	    priv_check(td, PRIV_SYSCTL_MEMLOCK) != 0) {
+		memlocked = true;
 		sx_xlock(&sysctlmemlock);
 	}
 	CURVNET_SET(TD_TO_VNET(td));

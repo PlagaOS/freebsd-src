@@ -261,7 +261,7 @@ static device_method_t ti_methods[] = {
 	DEVMETHOD(device_attach,	ti_attach),
 	DEVMETHOD(device_detach,	ti_detach),
 	DEVMETHOD(device_shutdown,	ti_shutdown),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t ti_driver = {
@@ -2384,11 +2384,6 @@ ti_attach(device_t dev)
 	callout_init_mtx(&sc->ti_watchdog, &sc->ti_mtx, 0);
 	ifmedia_init(&sc->ifmedia, IFM_IMASK, ti_ifmedia_upd, ti_ifmedia_sts);
 	ifp = sc->ti_ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		device_printf(dev, "can not if_alloc()\n");
-		error = ENOSPC;
-		goto fail;
-	}
 	if_sethwassist(ifp, TI_CSUM_FEATURES);
 	if_setcapabilities(ifp, IFCAP_TXCSUM | IFCAP_RXCSUM);
 	if_setcapenable(ifp, if_getcapabilities(sc->ti_ifp));

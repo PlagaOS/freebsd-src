@@ -990,10 +990,10 @@ int
 fdt_copy(vm_offset_t va)
 {
 	int err;
-	debugf("fdt_copy va 0x%08x\n", va);
+	debugf("fdt_copy va 0x%08jx\n", (uintmax_t)va);
 	if (fdtp == NULL) {
 		err = fdt_setup_fdtp();
-		if (err) {
+		if (err && (getenv("acpi.revision") == NULL)) {
 			printf("No valid device tree blob found!\n");
 			return (0);
 		}
@@ -1238,13 +1238,6 @@ fdt_cmd_ls(int argc, char *argv[])
 	}
 
 	return (CMD_OK);
-}
-
-static __inline int
-isprint(int c)
-{
-
-	return (c >= ' ' && c <= 0x7e);
 }
 
 static int

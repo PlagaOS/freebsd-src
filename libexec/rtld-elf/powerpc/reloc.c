@@ -57,6 +57,17 @@
 
 void _rtld_bind_secureplt_start(void);
 
+bool
+arch_digest_dynamic(struct Struct_Obj_Entry *obj, const Elf_Dyn *dynp)
+{
+	if (dynp->d_tag == DT_PPC_GOT) {
+		obj->gotptr = (Elf_Addr *)(obj->relocbase + dynp->d_un.d_ptr);
+		return (true);
+	}
+
+	return (false);
+}
+
 /*
  * Process the R_PPC_COPY relocations
  */
@@ -321,7 +332,6 @@ reloc_non_plt(Obj_Entry *obj, Obj_Entry *obj_rtld, int flags,
 {
 	const Elf_Rela *relalim;
 	const Elf_Rela *rela;
-	const Elf_Phdr *phdr;
 	SymCache *cache;
 	int r = -1;
 
@@ -350,20 +360,6 @@ reloc_non_plt(Obj_Entry *obj, Obj_Entry *obj_rtld, int flags,
 done:
 	if (cache != NULL)
 		free(cache);
-
-	/*
-	 * Synchronize icache for executable segments in case we made
-	 * any changes.
-	 */
-	for (phdr = obj->phdr;
-	    (const char *)phdr < (const char *)obj->phdr + obj->phsize;
-	    phdr++) {
-		if (phdr->p_type == PT_LOAD && (phdr->p_flags & PF_X) != 0) {
-			__syncicache(obj->relocbase + phdr->p_vaddr,
-			    phdr->p_memsz);
-		}
-	}
-
 	return (r);
 }
 
@@ -802,7 +798,7 @@ powerpc_abi_variant_hook(Elf_Auxinfo** aux_info)
 }
 
 void
-ifunc_init(Elf_Auxinfo aux_info[__min_size(AT_COUNT)] __unused)
+ifunc_init(Elf_Auxinfo *aux_info[__min_size(AT_COUNT)] __unused)
 {
 
 }
@@ -826,11 +822,30 @@ allocate_initial_tls(Obj_Entry *list)
 void*
 __tls_get_addr(tls_index* ti)
 {
-	uintptr_t **dtvp;
-	char *p;
+	return (tls_get_addr_common(_tcb_get(), ti->ti_module, ti->ti_offset +
+	    TLS_DTV_OFFSET));
+}
 
-	dtvp = &_tcb_get()->tcb_dtv;
-	p = tls_get_addr_common(dtvp, ti->ti_module, ti->ti_offset);
+void
+arch_fix_auxv(Elf_Auxinfo *aux, Elf_Auxinfo *aux_info[])
+{
+	Elf_Auxinfo *auxp;
 
-	return (p + TLS_DTV_OFFSET);
+	for (auxp = aux; auxp->a_type != AT_NULL; auxp++) {
+		if (auxp->a_type == 23) /* AT_STACKPROT */
+			return;
+	}
+
+	/* Remap from old-style auxv numbers. */
+	aux_info[23] = aux_info[21]; /* AT_STACKPROT */
+	aux_info[21] = aux_info[19]; /* AT_PAGESIZESLEN */
+	aux_info[19] = aux_info[17]; /* AT_NCPUS */
+	aux_info[17] = aux_info[15]; /* AT_CANARYLEN */
+	aux_info[15] = aux_info[13]; /* AT_EXECPATH */
+	aux_info[13] = NULL;	     /* AT_GID */
+
+	aux_info[20] = aux_info[18]; /* AT_PAGESIZES */
+	aux_info[18] = aux_info[16]; /* AT_OSRELDATE */
+	aux_info[16] = aux_info[14]; /* AT_CANARY */
+	aux_info[14] = NULL;	     /* AT_EGID */
 }

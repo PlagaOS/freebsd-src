@@ -31,9 +31,6 @@ static sigset_t hooked_signals;
 /// signals_unblock() are called before signals_init() has been called.
 static bool signals_are_initialized = false;
 
-/// signals_block() and signals_unblock() can be called recursively.
-static size_t signals_block_count = 0;
-
 
 static void
 signal_handler(int sig)
@@ -49,6 +46,10 @@ signal_handler(int sig)
 }
 
 
+#ifdef __APPLE__
+#	pragma GCC diagnostic push
+#	pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 extern void
 signals_init(void)
 {
@@ -127,9 +128,16 @@ signals_init(void)
 
 	return;
 }
+#ifdef __APPLE__
+#	pragma GCC diagnostic pop
+#endif
 
 
 #ifndef __VMS
+/// signals_block() and signals_unblock() can be called recursively.
+static size_t signals_block_count = 0;
+
+
 extern void
 signals_block(void)
 {
@@ -179,8 +187,14 @@ signals_exit(void)
 		sa.sa_handler = SIG_DFL;
 		sigfillset(&sa.sa_mask);
 		sa.sa_flags = 0;
-		sigaction(sig, &sa, NULL);
-		raise(sig);
+
+		// This shouldn't fail, but check it anyway.
+		if (sigaction(sig, &sa, NULL) == 0)
+			raise(sig);
+
+		// We shouldn't get here, but just in case we do,
+		// make main() exit with E_ERROR.
+		set_exit_status(E_ERROR);
 #endif
 	}
 

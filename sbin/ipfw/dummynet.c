@@ -22,7 +22,7 @@
 
 #define NEW_AQM
 #include <sys/limits.h>
-#include <sys/types.h>
+#include <sys/param.h>
 #include <sys/socket.h>
 /* XXX there are several sysctl leftover here */
 #include <sys/sysctl.h>
@@ -680,7 +680,7 @@ ipfw_delete_pipe(int do_pipe, int i)
 	i = do_cmd(IP_DUMMYNET3, &cmd, cmd.oid.len);
 	if (i) {
 		i = 1;
-		warn("rule %u: setsockopt(IP_DUMMYNET_DEL)", i);
+		warn("rule %u: setsockopt(IP_DUMMYNET3)", i);
 	}
 	return i;
 }
@@ -1401,7 +1401,7 @@ ipfw_config_pipe(int ac, char **av)
 	 */
 	if (p)
 		p->bandwidth = -1;
-	for (j = 0; j < sizeof(fs->par)/sizeof(fs->par[0]); j++)
+	for (j = 0; j < nitems(fs->par); j++)
 		fs->par[j] = -1;
 	while (ac > 0) {
 		double d;
@@ -1863,7 +1863,7 @@ end_mask:
 	i = do_cmd(IP_DUMMYNET3, base, (char *)buf - (char *)base);
 
 	if (i)
-		err(1, "setsockopt(%s)", "IP_DUMMYNET_CONFIGURE");
+		err(1, "setsockopt(%s)", "IP_DUMMYNET3");
 }
 
 void

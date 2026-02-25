@@ -28,7 +28,6 @@
  * Broadcom Inc. (LSI) MPT-Fusion Host Adapter FreeBSD
  */
 
-#include <sys/cdefs.h>
 /* Communications core for Avago Technologies (LSI) MPT3 */
 
 /* TODO Move headers to mprvar */
@@ -51,12 +50,11 @@
 #include <sys/taskqueue.h>
 #include <sys/sbuf.h>
 #include <sys/reboot.h>
+#include <sys/stdarg.h>
 
 #include <machine/bus.h>
 #include <machine/resource.h>
 #include <sys/rman.h>
-
-#include <machine/stdarg.h>
 
 #include <cam/cam.h>
 #include <cam/cam_ccb.h>

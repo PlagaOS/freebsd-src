@@ -8,32 +8,37 @@ export ASSUME_ALWAYS_YES="YES"
 export PKG_DBDIR="/tmp/pkg"
 export PERMISSIVE="YES"
 export REPO_AUTOUPDATE="NO"
-export PKGCMD="/usr/sbin/pkg -d"
+export ROOTDIR="$PWD/dvd"
 export PORTSDIR="${PORTSDIR:-/usr/ports}"
 
-_DVD_PACKAGES="archivers/unzip
-devel/git
-emulators/linux_base-c7
-graphics/drm-kmod
-graphics/drm-510-kmod
-graphics/drm-515-kmod
+_DVD_PACKAGES_MAIN="
+comms/usbmuxd
+devel/git@lite
+editors/emacs@nox
+editors/vim
+filesystems/ext2
+filesystems/ntfs
 misc/freebsd-doc-all
 net/mpd5
 net/rsync
 ports-mgmt/pkg
-ports-mgmt/portmaster
 shells/bash
 shells/zsh
-security/sudo
+security/sudo@default
 sysutils/screen
+sysutils/seatd
 sysutils/tmux
 www/firefox
 www/links
-x11-drivers/xf86-video-vmware
 x11/gnome
-x11/kde5
 x11/sddm
-x11/xorg"
+x11/xorg
+x11-wm/sway
+"
+
+_DVD_PACKAGES_KMODS="
+net/wifi-firmware-kmod@release
+"
 
 # If NOPORTS is set for the release, do not attempt to build pkg(8).
 if [ ! -f ${PORTSDIR}/Makefile ]; then
@@ -43,33 +48,56 @@ if [ ! -f ${PORTSDIR}/Makefile ]; then
 	exit 0
 fi
 
+usage()
+{
+	echo "usage: $0 [-N]"
+	exit 0
+}
+
+while getopts N opt; do
+	case "$opt" in
+	N)	;;
+	*)	usage ;;
+	esac
+done
+
+PKG_ARGS="--rootdir ${ROOTDIR}"
+PKG_ARGS="$PKG_ARGS -o INSTALL_AS_USER=1"
+PKGCMD="/usr/sbin/pkg ${PKG_ARGS}"
+
 if [ ! -x /usr/local/sbin/pkg ]; then
 	/etc/rc.d/ldconfig restart
 	/usr/bin/make -C ${PORTSDIR}/ports-mgmt/pkg install clean
 fi
 
-export DVD_DIR="dvd/packages"
-export PKG_ABI=$(pkg config ABI)
-export PKG_ALTABI=$(pkg config ALTABI 2>/dev/null)
-export PKG_REPODIR="${DVD_DIR}/${PKG_ABI}"
+export PKG_ABI=$(pkg --rootdir ${ROOTDIR} config ABI)
+export PKG_ALTABI=$(pkg --rootdir ${ROOTDIR} config ALTABI 2>/dev/null)
+export PKG_REPODIR="packages/${PKG_ABI}"
 
-/bin/mkdir -p ${PKG_REPODIR}
-if [ ! -z "${PKG_ALTABI}" ]; then
-	(cd ${DVD_DIR} && ln -s ${PKG_ABI} ${PKG_ALTABI})
+/bin/mkdir -p ${ROOTDIR}/${PKG_REPODIR}
+if [ -n "${PKG_ALTABI}" ]; then
+	ln -s ${PKG_ABI} ${ROOTDIR}/packages/${PKG_ALTABI}
 fi
 
-# Ensure the ports listed in _DVD_PACKAGES exist to sanitize the
+# Ensure the ports listed in _DVD_PACKAGES_* exist to sanitize the
 # final list.
-for _P in ${_DVD_PACKAGES}; do
-	if [ -d "${PORTSDIR}/${_P}" ]; then
-		DVD_PACKAGES="${DVD_PACKAGES} ${_P}"
+for _P in ${_DVD_PACKAGES_MAIN}; do
+	if [ -d "${PORTSDIR}/${_P%%@*}" ]; then
+		DVD_PACKAGES_MAIN="${DVD_PACKAGES_MAIN} ${_P}"
 	else
-		echo "*** Skipping nonexistent port: ${_P}"
+		echo "*** Skipping nonexistent port: ${_P%%@*}"
+	fi
+done
+for _P in ${_DVD_PACKAGES_KMODS}; do
+	if [ -d "${PORTSDIR}/${_P%%@*}" ]; then
+		DVD_PACKAGES_KMODS="${DVD_PACKAGES_KMODS} ${_P}"
+	else
+		echo "*** Skipping nonexistent port: ${_P%%@*}"
 	fi
 done
 
 # Make sure the package list is not empty.
-if [ -z "${DVD_PACKAGES}" ]; then
+if [ -z "${DVD_PACKAGES_MAIN}${DVD_PACKAGES_KMODS}" ]; then
 	echo "*** The package list is empty."
 	echo "*** Something is very wrong."
 	# Exit '0' so the rest of the build process continues
@@ -80,17 +108,19 @@ fi
 # Print pkg(8) information to make debugging easier.
 ${PKGCMD} -vv
 ${PKGCMD} update -f
-${PKGCMD} fetch -o ${PKG_REPODIR} -d ${DVD_PACKAGES}
+${PKGCMD} fetch -o ${PKG_REPODIR} -r release -d ${DVD_PACKAGES_MAIN}
+${PKGCMD} fetch -o ${PKG_REPODIR} -r release-kmods -d ${DVD_PACKAGES_KMODS}
 
-# Create the 'Latest/pkg.txz' symlink so 'pkg bootstrap' works
+# Create the 'Latest/pkg.pkg' symlink so 'pkg bootstrap' works
 # using the on-disc packages.
-mkdir -p ${PKG_REPODIR}/Latest
-(cd ${PKG_REPODIR}/Latest && \
-	ln -s ../All/$(${PKGCMD} rquery %n-%v pkg).pkg pkg.pkg)
-(cd ${PKG_REPODIR}/Latest && \
-	rm -f pkg.txz && ln -s pkg.pkg pkg.txz)
+export LATEST_DIR="${ROOTDIR}/${PKG_REPODIR}/Latest"
+mkdir -p ${LATEST_DIR}
+ln -s ../All/$(${PKGCMD} rquery %n-%v pkg).pkg ${LATEST_DIR}/pkg.pkg
 
 ${PKGCMD} repo ${PKG_REPODIR}
+
+mtree -c -p $ROOTDIR | mtree -C -k type,mode,link,size | \
+    grep '^./packages[/ ]' >> $ROOTDIR/METALOG
 
 # Always exit '0', even if pkg(8) complains about conflicts.
 exit 0

@@ -70,6 +70,9 @@ typedef int processorid_t;
 #include <sys/linker.h>
 #include <sys/ioccom.h>
 #include <sys/cred.h>
+#ifdef __FreeBSD__
+#include <sys/_mutex.h>
+#endif
 #include <sys/proc.h>
 #include <sys/types.h>
 #include <sys/ucred.h>
@@ -2400,16 +2403,13 @@ extern int dtrace_mach_aframes(void);
 
 #if defined(__i386) || defined(__amd64)
 extern int dtrace_instr_size_isa(uint8_t *, model_t, int *);
+#ifdef __i386
 extern void dtrace_invop_callsite(void);
+#endif
 #endif
 extern void dtrace_invop_add(int (*)(uintptr_t, struct trapframe *, uintptr_t));
 extern void dtrace_invop_remove(int (*)(uintptr_t, struct trapframe *,
     uintptr_t));
-
-#ifdef __sparc
-extern int dtrace_blksuword32(uintptr_t, uint32_t *, int);
-extern void dtrace_getfsr(uint64_t *);
-#endif
 
 #ifndef illumos
 extern void dtrace_helpers_duplicate(proc_t *, proc_t *);
@@ -2419,11 +2419,17 @@ extern void dtrace_helpers_destroy(proc_t *);
 #define	DTRACE_CPUFLAG_ISSET(flag) \
 	(cpu_core[curcpu].cpuc_dtrace_flags & (flag))
 
-#define	DTRACE_CPUFLAG_SET(flag) \
-	(cpu_core[curcpu].cpuc_dtrace_flags |= (flag))
+#define	DTRACE_CPUFLAG_SET(flag) do {				\
+	__compiler_membar();					\
+	cpu_core[curcpu].cpuc_dtrace_flags |= (flag);		\
+	__compiler_membar();					\
+} while (0)
 
-#define	DTRACE_CPUFLAG_CLEAR(flag) \
-	(cpu_core[curcpu].cpuc_dtrace_flags &= ~(flag))
+#define	DTRACE_CPUFLAG_CLEAR(flag) do {				\
+	__compiler_membar();					\
+	cpu_core[curcpu].cpuc_dtrace_flags &= ~(flag);		\
+	__compiler_membar();					\
+} while (0)
 
 #endif /* _KERNEL */
 

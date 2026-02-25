@@ -27,7 +27,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_inet.h"
 #include "opt_inet6.h"
 
@@ -525,7 +524,7 @@ toe_connect_failed(struct toedev *tod, struct inpcb *inp, int err)
 			/*
 			 * Temporary failure during offload, take this PCB back.
 			 * Detach from the TOE driver and do the rest of what
-			 * TCP's pru_connect would have done if the connection
+			 * TCP's pr_connect() would have done if the connection
 			 * wasn't offloaded.
 			 */
 

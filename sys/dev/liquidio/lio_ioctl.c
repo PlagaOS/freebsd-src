@@ -443,7 +443,7 @@ lio_set_mac(if_t ifp, uint8_t *p)
 
 	nctrl.udd[0] = 0;
 	/* The MAC Address is presented in network byte order. */
-	memcpy((uint8_t *)&nctrl.udd[0] + 2, p, ETHER_HDR_LEN);
+	memcpy((uint8_t *)&nctrl.udd[0] + 2, p, ETHER_ADDR_LEN);
 
 	ret = lio_send_ctrl_pkt(lio->oct_dev, &nctrl);
 	if (ret < 0) {
@@ -451,7 +451,7 @@ lio_set_mac(if_t ifp, uint8_t *p)
 		return (ENOMEM);
 	}
 
-	memcpy(((uint8_t *)&lio->linfo.hw_addr) + 2, p, ETHER_HDR_LEN);
+	memcpy(((uint8_t *)&lio->linfo.hw_addr) + 2, p, ETHER_ADDR_LEN);
 
 	return (0);
 }
@@ -481,7 +481,7 @@ lio_get_new_flags(if_t ifp)
 		 * Accept all multicast addresses if there are more than we
 		 * can handle
 		 */
-		if (if_getamcount(ifp) > LIO_MAX_MULTICAST_ADDR)
+		if (if_llmaddr_count(ifp) > LIO_MAX_MULTICAST_ADDR)
 			f |= LIO_IFFLAG_ALLMULTI;
 	}
 	if (if_getflags(ifp) & IFF_BROADCAST)

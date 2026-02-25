@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -28,8 +29,8 @@
 #ifdef _KERNEL
 #include <sys/isa_defs.h>
 #include <sys/types32.h>
-#include <sys/xvattr.h>
 #endif
+#include <sys/xvattr.h>
 #include <sys/acl.h>
 #include <sys/dmu.h>
 #include <sys/zfs_fuid.h>

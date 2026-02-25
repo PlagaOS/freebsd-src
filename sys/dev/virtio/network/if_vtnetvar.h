@@ -29,8 +29,10 @@
 #ifndef _IF_VTNETVAR_H
 #define _IF_VTNETVAR_H
 
+#define VTNET_ALTQ_CAPABLE (0)
 #ifdef ALTQ
-#define	VTNET_LEGACY_TX
+#undef VTNET_ALTQ_CAPABLE
+#define	VTNET_ALTQ_CAPABLE (1)
 #endif
 
 struct vtnet_softc;
@@ -44,7 +46,7 @@ struct vtnet_statistics {
 	uint64_t	rx_csum_bad_ethtype;
 	uint64_t	rx_csum_bad_ipproto;
 	uint64_t	rx_csum_bad_offset;
-	uint64_t	rx_csum_bad_proto;
+	uint64_t	rx_csum_inaccessible_ipproto;
 	uint64_t	tx_csum_unknown_ethtype;
 	uint64_t	tx_csum_proto_mismatch;
 	uint64_t	tx_tso_not_tcp;
@@ -112,18 +114,14 @@ struct vtnet_txq {
 	struct vtnet_softc	*vtntx_sc;
 	struct virtqueue	*vtntx_vq;
 	struct sglist		*vtntx_sg;
-#ifndef VTNET_LEGACY_TX
 	struct buf_ring		*vtntx_br;
-#endif
 	int			 vtntx_id;
 	int			 vtntx_watchdog;
 	int			 vtntx_intr_threshold;
 	struct vtnet_txq_stats	 vtntx_stats;
 	struct taskqueue	*vtntx_tq;
 	struct task		 vtntx_intrtask;
-#ifndef VTNET_LEGACY_TX
 	struct task		 vtntx_defrtask;
-#endif
 #ifdef DEV_NETMAP
 	struct virtio_net_hdr_mrg_rxbuf vtntx_shrhdr;
 #endif  /* DEV_NETMAP */
@@ -193,6 +191,11 @@ struct vtnet_softc {
 	char			 vtnet_mtx_name[16];
 	uint8_t			 vtnet_hwaddr[ETHER_ADDR_LEN];
 };
+/* vtnet flag descriptions for use with printf(9) %b identifier. */
+#define VTNET_FLAGS_BITS \
+    "\20\1MODERN\2MAC\3CTRL_VQ\4CTRL_RX\5CTRL_MAC\6VLAN_FILTER\7TSO_ECN" \
+    "\10MRG_RXBUFS\11LRO_NOMRG\12MQ\13INDIRECT\14EVENT_IDX\15SUSPENDED" \
+    "\16FIXUP_NEEDS_CSUM\17SW_LRO"
 
 static bool
 vtnet_modern(struct vtnet_softc *sc)
@@ -374,7 +377,7 @@ CTASSERT(((VTNET_TX_SEGS_MAX - 1) * MCLBYTES) >= VTNET_MAX_MTU);
  */
 #define VTNET_DEFAULT_BUFRING_SIZE	4096
 
-#define VTNET_CORE_MTX(_sc)		&(_sc)->vtnet_mtx
+#define VTNET_CORE_MTX(_sc)		(&(_sc)->vtnet_mtx)
 #define VTNET_CORE_LOCK(_sc)		mtx_lock(VTNET_CORE_MTX((_sc)))
 #define VTNET_CORE_UNLOCK(_sc)		mtx_unlock(VTNET_CORE_MTX((_sc)))
 #define VTNET_CORE_LOCK_DESTROY(_sc)	mtx_destroy(VTNET_CORE_MTX((_sc)))

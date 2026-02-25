@@ -58,6 +58,7 @@
 #include <net/if_types.h>
 
 #include <dev/evdev/input.h>
+#include <dev/hid/hidraw.h>
 #include <dev/usb/usb_ioctl.h>
 
 #ifdef COMPAT_LINUX32
@@ -82,6 +83,8 @@
 #include <compat/linux/linux_videodev2_compat.h>
 
 #include <cam/scsi/scsi_sg.h>
+
+#include <dev/nvme/nvme_linux.h>
 
 #define	DEFINE_LINUX_IOCTL_SET(shortname, SHORTNAME)		\
 static linux_ioctl_function_t linux_ioctl_ ## shortname;	\
@@ -108,6 +111,10 @@ DEFINE_LINUX_IOCTL_SET(v4l2, VIDEO2);
 DEFINE_LINUX_IOCTL_SET(fbsd_usb, FBSD_LUSB);
 DEFINE_LINUX_IOCTL_SET(evdev, EVDEV);
 DEFINE_LINUX_IOCTL_SET(kcov, KCOV);
+#ifndef COMPAT_LINUX32
+DEFINE_LINUX_IOCTL_SET(nvme, NVME);
+#endif
+DEFINE_LINUX_IOCTL_SET(hidraw, HIDRAW);
 
 #undef DEFINE_LINUX_IOCTL_SET
 
@@ -326,6 +333,17 @@ struct linux_termios {
 	unsigned char c_cc[LINUX_NCCS];
 };
 
+struct linux_termios2 {
+	unsigned int c_iflag;
+	unsigned int c_oflag;
+	unsigned int c_cflag;
+	unsigned int c_lflag;
+	unsigned char c_line;
+	unsigned char c_cc[LINUX_NCCS];
+	unsigned int c_ispeed;
+	unsigned int c_ospeed;
+};
+
 struct linux_winsize {
 	unsigned short ws_row, ws_col;
 	unsigned short ws_xpixel, ws_ypixel;
@@ -381,7 +399,7 @@ bsd_to_linux_speed(int speed, struct speedtab *table)
 	for ( ; table->sp_speed != -1; table++)
 		if (table->sp_speed == speed)
 			return (table->sp_code);
-	return (-1);
+	return (LINUX_BOTHER);
 }
 
 static void
@@ -416,6 +434,8 @@ bsd_to_linux_termios(struct termios *bios, struct linux_termios *lios)
 		lios->c_iflag |= LINUX_IXOFF;
 	if (bios->c_iflag & IMAXBEL)
 		lios->c_iflag |= LINUX_IMAXBEL;
+	if (bios->c_iflag & IUTF8)
+		lios->c_iflag |= LINUX_IUTF8;
 
 	lios->c_oflag = 0;
 	if (bios->c_oflag & OPOST)
@@ -502,6 +522,14 @@ bsd_to_linux_termios(struct termios *bios, struct linux_termios *lios)
 }
 
 static void
+bsd_to_linux_termios2(struct termios *bios, struct linux_termios2 *lios2)
+{
+	bsd_to_linux_termios(bios, (struct linux_termios *)lios2);
+	lios2->c_ospeed = bios->c_ospeed;
+	lios2->c_ispeed = bios->c_ispeed;
+}
+
+static void
 linux_to_bsd_termios(struct linux_termios *lios, struct termios *bios)
 {
 	int i;
@@ -533,6 +561,8 @@ linux_to_bsd_termios(struct linux_termios *lios, struct termios *bios)
 		bios->c_iflag |= IXOFF;
 	if (lios->c_iflag & LINUX_IMAXBEL)
 		bios->c_iflag |= IMAXBEL;
+	if (lios->c_iflag & LINUX_IUTF8)
+		bios->c_iflag |= IUTF8;
 
 	bios->c_oflag = 0;
 	if (lios->c_oflag & LINUX_OPOST)
@@ -620,6 +650,16 @@ linux_to_bsd_termios(struct linux_termios *lios, struct termios *bios)
 }
 
 static void
+linux_to_bsd_termios2(struct linux_termios2 *lios2, struct termios *bios)
+{
+	linux_to_bsd_termios((struct linux_termios *)lios2, bios);
+	if ((lios2->c_cflag & LINUX_CBAUD) == LINUX_BOTHER)
+		bios->c_ospeed = lios2->c_ospeed;
+	if ((lios2->c_cflag & LINUX_CIBAUD) == LINUX_BOTHER << LINUX_IBSHIFT)
+		bios->c_ispeed = lios2->c_ispeed;
+}
+
+static void
 bsd_to_linux_termio(struct termios *bios, struct linux_termio *lio)
 {
 	struct linux_termios lios;
@@ -655,6 +695,7 @@ linux_ioctl_termio(struct thread *td, struct linux_ioctl_args *args)
 {
 	struct termios bios;
 	struct linux_termios lios;
+	struct linux_termios2 lios2;
 	struct linux_termio lio;
 	struct file *fp;
 	int error;
@@ -992,6 +1033,43 @@ linux_ioctl_termio(struct thread *td, struct linux_ioctl_args *args)
 		args->cmd = TIOCCBRK;
 		error = (sys_ioctl(td, (struct ioctl_args *)args));
 		break;
+
+	case LINUX_TCGETS2:
+		error = fo_ioctl(fp, TIOCGETA, (caddr_t)&bios, td->td_ucred,
+		    td);
+		if (error)
+			break;
+		bsd_to_linux_termios2(&bios, &lios2);
+		error = copyout(&lios2, (void *)args->arg, sizeof(lios2));
+		break;
+
+	case LINUX_TCSETS2:
+		error = copyin((void *)args->arg, &lios2, sizeof(lios2));
+		if (error)
+			break;
+		linux_to_bsd_termios2(&lios2, &bios);
+		error = (fo_ioctl(fp, TIOCSETA, (caddr_t)&bios, td->td_ucred,
+		    td));
+		break;
+
+	case LINUX_TCSETSW2:
+		error = copyin((void *)args->arg, &lios2, sizeof(lios2));
+		if (error)
+			break;
+		linux_to_bsd_termios2(&lios2, &bios);
+		error = (fo_ioctl(fp, TIOCSETAW, (caddr_t)&bios, td->td_ucred,
+		    td));
+		break;
+
+	case LINUX_TCSETSF2:
+		error = copyin((void *)args->arg, &lios2, sizeof(lios2));
+		if (error)
+			break;
+		linux_to_bsd_termios2(&lios2, &bios);
+		error = (fo_ioctl(fp, TIOCSETAF, (caddr_t)&bios, td->td_ucred,
+		    td));
+		break;
+
 	case LINUX_TIOCGPTN: {
 		int nb;
 
@@ -3529,6 +3607,85 @@ linux_ioctl_kcov(struct thread *td, struct linux_ioctl_args *args)
 	if (error == 0)
 		error = sys_ioctl(td, (struct ioctl_args *)args);
 	return (error);
+}
+
+#ifndef COMPAT_LINUX32
+static int
+linux_ioctl_nvme(struct thread *td, struct linux_ioctl_args *args)
+{
+
+	/*
+	 * The NVMe drivers for namespace and controller implement these
+	 * commands using their native format. All the others are not
+	 * implemented yet.
+	 */
+	switch (args->cmd & 0xffff) {
+	case LINUX_NVME_IOCTL_ID:
+		args->cmd = NVME_IOCTL_ID;
+		break;
+	case LINUX_NVME_IOCTL_RESET:
+		args->cmd = NVME_IOCTL_RESET;
+		break;
+	case LINUX_NVME_IOCTL_ADMIN_CMD:
+		args->cmd = NVME_IOCTL_ADMIN_CMD;
+		break;
+	case LINUX_NVME_IOCTL_IO_CMD:
+		args->cmd = NVME_IOCTL_IO_CMD;
+		break;
+	default:
+		return (ENODEV);
+	}
+	return (sys_ioctl(td, (struct ioctl_args *)args));
+}
+#endif
+
+static int
+linux_ioctl_hidraw(struct thread *td, struct linux_ioctl_args *args)
+{
+	int len = (args->cmd & 0x3fff0000) >> 16;
+	if (len > 8192)
+		return (EINVAL);
+
+	switch (args->cmd & 0xffff) {
+	case LINUX_HIDIOCGRDESCSIZE:
+		args->cmd = HIDIOCGRDESCSIZE;
+		break;
+	case LINUX_HIDIOCGRDESC:
+		args->cmd = HIDIOCGRDESC;
+		break;
+	case LINUX_HIDIOCGRAWINFO:
+		args->cmd = HIDIOCGRAWINFO;
+		break;
+	case LINUX_HIDIOCGRAWNAME:
+		args->cmd = HIDIOCGRAWNAME(len);
+		break;
+	case LINUX_HIDIOCGRAWPHYS:
+		args->cmd = HIDIOCGRAWPHYS(len);
+		break;
+	case LINUX_HIDIOCSFEATURE:
+		args->cmd = HIDIOCSFEATURE(len);
+		break;
+	case LINUX_HIDIOCGFEATURE:
+		args->cmd = HIDIOCGFEATURE(len);
+		break;
+	case LINUX_HIDIOCGRAWUNIQ:
+		args->cmd = HIDIOCGRAWUNIQ(len);
+		break;
+	case LINUX_HIDIOCSINPUT:
+		args->cmd = HIDIOCSINPUT(len);
+		break;
+	case LINUX_HIDIOCGINPUT:
+		args->cmd = HIDIOCGINPUT(len);
+		break;
+	case LINUX_HIDIOCSOUTPUT:
+		args->cmd = HIDIOCSOUTPUT(len);
+		break;
+	case LINUX_HIDIOCGOUTPUT:
+		args->cmd = HIDIOCGOUTPUT(len);
+		break;
+	}
+
+	return (sys_ioctl(td, (struct ioctl_args *)args));
 }
 
 /*

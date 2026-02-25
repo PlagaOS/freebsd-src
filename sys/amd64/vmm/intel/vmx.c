@@ -27,7 +27,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_bhyve_snapshot.h"
 
 #include <sys/param.h>
@@ -54,14 +53,17 @@
 #include <machine/vmparam.h>
 
 #include <machine/vmm.h>
-#include <machine/vmm_dev.h>
 #include <machine/vmm_instruction_emul.h>
 #include <machine/vmm_snapshot.h>
+
+#include <dev/vmm/vmm_dev.h>
+#include <dev/vmm/vmm_ktr.h>
+#include <dev/vmm/vmm_mem.h>
+#include <dev/vmm/vmm_vm.h>
 
 #include "vmm_lapic.h"
 #include "vmm_host.h"
 #include "vmm_ioport.h"
-#include "vmm_ktr.h"
 #include "vmm_stat.h"
 #include "vatpic.h"
 #include "vlapic.h"
@@ -73,6 +75,7 @@
 #include "vmx_msr.h"
 #include "x86.h"
 #include "vmx_controls.h"
+#include "io/ppt.h"
 
 #define	PINBASED_CTLS_ONE_SETTING					\
 	(PINBASED_EXTINT_EXITING	|				\
@@ -648,11 +651,19 @@ vmx_enable(void *arg __unused)
 }
 
 static void
+vmx_modsuspend(void)
+{
+
+	if (vmxon_enabled[curcpu])
+		vmx_disable(NULL);
+}
+
+static void
 vmx_modresume(void)
 {
 
 	if (vmxon_enabled[curcpu])
-		vmxon(&vmxon_region[curcpu * PAGE_SIZE]);
+		vmx_enable(NULL);
 }
 
 static int
@@ -2648,6 +2659,8 @@ vmx_exit_process(struct vmx *vmx, struct vmx_vcpu *vcpu, struct vm_exit *vmexit)
 			vis->index = inout_str_index(vcpu, in);
 			vis->count = inout_str_count(vcpu, vis->inout.rep);
 			vis->addrsize = inout_str_addrsize(inst_info);
+			vis->cs_d = 0;
+			vis->cs_base = 0;
 			inout_str_seginfo(vcpu, inst_info, in, vis);
 		}
 		SDT_PROBE3(vmm, vmx, exit, inout, vmx, vcpuid, vmexit);
@@ -2747,7 +2760,7 @@ vmx_exit_process(struct vmx *vmx, struct vmx_vcpu *vcpu, struct vm_exit *vmexit)
 		 */
 		gpa = vmcs_gpa();
 		if (vm_mem_allocated(vcpu->vcpu, gpa) ||
-		    apic_access_fault(vcpu, gpa)) {
+		    ppt_is_mmio(vmx->vm, gpa) || apic_access_fault(vcpu, gpa)) {
 			vmexit->exitcode = VM_EXITCODE_PAGING;
 			vmexit->inst_length = 0;
 			vmexit->u.paging.gpa = gpa;
@@ -3664,7 +3677,7 @@ vmx_setcap(void *vcpui, int type, int val)
 		vlapic = vm_lapic(vcpu->vcpu);
 		vlapic->ipi_exit = val;
 		break;
-	case VM_CAP_MASK_HWINTR:		
+	case VM_CAP_MASK_HWINTR:
 		retval = 0;
 		break;
 	default:
@@ -4270,6 +4283,7 @@ vmx_restore_tsc(void *vcpui, uint64_t offset)
 const struct vmm_ops vmm_ops_intel = {
 	.modinit	= vmx_modinit,
 	.modcleanup	= vmx_modcleanup,
+	.modsuspend	= vmx_modsuspend,
 	.modresume	= vmx_modresume,
 	.init		= vmx_init,
 	.run		= vmx_run,

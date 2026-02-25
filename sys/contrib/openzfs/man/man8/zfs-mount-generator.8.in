@@ -1,3 +1,4 @@
+.\" SPDX-License-Identifier: MIT
 .\"
 .\" Copyright 2018 Antonio Russo <antonio.e.russo@gmail.com>
 .\" Copyright 2019 Kjeld Schouten-Lebbing <kjeld@schouten-lebbing.nl>
@@ -22,7 +23,7 @@
 .\" OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 .\" WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 .\"
-.Dd May 31, 2021
+.Dd November 30, 2021
 .Dt ZFS-MOUNT-GENERATOR 8
 .Os
 .

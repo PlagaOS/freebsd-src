@@ -127,7 +127,7 @@ intc_identify(driver_t *driver, device_t parent)
 	device_t dev;
 	phandle_t node;
 
-	if (device_find_child(parent, "intc", -1) != NULL)
+	if (device_find_child(parent, "intc", DEVICE_UNIT_ANY) != NULL)
 		return;
 
 	node = intc_ofw_find(parent, PCPU_GET(hart));
@@ -181,7 +181,7 @@ intc_attach(device_t dev)
 	if (pic == NULL)
 		return (ENXIO);
 
-	return (intr_pic_claim_root(sc->dev, xref, intc_intr, sc));
+	return (intr_pic_claim_root(sc->dev, xref, intc_intr, sc, INTR_ROOT_IRQ));
 }
 
 static void
@@ -241,7 +241,7 @@ intc_setup_intr(device_t dev, struct intr_irqsrc *isrc,
 
 #ifdef SMP
 static void
-intc_init_secondary(device_t dev)
+intc_init_secondary(device_t dev, uint32_t rootnum)
 {
 	struct intc_softc *sc;
 	struct intr_irqsrc *isrc;

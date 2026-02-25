@@ -55,6 +55,13 @@
 #include <dev/psci/psci.h>
 
 /*
+ * psci.c is "default" in ARM64 kernel config files
+ * psci_reset will do nothing until/unless the psci device probes/attaches.
+ * Therefore, it is safe to default the cpu_reset_hook to psci_reset.
+ */
+cpu_reset_hook_t cpu_reset_hook = psci_reset;
+
+/*
  * Finish a fork operation, with process p2 nearly set up.
  * Copy and update the pcb, set up the stack so that the child
  * ready to run and return to user mode.
@@ -93,7 +100,7 @@ cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 
 	ptrauth_fork(td2, td1);
 
-	tf = (struct trapframe *)STACKALIGN((struct trapframe *)pcb2 - 1);
+	tf = STACKALIGN((struct trapframe *)pcb2 - 1);
 	bcopy(td1->td_frame, tf, sizeof(*tf));
 	tf->tf_x[0] = 0;
 	tf->tf_x[1] = 0;
@@ -113,6 +120,9 @@ cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 	td2->td_md.md_spinlock_count = 1;
 	td2->td_md.md_saved_daif = PSR_DAIF_DEFAULT;
 
+	/* Copy the TCR_EL1 value */
+	td2->td_proc->p_md.md_tcr = td1->td_proc->p_md.md_tcr;
+
 #if defined(PERTHREAD_SSP)
 	/* Set the new canary */
 	arc4random_buf(&td2->td_md.md_canary, sizeof(td2->td_md.md_canary));
@@ -123,21 +133,11 @@ void
 cpu_reset(void)
 {
 
-	psci_reset();
+	cpu_reset_hook();
 
 	printf("cpu_reset failed");
 	while(1)
 		__asm volatile("wfi" ::: "memory");
-}
-
-void
-cpu_thread_swapin(struct thread *td)
-{
-}
-
-void
-cpu_thread_swapout(struct thread *td)
-{
 }
 
 void
@@ -228,7 +228,7 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 }
 
 int
-cpu_set_user_tls(struct thread *td, void *tls_base)
+cpu_set_user_tls(struct thread *td, void *tls_base, int thr_flags __unused)
 {
 	struct pcb *pcb;
 
@@ -291,6 +291,14 @@ cpu_fork_kthread_handler(struct thread *td, void (*func)(void *), void *arg)
 
 	td->td_pcb->pcb_x[PCB_X19] = (uintptr_t)func;
 	td->td_pcb->pcb_x[PCB_X20] = (uintptr_t)arg;
+}
+
+void
+cpu_update_pcb(struct thread *td)
+{
+	MPASS(td == curthread);
+	td->td_pcb->pcb_tpidr_el0 = READ_SPECIALREG(tpidr_el0);
+	td->td_pcb->pcb_tpidrro_el0 = READ_SPECIALREG(tpidrro_el0);
 }
 
 void

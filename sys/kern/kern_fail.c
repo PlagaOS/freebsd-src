@@ -66,12 +66,12 @@
 #include <sys/proc.h>
 #include <sys/sbuf.h>
 #include <sys/sleepqueue.h>
+#include <sys/stdarg.h>
 #include <sys/sx.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
 
 #include <machine/atomic.h>
-#include <machine/stdarg.h>
 
 #ifdef ILOG_DEFINE_FOR_FILE
 ILOG_DEFINE_FOR_FILE(L_ISI_FAIL_POINT, L_ILOG, fail_point);
@@ -479,11 +479,10 @@ fail_point_init(struct fail_point *fp, const char *fmt, ...)
 
 	/* Allocate the name and fill it in. */
 	name = fp_malloc(n + 1, M_WAITOK);
-	if (name != NULL) {
-		va_start(ap, fmt);
-		vsnprintf(name, n + 1, fmt, ap);
-		va_end(ap);
-	}
+	va_start(ap, fmt);
+	vsnprintf(name, n + 1, fmt, ap);
+	va_end(ap);
+
 	fp->fp_name = name;
 	fp->fp_location = "";
 	fp->fp_flags |= FAIL_POINT_DYNAMIC_NAME;

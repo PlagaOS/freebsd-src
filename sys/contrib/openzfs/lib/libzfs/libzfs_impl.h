@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -35,7 +36,6 @@
 #include <sys/zfs_ioctl.h>
 #include <regex.h>
 
-#include <libuutil.h>
 #include <libzfs.h>
 #include <libshare.h>
 #include <libzfs_core.h>
@@ -50,8 +50,7 @@ struct libzfs_handle {
 	int libzfs_error;
 	int libzfs_fd;
 	zpool_handle_t *libzfs_pool_handles;
-	uu_avl_pool_t *libzfs_ns_avlpool;
-	uu_avl_t *libzfs_ns_avl;
+	avl_tree_t libzfs_ns_avl;
 	uint64_t libzfs_ns_gen;
 	int libzfs_desc_active;
 	char libzfs_action[1024];
@@ -94,12 +93,15 @@ struct zfs_handle {
  * snapshots of volumes.
  */
 #define	ZFS_IS_VOLUME(zhp) ((zhp)->zfs_head_type == ZFS_TYPE_VOLUME)
+#define	ZHP_MAX_PROPNAMES 4
 
 struct zpool_handle {
 	libzfs_handle_t *zpool_hdl;
 	zpool_handle_t *zpool_next;
 	char zpool_name[ZFS_MAX_DATASET_NAME_LEN];
 	int zpool_state;
+	unsigned int zpool_n_propnames;
+	const char *zpool_propnames[ZHP_MAX_PROPNAMES];
 	size_t zpool_config_size;
 	nvlist_t *zpool_config;
 	nvlist_t *zpool_old_config;

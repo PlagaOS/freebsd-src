@@ -315,7 +315,7 @@ puc_bfe_attach(device_t dev)
 			goto fail;
 		port->p_rclk = res;
 
-		port->p_dev = device_add_child(dev, NULL, -1);
+		port->p_dev = device_add_child(dev, NULL, DEVICE_UNIT_ANY);
 		if (port->p_dev != NULL)
 			device_set_ivars(port->p_dev, (void *)port);
 	}
@@ -373,10 +373,9 @@ puc_bfe_attach(device_t dev)
 	return (0);
 
 fail:
+	device_delete_children(dev);
 	for (idx = 0; idx < sc->sc_nports; idx++) {
 		port = &sc->sc_port[idx];
-		if (port->p_dev != NULL)
-			device_delete_child(dev, port->p_dev);
 		if (port->p_rres != NULL)
 			rman_release_resource(port->p_rres);
 		if (port->p_ires != NULL)
@@ -409,21 +408,19 @@ puc_bfe_detach(device_t dev)
 	sc = device_get_softc(dev);
 
 	/* Detach our children. */
-	error = 0;
+	error = bus_generic_detach(dev);
+	if (error != 0)
+		return (error);
+
 	for (idx = 0; idx < sc->sc_nports; idx++) {
 		port = &sc->sc_port[idx];
 		if (port->p_dev == NULL)
 			continue;
-		if (device_delete_child(dev, port->p_dev) == 0) {
-			if (port->p_rres != NULL)
-				rman_release_resource(port->p_rres);
-			if (port->p_ires != NULL)
-				rman_release_resource(port->p_ires);
-		} else
-			error = ENXIO;
+		if (port->p_rres != NULL)
+			rman_release_resource(port->p_rres);
+		if (port->p_ires != NULL)
+			rman_release_resource(port->p_ires);
 	}
-	if (error)
-		return (error);
 
 	if (sc->sc_serdevs != 0UL)
 		bus_teardown_intr(dev, sc->sc_ires, sc->sc_icookie);
@@ -472,7 +469,7 @@ puc_bfe_probe(device_t dev, const struct puc_cfg *cfg)
 }
 
 struct resource *
-puc_bus_alloc_resource(device_t dev, device_t child, int type, int *rid,
+puc_bus_alloc_resource(device_t dev, device_t child, int type, int rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct puc_port *port;
@@ -490,7 +487,7 @@ puc_bus_alloc_resource(device_t dev, device_t child, int type, int *rid,
 	port = device_get_ivars(child);
 	KASSERT(port != NULL, ("%s %d", __func__, __LINE__));
 
-	if (rid == NULL || *rid != 0)
+	if (rid != 0)
 		return (NULL);
 
 	/* We only support default allocations. */

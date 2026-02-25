@@ -1,4 +1,4 @@
-/*	$NetBSD: parse.c,v 1.717 2024/02/07 06:43:02 rillig Exp $	*/
+/*	$NetBSD: parse.c,v 1.753 2025/06/28 22:39:27 rillig Exp $	*/
 
 /*
  * Copyright (c) 1988, 1989, 1990, 1993
@@ -105,23 +105,12 @@
 #include <stdint.h>
 #endif
 
-#ifdef HAVE_MMAP
-#include <sys/mman.h>
-
-#ifndef MAP_COPY
-#define MAP_COPY MAP_PRIVATE
-#endif
-#ifndef MAP_FILE
-#define MAP_FILE 0
-#endif
-#endif
-
 #include "dir.h"
 #include "job.h"
 #include "pathnames.h"
 
 /*	"@(#)parse.c	8.3 (Berkeley) 3/19/94"	*/
-MAKE_RCSID("$NetBSD: parse.c,v 1.717 2024/02/07 06:43:02 rillig Exp $");
+MAKE_RCSID("$NetBSD: parse.c,v 1.753 2025/06/28 22:39:27 rillig Exp $");
 
 /* Detects a multiple-inclusion guard in a makefile. */
 typedef enum {
@@ -141,7 +130,7 @@ typedef struct IncludedFile {
 	unsigned forBodyReadLines; /* the number of physical lines that have
 				 * been read from the file above the body of
 				 * the .for loop */
-	unsigned int condMinDepth; /* depth of nested 'if' directives, at the
+	unsigned condMinDepth;	/* depth of nested 'if' directives, at the
 				 * beginning of the file */
 	bool depending;		/* state of doing_depend on EOF */
 
@@ -234,9 +223,9 @@ static GNodeList *targets;
 #ifdef CLEANUP
 /*
  * All shell commands for all targets, in no particular order and possibly
- * with duplicates.  Kept in a separate list since the commands from .USE or
- * .USEBEFORE nodes are shared with other GNodes, thereby giving up the
- * easily understandable ownership over the allocated strings.
+ * with duplicate values.  Kept in a separate list since the commands from
+ * .USE or .USEBEFORE nodes are shared with other GNodes, thereby giving up
+ * the easily understandable ownership over the allocated strings.
  */
 static StringList targCmds = LST_INIT;
 #endif
@@ -247,7 +236,7 @@ static StringList targCmds = LST_INIT;
  */
 static GNode *order_pred;
 
-static int parseErrors;
+int parseErrors;
 
 /*
  * The include chain of makefiles.  At index 0 is the top-level makefile from
@@ -353,7 +342,7 @@ CurFile(void)
 	return GetInclude(includes.len - 1);
 }
 
-unsigned int
+unsigned
 CurFile_CondMinDepth(void)
 {
 	return CurFile()->condMinDepth;
@@ -383,7 +372,7 @@ LoadFile(const char *path, int fd)
 		assert(buf.len < buf.cap);
 		n = read(fd, buf.data + buf.len, buf.cap - buf.len);
 		if (n < 0) {
-			Error("%s: read error: %s", path, strerror(errno));
+			Error("%s: %s", path, strerror(errno));
 			exit(2);	/* Not 1 so -q can distinguish error */
 		}
 		if (n == 0)
@@ -399,24 +388,47 @@ LoadFile(const char *path, int fd)
 	return buf;		/* may not be null-terminated */
 }
 
+const char *
+GetParentStackTrace(void)
+{
+	static bool initialized;
+	static const char *parentStackTrace;
+
+	if (!initialized) {
+		const char *env = getenv("MAKE_STACK_TRACE");
+		parentStackTrace = env == NULL ? NULL
+		    : env[0] == '\t' ? bmake_strdup(env)
+		    : strcmp(env, "yes") == 0 ? bmake_strdup("")
+		    : NULL;
+		initialized = true;
+	}
+	return parentStackTrace;
+}
+
 /*
  * Print the current chain of .include and .for directives.  In Parse_Fatal
  * or other functions that already print the location, includingInnermost
  * would be redundant, but in other cases like Error or Fatal it needs to be
  * included.
  */
-void
-PrintStackTrace(bool includingInnermost)
+char *
+GetStackTrace(bool includingInnermost)
 {
+	const char *parentStackTrace;
+	Buffer buffer, *buf = &buffer;
 	const IncludedFile *entries;
 	size_t i, n;
+	bool hasDetails;
 
+	Buf_Init(buf);
+	hasDetails = EvalStack_Details(buf);
 	n = includes.len;
 	if (n == 0)
-		return;
+		goto add_parent_stack_trace;
 
 	entries = GetInclude(0);
-	if (!includingInnermost && entries[n - 1].forLoop == NULL)
+	if (!includingInnermost && !(hasDetails && n > 1)
+	    && entries[n - 1].forLoop == NULL)
 		n--;		/* already in the diagnostic */
 
 	for (i = n; i-- > 0;) {
@@ -432,14 +444,49 @@ PrintStackTrace(bool includingInnermost)
 
 		if (entry->forLoop != NULL) {
 			char *details = ForLoop_Details(entry->forLoop);
-			debug_printf("\tin .for loop from %s:%u with %s\n",
-			    fname, entry->forHeadLineno, details);
+			Buf_AddStr(buf, "\tin .for loop from ");
+			Buf_AddStr(buf, fname);
+			Buf_AddStr(buf, ":");
+			Buf_AddInt(buf, (int)entry->forHeadLineno);
+			Buf_AddStr(buf, " with ");
+			Buf_AddStr(buf, details);
+			Buf_AddStr(buf, "\n");
 			free(details);
 		} else if (i + 1 < n && entries[i + 1].forLoop != NULL) {
 			/* entry->lineno is not a useful line number */
-		} else
-			debug_printf("\tin %s:%u\n", fname, entry->lineno);
+		} else {
+			Buf_AddStr(buf, "\tin ");
+			Buf_AddStr(buf, fname);
+			Buf_AddStr(buf, ":");
+			Buf_AddInt(buf, (int)entry->lineno);
+			Buf_AddStr(buf, "\n");
+		}
 	}
+
+add_parent_stack_trace:
+	parentStackTrace = GetParentStackTrace();
+	if ((makelevel > 0 && (n > 0 || !includingInnermost))
+	    || parentStackTrace != NULL) {
+		Buf_AddStr(buf, "\tin ");
+		Buf_AddStr(buf, progname);
+		Buf_AddStr(buf, " in directory \"");
+		Buf_AddStr(buf, curdir);
+		Buf_AddStr(buf, "\"\n");
+	}
+
+	if (parentStackTrace != NULL)
+		Buf_AddStr(buf, parentStackTrace);
+
+	return Buf_DoneData(buf);
+}
+
+void
+PrintStackTrace(bool includingInnermost)
+{
+	char *stackTrace = GetStackTrace(includingInnermost);
+	fprintf(stderr, "%s", stackTrace);
+	fflush(stderr);
+	free(stackTrace);
 }
 
 /* Check if the current character is escaped on the current line. */
@@ -508,7 +555,7 @@ PrintLocation(FILE *f, bool useVars, const GNode *gn)
 		return;
 
 	if (!useVars || fname[0] == '/' || strcmp(fname, "(stdin)") == 0) {
-		(void)fprintf(f, "\"%s\" line %u: ", fname, lineno);
+		(void)fprintf(f, "%s:%u: ", fname, lineno);
 		return;
 	}
 
@@ -522,7 +569,7 @@ PrintLocation(FILE *f, bool useVars, const GNode *gn)
 	if (base.str == NULL)
 		base.str = str_basename(fname);
 
-	(void)fprintf(f, "\"%s/%s\" line %u: ", dir.str, base.str, lineno);
+	(void)fprintf(f, "%s/%s:%u: ", dir.str, base.str, lineno);
 
 	FStr_Done(&base);
 	FStr_Done(&dir);
@@ -553,7 +600,8 @@ ParseVErrorInternal(FILE *f, bool useVars, const GNode *gn,
 		parseErrors++;
 	}
 
-	if (DEBUG(PARSE))
+	if (level == PARSE_FATAL || DEBUG(PARSE)
+	    || (gn == NULL && includes.len == 0 /* see PrintLocation */))
 		PrintStackTrace(false);
 }
 
@@ -618,7 +666,7 @@ HandleMessage(ParseErrorLevel level, const char *levelName, const char *umsg)
 		return;
 	}
 
-	xmsg = Var_Subst(umsg, SCOPE_CMDLINE, VARE_WANTRES);
+	xmsg = Var_Subst(umsg, SCOPE_CMDLINE, VARE_EVAL);
 	/* TODO: handle errors */
 
 	Parse_Error(level, "%s", xmsg);
@@ -651,7 +699,7 @@ LinkSource(GNode *pgn, GNode *cgn, bool isSpecial)
 		Lst_Append(&cgn->parents, pgn);
 
 	if (DEBUG(PARSE)) {
-		debug_printf("# LinkSource: added child %s - %s\n",
+		debug_printf("Target \"%s\" depends on \"%s\"\n",
 		    pgn->name, cgn->name);
 		Targ_PrintNode(pgn, 0);
 		Targ_PrintNode(cgn, 0);
@@ -719,7 +767,7 @@ TryApplyDependencyOperator(GNode *gn, GNodeType op)
 		cohort->centurion = gn;
 		gn->unmade_cohorts++;
 		snprintf(cohort->cohort_num, sizeof cohort->cohort_num, "#%d",
-		    (unsigned int)gn->unmade_cohorts % 1000000);
+		    (unsigned)gn->unmade_cohorts % 1000000);
 	} else {
 		gn->type |= op;	/* preserve any previous flags */
 	}
@@ -906,10 +954,10 @@ InvalidLineType(const char *line, const char *unexpanded_line)
 		Parse_Error(PARSE_FATAL, "Unknown directive \"%.*s\"",
 		    (int)(dirend - dirstart), dirstart);
 	} else if (strcmp(line, unexpanded_line) == 0)
-		Parse_Error(PARSE_FATAL, "Invalid line '%s'", line);
+		Parse_Error(PARSE_FATAL, "Invalid line \"%s\"", line);
 	else
 		Parse_Error(PARSE_FATAL,
-		    "Invalid line '%s', expanded to '%s'",
+		    "Invalid line \"%s\", expanded to \"%s\"",
 		    unexpanded_line, line);
 }
 
@@ -924,8 +972,7 @@ ParseDependencyTargetWord(char **pp, const char *lstart)
 			break;
 
 		if (*p == '$') {
-			FStr val = Var_Parse(&p, SCOPE_CMDLINE,
-			    VARE_PARSE_ONLY);
+			FStr val = Var_Parse(&p, SCOPE_CMDLINE, VARE_PARSE);
 			/* TODO: handle errors */
 			FStr_Done(&val);
 		} else
@@ -1016,7 +1063,7 @@ HandleDependencyTargetPath(const char *suffixName,
 	path = Suff_GetPath(suffixName);
 	if (path == NULL) {
 		Parse_Error(PARSE_FATAL,
-		    "Suffix '%s' not defined (yet)", suffixName);
+		    "Suffix \"%s\" not defined (yet)", suffixName);
 		return false;
 	}
 
@@ -1112,7 +1159,7 @@ SkipExtraTargets(char **pp, const char *lstart)
 	if (warning) {
 		const char *start = *pp;
 		cpp_skip_whitespace(&start);
-		Parse_Error(PARSE_WARNING, "Extra target '%.*s' ignored",
+		Parse_Error(PARSE_WARNING, "Extra target \"%.*s\" ignored",
 		    (int)(p - start), start);
 	}
 
@@ -1268,7 +1315,7 @@ IncludeFile(const char *file, bool isSystem, bool depinc, bool silent)
 	if (fullname == NULL) {
 		SearchPath *path = Lst_IsEmpty(&sysIncPath->dirs)
 		    ? defSysIncPath : sysIncPath;
-		fullname = Dir_FindFile(file, path);
+		fullname = Dir_FindInclude(file, path);
 	}
 
 	if (fullname == NULL) {
@@ -1278,13 +1325,12 @@ IncludeFile(const char *file, bool isSystem, bool depinc, bool silent)
 	}
 
 	if (SkipGuarded(fullname))
-		return;
+		goto done;
 
 	if ((fd = open(fullname, O_RDONLY)) == -1) {
 		if (!silent)
 			Parse_Error(PARSE_FATAL, "Cannot open %s", fullname);
-		free(fullname);
-		return;
+		goto done;
 	}
 
 	buf = LoadFile(fullname, fd);
@@ -1293,6 +1339,7 @@ IncludeFile(const char *file, bool isSystem, bool depinc, bool silent)
 	Parse_PushInput(fullname, 1, 0, buf, NULL);
 	if (depinc)
 		doing_depend = depinc;	/* only turn it on */
+done:
 	free(fullname);
 }
 
@@ -1325,6 +1372,7 @@ HandleDependencySourcesEmpty(ParseSpecial special, SearchPathList *paths)
 			 * otherwise it is an extension.
 			 */
 			Global_Set("%POSIX", "1003.2");
+			posix_state = PS_SET;
 			IncludeFile("posix.mk", true, false, true);
 		}
 		break;
@@ -1398,7 +1446,8 @@ ApplyDependencyTarget(char *name, char *nameEnd, ParseSpecial *inout_special,
 	if (*inout_special == SP_NOT && *name != '\0')
 		HandleDependencyTargetMundane(name);
 	else if (*inout_special == SP_PATH && *name != '.' && *name != '\0')
-		Parse_Error(PARSE_WARNING, "Extra target (%s) ignored", name);
+		Parse_Error(PARSE_WARNING, "Extra target \"%s\" ignored",
+		    name);
 
 	*nameEnd = savedNameEnd;
 	return true;
@@ -1637,10 +1686,10 @@ ParseDependencySources(char *p, GNodeType targetAttr,
  * Transformation rules such as '.c.o' are also handled here, see
  * Suff_AddTransform.
  *
- * Upon return, the value of the line is unspecified.
+ * Upon return, the value of expandedLine is unspecified.
  */
 static void
-ParseDependency(char *line, const char *unexpanded_line)
+ParseDependency(char *expandedLine, const char *unexpandedLine)
 {
 	char *p;
 	SearchPathList *paths;	/* search paths to alter when parsing a list
@@ -1651,14 +1700,14 @@ ParseDependency(char *line, const char *unexpanded_line)
 				 * vice versa */
 	GNodeType op;
 
-	DEBUG1(PARSE, "ParseDependency(%s)\n", line);
-	p = line;
+	DEBUG1(PARSE, "ParseDependency(%s)\n", expandedLine);
+	p = expandedLine;
 	paths = NULL;
 	targetAttr = OP_NONE;
 	special = SP_NOT;
 
-	if (!ParseDependencyTargets(&p, line, &special, &targetAttr, &paths,
-	    unexpanded_line))
+	if (!ParseDependencyTargets(&p, expandedLine, &special, &targetAttr,
+	    &paths, unexpandedLine))
 		goto out;
 
 	if (!Lst_IsEmpty(targets))
@@ -1666,7 +1715,7 @@ ParseDependency(char *line, const char *unexpanded_line)
 
 	op = ParseDependencyOp(&p);
 	if (op == OP_NONE) {
-		InvalidLineType(line, unexpanded_line);
+		InvalidLineType(expandedLine, unexpandedLine);
 		goto out;
 	}
 	ApplyDependencyOperator(op);
@@ -1810,7 +1859,7 @@ VarCheckSyntax(VarAssignOp op, const char *uvalue, GNode *scope)
 	if (opts.strict) {
 		if (op != VAR_SUBST && strchr(uvalue, '$') != NULL) {
 			char *parsedValue = Var_Subst(uvalue,
-			    scope, VARE_PARSE_ONLY);
+			    scope, VARE_PARSE);
 			/* TODO: handle errors */
 			free(parsedValue);
 		}
@@ -1836,7 +1885,8 @@ VarAssign_EvalSubst(GNode *scope, const char *name, const char *uvalue,
 	if (!Var_ExistsExpand(scope, name))
 		Var_SetExpand(scope, name, "");
 
-	evalue = Var_Subst(uvalue, scope, VARE_KEEP_DOLLAR_UNDEF);
+	evalue = Var_Subst(uvalue, scope,
+	    VARE_EVAL_KEEP_DOLLAR_AND_UNDEFINED);
 	/* TODO: handle errors */
 
 	Var_SetExpand(scope, name, evalue);
@@ -1853,7 +1903,7 @@ VarAssign_EvalShell(const char *name, const char *uvalue, GNode *scope,
 	char *output, *error;
 
 	cmd = FStr_InitRefer(uvalue);
-	Var_Expand(&cmd, SCOPE_CMDLINE, VARE_UNDEFERR);
+	Var_Expand(&cmd, SCOPE_CMDLINE, VARE_EVAL);
 
 	output = Cmd_Exec(cmd.str, &error);
 	Var_SetExpand(scope, name, output);
@@ -2017,7 +2067,7 @@ ParseInclude(char *directive)
 
 	if (*p != '"' && *p != '<') {
 		Parse_Error(PARSE_FATAL,
-		    ".include filename must be delimited by '\"' or '<'");
+		    ".include filename must be delimited by \"\" or <>");
 		return;
 	}
 
@@ -2029,13 +2079,13 @@ ParseInclude(char *directive)
 
 	if (*p != endc) {
 		Parse_Error(PARSE_FATAL,
-		    "Unclosed .include filename. '%c' expected", endc);
+		    "Unclosed .include filename, \"%c\" expected", endc);
 		return;
 	}
 
 	*p = '\0';
 
-	Var_Expand(&file, SCOPE_CMDLINE, VARE_WANTRES);
+	Var_Expand(&file, SCOPE_CMDLINE, VARE_EVAL);
 	IncludeFile(file.str, endc == '>', directive[0] == 'd', silent);
 	FStr_Done(&file);
 }
@@ -2168,8 +2218,8 @@ Parse_PushInput(const char *name, unsigned lineno, unsigned readLines,
 	else
 		TrackInput(name);
 
-	DEBUG3(PARSE, "Parse_PushInput: %s %s, line %u\n",
-	    forLoop != NULL ? ".for loop in": "file", name, lineno);
+	DEBUG3(PARSE, "Parse_PushInput: %s%s:%u\n",
+	    forLoop != NULL ? ".for loop in ": "", name, lineno);
 
 	curFile = Vector_Push(&includes);
 	curFile->name = FStr_InitOwn(bmake_strdup(name));
@@ -2244,7 +2294,7 @@ ParseTraditionalInclude(char *line)
 
 	pp_skip_whitespace(&file);
 
-	all_files = Var_Subst(file, SCOPE_CMDLINE, VARE_WANTRES);
+	all_files = Var_Subst(file, SCOPE_CMDLINE, VARE_EVAL);
 	/* TODO: handle errors */
 
 	for (file = all_files; !done; file = p + 1) {
@@ -2287,7 +2337,7 @@ ParseGmakeExport(char *line)
 	/*
 	 * Expand the value before putting it in the environment.
 	 */
-	value = Var_Subst(value, SCOPE_CMDLINE, VARE_WANTRES);
+	value = Var_Subst(value, SCOPE_CMDLINE, VARE_EVAL);
 	/* TODO: handle errors */
 
 	setenv(variable, value, 1);
@@ -2318,9 +2368,15 @@ ParseEOF(void)
 
 	Cond_EndFile();
 
-	if (curFile->guardState == GS_DONE)
-		HashTable_Set(&guards, curFile->name.str, curFile->guard);
-	else if (curFile->guard != NULL) {
+	if (curFile->guardState == GS_DONE) {
+		HashEntry *he = HashTable_CreateEntry(&guards,
+		    curFile->name.str, NULL);
+		if (he->value != NULL) {
+			free(((Guard *)he->value)->name);
+			free(he->value);
+		}
+		HashEntry_Set(he, curFile->guard);
+	} else if (curFile->guard != NULL) {
 		free(curFile->guard->name);
 		free(curFile->guard);
 	}
@@ -2341,7 +2397,7 @@ ParseEOF(void)
 	}
 
 	curFile = CurFile();
-	DEBUG2(PARSE, "ParseEOF: returning to file %s, line %u\n",
+	DEBUG2(PARSE, "ParseEOF: returning to %s:%u\n",
 	    curFile->name.str, curFile->readLines + 1);
 
 	SetParseFile(curFile->name.str);
@@ -2384,7 +2440,7 @@ ParseRawLine(IncludedFile *curFile, char **out_line, char **out_line_end,
 		ch = *p;
 		if (ch == '\0' || (ch == '\\' && p[1] == '\0')) {
 			Parse_Error(PARSE_FATAL, "Zero byte read from file");
-			return PRLR_ERROR;
+			exit(2);
 		}
 
 		/* Treat next character after '\' as literal. */
@@ -2618,11 +2674,13 @@ ReadHighLevelLine(void)
 		line = ReadLowLevelLine(LK_NONEMPTY);
 		if (posix_state == PS_MAYBE_NEXT_LINE)
 			posix_state = PS_NOW_OR_NEVER;
-		else
+		else if (posix_state != PS_SET)
 			posix_state = PS_TOO_LATE;
 		if (line == NULL)
 			return NULL;
 
+		DEBUG3(PARSE, "Parsing %s:%u: %s\n",
+		    curFile->name.str, curFile->lineno, line);
 		if (curFile->guardState != GS_NO
 		    && ((curFile->guardState == GS_START && line[0] != '.')
 			|| curFile->guardState == GS_DONE))
@@ -2682,6 +2740,13 @@ FinishDependencyGroup(void)
 	targets = NULL;
 }
 
+#ifdef CLEANUP
+void Parse_RegisterCommand(char *cmd)
+{
+	Lst_Append(&targCmds, cmd);
+}
+#endif
+
 /* Add the command to each target from the current dependency spec. */
 static void
 ParseLine_ShellCommand(const char *p)
@@ -2704,9 +2769,7 @@ ParseLine_ShellCommand(const char *p)
 			GNode *gn = ln->datum;
 			GNode_AddCommand(gn, cmd);
 		}
-#ifdef CLEANUP
-		Lst_Append(&targCmds, cmd);
-#endif
+		Parse_RegisterCommand(cmd);
 	}
 }
 
@@ -2762,6 +2825,8 @@ ParseDirective(char *line)
 		Var_Undef(arg);
 	else if (Substring_Equals(dir, "export"))
 		Var_Export(VEM_PLAIN, arg);
+	else if (Substring_Equals(dir, "export-all"))
+		Var_Export(VEM_ALL, arg);
 	else if (Substring_Equals(dir, "export-env"))
 		Var_Export(VEM_ENV, arg);
 	else if (Substring_Equals(dir, "export-literal"))
@@ -2836,7 +2901,6 @@ FindSemicolon(char *p)
 static void
 ParseDependencyLine(char *line)
 {
-	VarEvalMode emode;
 	char *expanded_line;
 	const char *shellcmd = NULL;
 
@@ -2849,41 +2913,7 @@ ParseDependencyLine(char *line)
 		}
 	}
 
-	/*
-	 * We now know it's a dependency line, so it needs to have all
-	 * variables expanded before being parsed.
-	 *
-	 * XXX: Ideally the dependency line would first be split into
-	 * its left-hand side, dependency operator and right-hand side,
-	 * and then each side would be expanded on its own.  This would
-	 * allow for the left-hand side to allow only defined variables
-	 * and to allow variables on the right-hand side to be undefined
-	 * as well.
-	 *
-	 * Parsing the line first would also prevent that targets
-	 * generated from expressions are interpreted as the
-	 * dependency operator, such as in "target${:U\:} middle: source",
-	 * in which the middle is interpreted as a source, not a target.
-	 */
-
-	/*
-	 * In lint mode, allow undefined variables to appear in dependency
-	 * lines.
-	 *
-	 * Ideally, only the right-hand side would allow undefined variables
-	 * since it is common to have optional dependencies. Having undefined
-	 * variables on the left-hand side is more unusual though.  Since
-	 * both sides are expanded in a single pass, there is not much choice
-	 * what to do here.
-	 *
-	 * In normal mode, it does not matter whether undefined variables are
-	 * allowed or not since as of 2020-09-14, Var_Parse does not print
-	 * any parse errors in such a case. It simply returns the special
-	 * empty string var_Error, which cannot be detected in the result of
-	 * Var_Subst.
-	 */
-	emode = opts.strict ? VARE_WANTRES : VARE_UNDEFERR;
-	expanded_line = Var_Subst(line, SCOPE_CMDLINE, emode);
+	expanded_line = Var_Subst(line, SCOPE_CMDLINE, VARE_EVAL);
 	/* TODO: handle errors */
 
 	/* Need a fresh list for the target nodes */
@@ -2945,8 +2975,6 @@ Parse_File(const char *name, int fd)
 
 	do {
 		while ((line = ReadHighLevelLine()) != NULL) {
-			DEBUG2(PARSE, "Parsing line %u: %s\n",
-			    CurFile()->lineno, line);
 			ParseLine(line);
 		}
 	} while (ParseEOF());
@@ -2975,14 +3003,14 @@ Parse_Init(void)
 	HashTable_Init(&guards);
 }
 
+#ifdef CLEANUP
 /* Clean up the parsing module. */
 void
 Parse_End(void)
 {
-#ifdef CLEANUP
 	HashIter hi;
 
-	Lst_DoneCall(&targCmds, free);
+	Lst_DoneFree(&targCmds);
 	assert(targets == NULL);
 	SearchPath_Free(defSysIncPath);
 	SearchPath_Free(sysIncPath);
@@ -2990,14 +3018,14 @@ Parse_End(void)
 	assert(includes.len == 0);
 	Vector_Done(&includes);
 	HashIter_Init(&hi, &guards);
-	while (HashIter_Next(&hi) != NULL) {
+	while (HashIter_Next(&hi)) {
 		Guard *guard = hi.entry->value;
 		free(guard->name);
 		free(guard);
 	}
 	HashTable_Done(&guards);
-#endif
 }
+#endif
 
 
 /* Populate the list with the single main target to create, or error out. */
@@ -3012,10 +3040,4 @@ Parse_MainName(GNodeList *mainList)
 		Lst_AppendAll(mainList, &mainNode->cohorts);
 
 	Global_Append(".TARGETS", mainNode->name);
-}
-
-int
-Parse_NumErrors(void)
-{
-	return parseErrors;
 }

@@ -43,7 +43,7 @@ INTERFACE bus;
 CODE {
 	static struct resource *
 	null_alloc_resource(device_t dev, device_t child,
-	    int type, int *rid, rman_res_t start, rman_res_t end,
+	    int type, int rid, rman_res_t start, rman_res_t end,
 	    rman_res_t count, u_int flags)
 	{
 	    return (0);
@@ -63,7 +63,8 @@ CODE {
 	    int unit)
 	{
 
-		panic("bus_add_child is not implemented");
+		panic("%s: bus_add_child is not implemented, name '%s', "
+		    "unit %d", device_get_nameunit(bus), name, unit);
 	}
 
 	static int
@@ -80,6 +81,12 @@ CODE {
 
 	static struct rman *
 	null_get_rman(device_t bus, int type, u_int flags)
+	{
+		return (NULL);
+	}
+
+	static struct resource_list *
+	null_get_resource_list(device_t bus, device_t dev)
 	{
 		return (NULL);
 	}
@@ -266,16 +273,15 @@ METHOD int rescan {
  *
  * This method is called by child devices of a bus to allocate resources.
  * The types are defined in <machine/resource.h>; the meaning of the
- * resource-ID field varies from bus to bus (but @p *rid == 0 is always
- * valid if the resource type is). If a resource was allocated and the
- * caller did not use the RF_ACTIVE to specify that it should be
+ * resource-ID field varies from bus to bus. If a resource was allocated
+ * and the caller did not use the RF_ACTIVE to specify that it should be
  * activated immediately, the caller is responsible for calling
  * BUS_ACTIVATE_RESOURCE() when it actually uses the resource.
  *
  * @param _dev		the parent device of @p _child
  * @param _child	the device which is requesting an allocation
  * @param _type		the type of resource to allocate
- * @param _rid		a pointer to the resource identifier
+ * @param _rid		the resource identifier
  * @param _start	hint at the start of the resource range - pass
  *			@c 0 for any start address
  * @param _end		hint at the end of the resource range - pass
@@ -293,7 +299,7 @@ METHOD struct resource * alloc_resource {
 	device_t	_dev;
 	device_t	_child;
 	int		_type;
-	int	       *_rid;
+	int	        _rid;
 	rman_res_t	_start;
 	rman_res_t	_end;
 	rman_res_t	_count;
@@ -608,7 +614,7 @@ METHOD void delete_resource {
 METHOD struct resource_list * get_resource_list {
 	device_t	_dev;
 	device_t	_child;
-} DEFAULT bus_generic_get_resource_list;
+} DEFAULT null_get_resource_list;
 
 /**
  * @brief Return a struct rman.

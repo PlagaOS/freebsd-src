@@ -38,13 +38,6 @@
 
 __NULLABILITY_PRAGMA_PUSH
 
-#if __BSD_VISIBLE
-#ifndef _RUNE_T_DECLARED
-typedef	__rune_t	rune_t;
-#define	_RUNE_T_DECLARED
-#endif
-#endif
-
 #ifndef _SIZE_T_DECLARED
 typedef	__size_t	size_t;
 #define	_SIZE_T_DECLARED
@@ -76,6 +69,10 @@ typedef struct {
  */
 #define	RAND_MAX	0x7fffffff
 
+#if !defined(_STANDALONE) && defined(_FORTIFY_SOURCE) && _FORTIFY_SOURCE > 0
+#include <ssp/stdlib.h>
+#endif
+
 __BEGIN_DECLS
 #ifdef _XLOCALE_H_
 #include <xlocale/_stdlib.h>
@@ -98,6 +95,9 @@ div_t	 div(int, int) __pure2;
 _Noreturn void	 exit(int);
 void	 free(void *);
 char	*getenv(const char *);
+#if __BSD_VISIBLE
+int	 getenv_r(const char *, char * _Nonnull, size_t);
+#endif
 long	 labs(long) __pure2;
 ldiv_t	 ldiv(long, long) __pure2;
 void	*malloc(size_t) __malloc_like __result_use_check __alloc_size(1);
@@ -167,6 +167,14 @@ int	at_quick_exit(void (*)(void)) __noexcept;
 _Noreturn void
 	quick_exit(int) /* __noexcept -- not ready ABI issues? */;
 #endif /* __ISO_C_VISIBLE >= 2011 */
+
+/*
+ * C23 extensions
+ */
+#if __ISO_C_VISIBLE >= 2023
+size_t	memalignment(const void *) __pure2;
+#endif /* __ISO_C_VISIBLE >= 2023 */
+
 /*
  * Extensions made by POSIX relative to C.
  */
@@ -314,6 +322,8 @@ int	 radixsort(const unsigned char **, int, const unsigned char *,
 	    unsigned);
 void	*reallocarray(void *, size_t, size_t) __result_use_check
 	    __alloc_size2(2, 3);
+void	*recallocarray(void *, size_t, size_t, size_t) __result_use_check
+	    __alloc_size2(3, 4);
 void	*reallocf(void *, size_t) __result_use_check __alloc_size(2);
 int	 rpmatch(const char *);
 char	*secure_getenv(const char *);
@@ -323,6 +333,8 @@ int	 sradixsort(const unsigned char **, int, const unsigned char *,
 void	 srandomdev(void);
 long long
 	strtonum(const char *, long long, long long, const char **);
+long long
+	strtonumx(const char *, long long, long long, const char **, int);
 
 /* Deprecated interfaces, to be removed. */
 __int64_t
@@ -337,23 +349,26 @@ __uint64_t
  * parameter, and both are different from the ones expected by the historical
  * FreeBSD qsort_r() interface.
  *
- * Apply a workaround where we explicitly link against the historical
- * interface, qsort_r@FBSD_1.0, in case when qsort_r() is called with
- * the last parameter with a function pointer that exactly matches the
- * historical FreeBSD qsort_r() comparator signature, so applications
- * written for the historical interface can continue to work without
- * modification.
+ * Apply a workaround where we explicitly link against the historical interface,
+ * qsort_r@FBSD_1.0, in case when qsort_r() is called with the last parameter
+ * with a function pointer that exactly matches the historical FreeBSD qsort_r()
+ * comparator signature, so applications written for the historical interface
+ * can continue to work without modification. Toolchains that don't support
+ * symbol versioning don't define __sym_compat, so only provide this symbol in
+ * supported environments.
  */
+#ifdef __sym_compat
 #if defined(__generic) || defined(__cplusplus)
 void __qsort_r_compat(void *, size_t, size_t, void *,
 	    int (*)(void *, const void *, const void *));
 __sym_compat(qsort_r, __qsort_r_compat, FBSD_1.0);
 #endif
+#endif
 #if defined(__generic) && !defined(__cplusplus)
 #define	qsort_r(base, nel, width, arg4, arg5)				\
     __generic(arg5, int (*)(void *, const void *, const void *),	\
         __qsort_r_compat, qsort_r)(base, nel, width, arg4, arg5)
-#elif defined(__cplusplus)
+#elif defined(__cplusplus) && defined(__sym_compat)
 __END_DECLS
 extern "C++" {
 static inline void qsort_r(void *base, size_t nmemb, size_t size,

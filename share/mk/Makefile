@@ -1,4 +1,3 @@
-
 # Only parse this if executing make in this directory, not in other places
 # in src that lack a Makefile, such as sys/dev/*.  Otherwise the MAKESYSPATH
 # will read this Makefile since it auto includes it into -I.
@@ -11,6 +10,7 @@ UPDATE_DEPENDFILE= no
 
 .include <src.opts.mk>
 
+PACKAGE= bmake
 FILES=	\
 	auto.obj.mk \
 	bsd.README \
@@ -22,6 +22,7 @@ FILES=	\
 	bsd.confs.mk \
 	bsd.cpu.mk \
 	bsd.crunchgen.mk \
+	bsd.debug.mk \
 	bsd.dep.mk \
 	bsd.dirs.mk \
 	bsd.doc.mk \
@@ -51,6 +52,7 @@ FILES=	\
 	bsd.progs.mk \
 	bsd.snmpmod.mk \
 	bsd.subdir.mk \
+	bsd.suffixes-extra.mk \
 	bsd.suffixes-posix.mk \
 	bsd.suffixes.mk \
 	bsd.symver.mk \
@@ -62,20 +64,30 @@ FILES=	\
 	dirdeps-targets.mk \
 	gendirdeps.mk \
 	host-target.mk \
+	host.test.mk \
 	install-new.mk \
 	jobs.mk \
 	meta.autodep.mk \
 	meta.stage.mk \
 	meta.subdir.mk \
 	meta.sys.mk \
+	meta2deps.py \
+	meta2deps.sh \
+	${SRCTOP}/contrib/bmake/mk/newlog.sh \
 	${SRCTOP}/contrib/bmake/mk/posix.mk \
 	stage-install.sh \
+	${SRCTOP}/contrib/bmake/mk/setopts.sh \
 	sys.mk \
 	sys.dependfile.mk \
 	sys.dirdeps.mk \
 	version_gen.awk
 
 FILESDIR=	${BINDIR}/mk
+
+# make sure scripts are executable
+.for file in ${FILES:M*.sh} ${FILES:M*.py}
+FILESMODE_${file} = 555
+.endfor
 
 .if ${MK_TESTS} != "no"
 FILES+=	atf.test.mk

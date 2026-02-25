@@ -1,4 +1,3 @@
-
 TESTSRC=	${SRCTOP}/contrib/netbsd-tests/lib/libc/tls/${.CURDIR:T}
 
 LIB=		h_tls_dlopen
@@ -7,6 +6,7 @@ SRCS=		h_tls_dlopen.c
 
 MAN=
 PACKAGE=	tests
+NO_DEV_PACKAGE=
 
 LIBDIR=		${TESTSBASE}/lib/libc/tls
 SHLIB_MAJOR=	1

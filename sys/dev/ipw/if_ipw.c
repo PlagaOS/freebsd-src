@@ -283,6 +283,8 @@ ipw_attach(device_t dev)
 		| IEEE80211_C_WPA		/* 802.11i supported */
 		;
 
+	ic->ic_flags_ext |= IEEE80211_FEXT_SEQNO_OFFLOAD;
+
 	/* read MAC address from EEPROM */
 	val = ipw_read_prom_word(sc, IPW_EEPROM_MAC + 0);
 	ic->ic_macaddr[0] = val >> 8;
@@ -838,8 +840,8 @@ ipw_media_status(if_t ifp, struct ifmediareq *imr)
 	struct ipw_softc *sc = ic->ic_softc;
 
 	/* read current transmission rate from adapter */
-	vap->iv_bss->ni_txrate = ipw_cvtrate(
-	    ipw_read_table1(sc, IPW_INFO_CURRENT_TX_RATE) & 0xf);
+	ieee80211_node_set_txrate_dot11rate(vap->iv_bss,
+	    ipw_cvtrate(ipw_read_table1(sc, IPW_INFO_CURRENT_TX_RATE) & 0xf));
 	ieee80211_media_status(ifp, imr);
 }
 
@@ -1119,7 +1121,7 @@ ipw_fix_channel(struct ipw_softc *sc, struct mbuf *m)
 
 	wh = mtod(m, struct ieee80211_frame *);
 
-	if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) != IEEE80211_FC0_TYPE_MGT)
+	if (!IEEE80211_IS_MGMT(wh))
 		return;
 
 	subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
@@ -1557,6 +1559,7 @@ ipw_tx_start(struct ipw_softc *sc, struct mbuf *m0, struct ieee80211_node *ni)
 
 	wh = mtod(m0, struct ieee80211_frame *);
 
+	ieee80211_output_seqno_assign(ni, -1, m0);
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
 		k = ieee80211_crypto_encap(ni, m0);
 		if (k == NULL) {

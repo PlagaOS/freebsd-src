@@ -66,9 +66,9 @@
  */
 
 #include "namespace.h"
-#include <sys/types.h>
-#include <sys/mman.h>
 #include <sys/param.h>
+#include <sys/exterrvar.h>
+#include <sys/mman.h>
 #include <sys/select.h>
 #include <sys/signalvar.h>
 #include <sys/socket.h>
@@ -188,22 +188,19 @@ __thr_connect(int fd, const struct sockaddr *name, socklen_t namelen)
  *   if it is canceled.
  */
 static int
-__thr_fcntl(int fd, int cmd, ...)
+__thr_fcntl(int fd, int cmd, __intptr_t arg)
 {
 	struct pthread *curthread;
 	int ret;
-	va_list	ap;
 
 	curthread = _get_curthread();
-	va_start(ap, cmd);
 	if (cmd == F_OSETLKW || cmd == F_SETLKW) {
 		_thr_cancel_enter(curthread);
-		ret = __sys_fcntl(fd, cmd, (intptr_t)va_arg(ap, void *));
+		ret = __sys_fcntl(fd, cmd, arg);
 		_thr_cancel_leave(curthread, ret == -1);
 	} else {
-		ret = __sys_fcntl(fd, cmd, (intptr_t)va_arg(ap, void *));
+		ret = __sys_fcntl(fd, cmd, arg);
 	}
-	va_end(ap);
 
 	return (ret);
 }
@@ -294,23 +291,11 @@ __thr_nanosleep(const struct timespec *time_to_sleep,
  *   If the thread is canceled, file is not opened.
  */
 static int
-__thr_openat(int fd, const char *path, int flags, ...)
+__thr_openat(int fd, const char *path, int flags, int mode)
 {
 	struct pthread *curthread;
-	int mode, ret;
-	va_list	ap;
+	int ret;
 
-	
-	/* Check if the file is being created: */
-	if ((flags & O_CREAT) != 0) {
-		/* Get the creation mode: */
-		va_start(ap, flags);
-		mode = va_arg(ap, int);
-		va_end(ap);
-	} else {
-		mode = 0;
-	}
-	
 	curthread = _get_curthread();
 	_thr_cancel_enter(curthread);
 	ret = __sys_openat(fd, path, flags, mode);
@@ -599,6 +584,20 @@ __thr_wait6(idtype_t idtype, id_t id, int *status, int options,
 	return (ret);
 }
 
+static pid_t
+__thr_pdwait(int fd, int *status, int options, struct __wrusage *ru,
+    siginfo_t *infop)
+{
+	struct pthread *curthread;
+	pid_t ret;
+
+	curthread = _get_curthread();
+	_thr_cancel_enter(curthread);
+	ret = __sys_pdwait(fd, status, options, ru, infop);
+	_thr_cancel_leave(curthread, ret == -1);
+	return (ret);
+}
+
 /*
  * Cancellation behavior:
  *   Thread may be canceled at start, but if the thread wrote some data,
@@ -635,6 +634,15 @@ __thr_writev(int fd, const struct iovec *iov, int iovcnt)
 	return (ret);
 }
 
+static int
+__thr_uexterr_gettext(char *buf, size_t bufsz)
+{
+	struct pthread *curthread;
+
+	curthread = _get_curthread();
+	return (__uexterr_format(&curthread->uexterr, buf, bufsz));
+}
+
 void
 __thr_interpose_libc(void)
 {
@@ -651,7 +659,7 @@ __thr_interpose_libc(void)
 #undef SLOT
 
 #define	SLOT(name)					\
-	*(__libsys_interposing_slot(INTERPOS_##name)) =	\
+	*(__libc_interposing_slot(INTERPOS_##name)) =	\
 	    (interpos_func_t)__thr_##name;
 	SLOT(accept);
 	SLOT(accept4);
@@ -690,6 +698,8 @@ __thr_interpose_libc(void)
 	SLOT(fdatasync);
 	SLOT(clock_nanosleep);
 	SLOT(pdfork);
+	SLOT(uexterr_gettext);
+	SLOT(pdwait);
 #undef SLOT
 	*(__libc_interposing_slot(
 	    INTERPOS__pthread_mutex_init_calloc_cb)) =

@@ -1073,8 +1073,14 @@ dt_vopen(int version, int flags, int *errp,
 	if (flags & ~DTRACE_O_MASK)
 		return (set_open_errno(dtp, errp, EINVAL));
 
-	if ((flags & DTRACE_O_LP64) && (flags & DTRACE_O_ILP32))
+	switch (flags & DTRACE_O_MODEL_MASK) {
+	case 0: /* native model */
+	case DTRACE_O_ILP32:
+	case DTRACE_O_LP64:
+		break;
+	default:
 		return (set_open_errno(dtp, errp, EINVAL));
+	}
 
 	if (vector == NULL && arg != NULL)
 		return (set_open_errno(dtp, errp, EINVAL));
@@ -1256,19 +1262,6 @@ alloc:
 		dtp->dt_conf.dtc_ctfmodel = CTF_MODEL_LP64;
 	else if (flags & DTRACE_O_ILP32)
 		dtp->dt_conf.dtc_ctfmodel = CTF_MODEL_ILP32;
-
-#ifdef __sparc
-	/*
-	 * On SPARC systems, __sparc is always defined for <sys/isa_defs.h>
-	 * and __sparcv9 is defined if we are doing a 64-bit compile.
-	 */
-	if (dt_cpp_add_arg(dtp, "-D__sparc") == NULL)
-		return (set_open_errno(dtp, errp, EDT_NOMEM));
-
-	if (dtp->dt_conf.dtc_ctfmodel == CTF_MODEL_LP64 &&
-	    dt_cpp_add_arg(dtp, "-D__sparcv9") == NULL)
-		return (set_open_errno(dtp, errp, EDT_NOMEM));
-#endif
 
 #ifdef illumos
 #ifdef __x86

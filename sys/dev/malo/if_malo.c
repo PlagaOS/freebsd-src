@@ -94,13 +94,9 @@ enum {
 	MALO_DEBUG_FW		= 0x00008000,	/* firmware */
 	MALO_DEBUG_ANY		= 0xffffffff
 };
-#define	IS_BEACON(wh)							\
-	((wh->i_fc[0] & (IEEE80211_FC0_TYPE_MASK |			\
-		IEEE80211_FC0_SUBTYPE_MASK)) ==				\
-	 (IEEE80211_FC0_TYPE_MGT|IEEE80211_FC0_SUBTYPE_BEACON))
 #define	IFF_DUMPPKTS_RECV(sc, wh)					\
 	(((sc->malo_debug & MALO_DEBUG_RECV) &&				\
-	  ((sc->malo_debug & MALO_DEBUG_RECV_ALL) || !IS_BEACON(wh))))
+	  ((sc->malo_debug & MALO_DEBUG_RECV_ALL) || !IEEE80211_IS_MGMT_BEACON(wh))))
 #define	IFF_DUMPPKTS_XMIT(sc)						\
 	(sc->malo_debug & MALO_DEBUG_XMIT)
 #define	DPRINTF(sc, m, fmt, ...) do {				\
@@ -266,6 +262,8 @@ malo_attach(uint16_t devid, struct malo_softc *sc)
 	    | IEEE80211_C_WPA			/* capable of WPA1+WPA2 */
 	    ;
 	IEEE80211_ADDR_COPY(ic->ic_macaddr, sc->malo_hwspecs.macaddr);
+
+	ic->ic_flags_ext |= IEEE80211_FEXT_SEQNO_OFFLOAD;
 
 	/*
 	 * Transmit requires space in the packet for a special format transmit
@@ -902,7 +900,7 @@ malo_updatetxrate(struct ieee80211_node *ni, int rix)
 	static const int ieeerates[] =
 	    { 2, 4, 11, 22, 44, 12, 18, 24, 36, 48, 96, 108 };
 	if (rix < nitems(ieeerates))
-		ni->ni_txrate = ieeerates[rix];
+		ieee80211_node_set_txrate_dot11rate(ni, ieeerates[rix]);
 }
 
 static int
@@ -1025,8 +1023,6 @@ static int
 malo_tx_start(struct malo_softc *sc, struct ieee80211_node *ni,
     struct malo_txbuf *bf, struct mbuf *m0)
 {
-#define	IS_DATA_FRAME(wh)						\
-	((wh->i_fc[0] & (IEEE80211_FC0_TYPE_MASK)) == IEEE80211_FC0_TYPE_DATA)
 	int error, iswep;
 	int hdrlen, pktlen;
 	struct ieee80211_frame *wh;
@@ -1045,6 +1041,8 @@ malo_tx_start(struct malo_softc *sc, struct ieee80211_node *ni,
 		qos = *(uint16_t *)ieee80211_getqos(wh);
 	} else
 		qos = 0;
+
+	ieee80211_output_seqno_assign(ni, -1, m0);
 
 	if (iswep) {
 		struct ieee80211_key *k;
@@ -1150,7 +1148,7 @@ malo_tx_start(struct malo_softc *sc, struct ieee80211_node *ni,
 	ds->pktptr = htole32(bf->bf_segs[0].ds_addr);
 	ds->pktlen = htole16(bf->bf_segs[0].ds_len);
 	/* NB: pPhysNext setup once, don't touch */
-	ds->datarate = IS_DATA_FRAME(wh) ? 1 : 0;
+	ds->datarate = IEEE80211_IS_DATA(wh) ? 1 : 0;
 	ds->sap_pktinfo = 0;
 	ds->format = 0;
 
@@ -1183,7 +1181,7 @@ malo_tx_start(struct malo_softc *sc, struct ieee80211_node *ni,
 #endif
 
 	MALO_TXQ_LOCK(txq);
-	if (!IS_DATA_FRAME(wh))
+	if (!IEEE80211_IS_DATA(wh))
 		ds->status |= htole32(1);
 	ds->status |= htole32(MALO_TXD_STATUS_FW_OWNED);
 	STAILQ_INSERT_TAIL(&txq->active, bf, bf_list);

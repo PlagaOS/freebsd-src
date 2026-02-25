@@ -28,14 +28,14 @@
 #ifndef _NETLINK_KTEST_NETLINK_MESSAGE_WRITER_H_
 #define _NETLINK_KTEST_NETLINK_MESSAGE_WRITER_H_
 
-#if defined(_KERNEL) && defined(INVARIANTS)
+#if defined(_KERNEL)
 
-bool nlmsg_get_buf_wrapper(struct nl_writer *nw, u_int size, bool waitok);
+bool nlmsg_get_buf_wrapper(struct nl_writer *nw, size_t size, bool waitok);
 
 #ifndef KTEST_CALLER
 
 bool
-nlmsg_get_buf_wrapper(struct nl_writer *nw, u_int size, bool waitok)
+nlmsg_get_buf_wrapper(struct nl_writer *nw, size_t size, bool waitok)
 {
 	return (nlmsg_get_buf(nw, size, waitok));
 }

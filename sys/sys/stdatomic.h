@@ -33,7 +33,8 @@
 #include <sys/cdefs.h>
 #include <sys/_types.h>
 
-#if __has_extension(c_atomic) || __has_extension(cxx_atomic)
+#if (__has_extension(c_atomic) || __has_extension(cxx_atomic)) && \
+    defined(__clang__)
 #define	__CLANG_ATOMICS
 #elif __GNUC_PREREQ__(4, 7)
 #define	__GNUC_ATOMICS
@@ -52,6 +53,9 @@
 #endif
 #ifdef __GCC_ATOMIC_CHAR_LOCK_FREE
 #define	ATOMIC_CHAR_LOCK_FREE		__GCC_ATOMIC_CHAR_LOCK_FREE
+#endif
+#if __ISO_C_VISIBLE >= 2023 && defined(__GCC_ATOMIC_CHAR8_T_LOCK_FREE)
+#define	ATOMIC_CHAR8_T_LOCK_FREE	__GCC_ATOMIC_CHAR8_T_LOCK_FREE
 #endif
 #ifdef __GCC_ATOMIC_CHAR16_T_LOCK_FREE
 #define	ATOMIC_CHAR16_T_LOCK_FREE	__GCC_ATOMIC_CHAR16_T_LOCK_FREE
@@ -198,6 +202,9 @@ typedef _Atomic(long)			atomic_long;
 typedef _Atomic(unsigned long)		atomic_ulong;
 typedef _Atomic(long long)		atomic_llong;
 typedef _Atomic(unsigned long long)	atomic_ullong;
+#if __ISO_C_VISIBLE >= 2023
+typedef _Atomic(unsigned char)		atomic_char8_t;
+#endif
 typedef _Atomic(__char16_t)		atomic_char16_t;
 typedef _Atomic(__char32_t)		atomic_char32_t;
 typedef _Atomic(___wchar_t)		atomic_wchar_t;

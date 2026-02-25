@@ -59,16 +59,17 @@
 #endif
 #endif /* __NR_copy_file_range */
 
-#ifdef __FreeBSD__
-#define	loff_t	off_t
+#if defined(_GNU_SOURCE) && defined(__linux__)
+_Static_assert(sizeof (loff_t) == sizeof (off_t),
+	"loff_t and off_t must be the same size");
 #endif
 
 ssize_t
-copy_file_range(int, loff_t *, int, loff_t *, size_t, unsigned int)
+copy_file_range(int, off_t *, int, off_t *, size_t, unsigned int)
     __attribute__((weak));
 
 static inline ssize_t
-cf_copy_file_range(int sfd, loff_t *soff, int dfd, loff_t *doff,
+cf_copy_file_range(int sfd, off_t *soff, int dfd, off_t *doff,
     size_t len, unsigned int flags)
 {
 	if (copy_file_range)
@@ -151,9 +152,9 @@ usage(void)
 }
 
 int do_clone(int sfd, int dfd);
-int do_clonerange(int sfd, int dfd, loff_t soff, loff_t doff, size_t len);
-int do_copyfilerange(int sfd, int dfd, loff_t soff, loff_t doff, size_t len);
-int do_deduperange(int sfd, int dfd, loff_t soff, loff_t doff, size_t len);
+int do_clonerange(int sfd, int dfd, off_t soff, off_t doff, size_t len);
+int do_copyfilerange(int sfd, int dfd, off_t soff, off_t doff, size_t len);
+int do_deduperange(int sfd, int dfd, off_t soff, off_t doff, size_t len);
 
 int quiet = 0;
 
@@ -203,8 +204,9 @@ main(int argc, char **argv)
 			abort();
 	}
 
-	loff_t soff = 0, doff = 0;
+	off_t soff = 0, doff = 0;
 	size_t len = SSIZE_MAX;
+	unsigned long long len2;
 	if ((argc-optind) == 5) {
 		soff = strtoull(argv[optind+2], NULL, 10);
 		if (soff == ULLONG_MAX) {
@@ -220,11 +222,13 @@ main(int argc, char **argv)
 		    strcmp(argv[optind+4], "all") == 0) {
 			len = SSIZE_MAX;
 		} else {
-			len = strtoull(argv[optind+4], NULL, 10);
-			if (len == ULLONG_MAX) {
+			len2 = strtoull(argv[optind+4], NULL, 10);
+			if (len2 == ULLONG_MAX) {
 				fprintf(stderr, "invalid length");
 				return (1);
 			}
+			if (len2 < SSIZE_MAX)
+				len = (size_t)len2;
 		}
 	}
 
@@ -268,7 +272,7 @@ main(int argc, char **argv)
 		off_t dpos = lseek(dfd, 0, SEEK_CUR);
 		off_t dlen = lseek(dfd, 0, SEEK_END);
 
-		fprintf(stderr, "file offsets: src=%lu/%lu; dst=%lu/%lu\n",
+		fprintf(stderr, "file offsets: src=%jd/%jd; dst=%jd/%jd\n",
 		    spos, slen, dpos, dlen);
 	}
 
@@ -292,7 +296,7 @@ do_clone(int sfd, int dfd)
 }
 
 int
-do_clonerange(int sfd, int dfd, loff_t soff, loff_t doff, size_t len)
+do_clonerange(int sfd, int dfd, off_t soff, off_t doff, size_t len)
 {
 	if (!quiet)
 		fprintf(stderr, "using FICLONERANGE\n");
@@ -311,7 +315,7 @@ do_clonerange(int sfd, int dfd, loff_t soff, loff_t doff, size_t len)
 }
 
 int
-do_copyfilerange(int sfd, int dfd, loff_t soff, loff_t doff, size_t len)
+do_copyfilerange(int sfd, int dfd, off_t soff, off_t doff, size_t len)
 {
 	if (!quiet)
 		fprintf(stderr, "using copy_file_range\n");
@@ -331,14 +335,14 @@ do_copyfilerange(int sfd, int dfd, loff_t soff, loff_t doff, size_t len)
 	}
 	if (copied != len) {
 		fprintf(stderr, "copy_file_range: copied less than requested: "
-		    "requested=%lu; copied=%lu\n", len, copied);
+		    "requested=%zu; copied=%zd\n", len, copied);
 		return (1);
 	}
 	return (0);
 }
 
 int
-do_deduperange(int sfd, int dfd, loff_t soff, loff_t doff, size_t len)
+do_deduperange(int sfd, int dfd, off_t soff, off_t doff, size_t len)
 {
 	if (!quiet)
 		fprintf(stderr, "using FIDEDUPERANGE\n");

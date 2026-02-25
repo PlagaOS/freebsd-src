@@ -1,4 +1,3 @@
-
 PACKAGE=	clibs
 SHLIBDIR?= /lib
 
@@ -11,6 +10,9 @@ LDFLAGS+=	-Wl,--rpath=/usr/lib${COMPAT_libcompat}
 
 .include <src.opts.mk>
 MK_SSP=	no
+# SSP forced off already implies FORTIFY_SOURCE=0, but we must make sure that
+# one cannot turn it back on.
+FORTIFY_SOURCE=	0
 
 LIB=thr
 SHLIB_MAJOR= 3
@@ -29,6 +31,10 @@ CFLAGS+=-I${SRCTOP}/lib/libthread_db
 
 CFLAGS.thr_stack.c+=	-Wno-cast-align
 CFLAGS.rtld_malloc.c+=	-Wno-cast-align
+# Disable compiler builtins so that the compiler does not optimize away rtld's
+# attempts to force early PLT resolution for certain functions that may be
+# replaced by builtins.
+CFLAGS.thr_rtld.c+=	-fno-builtin
 CFLAGS.thr_symbols.c+=	-Wno-missing-variable-declarations
 .if ${MK_ASAN} != "no"
 # False-positive ASAN error claiming the local "struct sigaction act;" is
@@ -47,6 +53,7 @@ CFLAGS+=-D_PTHREAD_FORCED_UNWIND
 .endif
 
 LDFLAGS+=-Wl,-znodelete
+LDFLAGS+=-Wl,-zinitfirst
 LDFLAGS+=-Wl,--auxiliary,libsys.so.7
 
 VERSION_DEF=${SRCTOP}/lib/libc/Versions.def
@@ -84,9 +91,6 @@ SYMLINKS+=lib${LIB}.a ${LIBDIR}/libpthread.a
 .endif
 .if !defined(NO_PIC)
 SYMLINKS+=lib${LIB}.so ${LIBDIR}/libpthread.so
-.endif
-.if ${MK_PROFILE} != "no"
-SYMLINKS+=lib${LIB}_p.a ${LIBDIR}/libpthread_p.a
 .endif
 
 HAS_TESTS=

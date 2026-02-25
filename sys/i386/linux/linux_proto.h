@@ -7,8 +7,8 @@
 #ifndef _LINUX_SYSPROTO_H_
 #define	_LINUX_SYSPROTO_H_
 
+#include <sys/types.h>
 #include <sys/signal.h>
-#include <sys/acl.h>
 #include <sys/cpuset.h>
 #include <sys/domainset.h>
 #include <sys/_ffcounter.h>
@@ -846,7 +846,7 @@ struct linux_set_tid_address_args {
 };
 struct linux_timer_create_args {
 	char clock_id_l_[PADL_(clockid_t)]; clockid_t clock_id; char clock_id_r_[PADR_(clockid_t)];
-	char evp_l_[PADL_(struct sigevent *)]; struct sigevent * evp; char evp_r_[PADR_(struct sigevent *)];
+	char evp_l_[PADL_(struct l_sigevent *)]; struct l_sigevent * evp; char evp_r_[PADR_(struct l_sigevent *)];
 	char timerid_l_[PADL_(l_timer_t *)]; l_timer_t * timerid; char timerid_r_[PADR_(l_timer_t *)];
 };
 struct linux_timer_settime_args {
@@ -942,7 +942,7 @@ struct linux_mq_timedreceive_args {
 };
 struct linux_mq_notify_args {
 	char mqd_l_[PADL_(l_mqd_t)]; l_mqd_t mqd; char mqd_r_[PADR_(l_mqd_t)];
-	char abs_timeout_l_[PADL_(const struct l_timespec *)]; const struct l_timespec * abs_timeout; char abs_timeout_r_[PADR_(const struct l_timespec *)];
+	char sevp_l_[PADL_(const struct l_sigevent *)]; const struct l_sigevent * sevp; char sevp_r_[PADR_(const struct l_sigevent *)];
 };
 struct linux_mq_getsetattr_args {
 	char mqd_l_[PADL_(l_mqd_t)]; l_mqd_t mqd; char mqd_r_[PADR_(l_mqd_t)];
@@ -981,10 +981,13 @@ struct linux_inotify_init_args {
 	syscallarg_t dummy;
 };
 struct linux_inotify_add_watch_args {
-	syscallarg_t dummy;
+	char fd_l_[PADL_(l_int)]; l_int fd; char fd_r_[PADR_(l_int)];
+	char pathname_l_[PADL_(const char *)]; const char * pathname; char pathname_r_[PADR_(const char *)];
+	char mask_l_[PADL_(uint32_t)]; uint32_t mask; char mask_r_[PADR_(uint32_t)];
 };
 struct linux_inotify_rm_watch_args {
-	syscallarg_t dummy;
+	char fd_l_[PADL_(l_int)]; l_int fd; char fd_r_[PADR_(l_int)];
+	char wd_l_[PADL_(uint32_t)]; uint32_t wd; char wd_r_[PADR_(uint32_t)];
 };
 struct linux_migrate_pages_args {
 	syscallarg_t dummy;
@@ -1178,7 +1181,7 @@ struct linux_pipe2_args {
 	char flags_l_[PADL_(l_int)]; l_int flags; char flags_r_[PADR_(l_int)];
 };
 struct linux_inotify_init1_args {
-	syscallarg_t dummy;
+	char flags_l_[PADL_(l_int)]; l_int flags; char flags_r_[PADR_(l_int)];
 };
 struct linux_preadv_args {
 	char fd_l_[PADL_(l_ulong)]; l_ulong fd; char fd_r_[PADR_(l_ulong)];

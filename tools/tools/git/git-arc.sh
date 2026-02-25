@@ -43,6 +43,14 @@ err()
     exit 1
 }
 
+cleanup()
+{
+    rc=$?
+    rm -fr "$GITARC_TMPDIR"
+    trap - EXIT
+    exit $rc
+}
+
 err_usage()
 {
     cat >&2 <<__EOF__
@@ -51,100 +59,43 @@ Usage: git arc [-vy] <command> <arguments>
 Commands:
   create [-l] [-r <reviewer1>[,<reviewer2>...]] [-s subscriber[,...]] [<commit>|<commit range>]
   list <commit>|<commit range>
-  patch [-c] <diff1> [<diff2> ...]
+  patch [-bcrs] <diff1> [<diff2> ...]
   stage [-b branch] [<commit>|<commit range>]
-  update [-m message] [<commit>|<commit range>]
+  update [-l] [-m message] [<commit>|<commit range>]
 
-Description:
-  Create or manage FreeBSD Phabricator reviews based on git commits.  There
-  is a one-to one relationship between git commits and Differential revisions,
-  and the Differential revision title must match the summary line of the
-  corresponding commit.  In particular, commit summaries must be unique across
-  all open Differential revisions authored by you.
-
-  The first parameter must be a verb.  The available verbs are:
-
-    create -- Create new Differential revisions from the specified commits.
-    list   -- Print the associated Differential revisions for the specified
-              commits.
-    patch  -- Try to apply a patch from a Differential revision to the
-              currently checked out tree.
-    stage  -- Prepare a series of commits to be pushed to the upstream FreeBSD
-              repository.  The commits are cherry-picked to a branch (main by
-              default), review tags are added to the commit log message, and
-              the log message is opened in an editor for any last-minute
-              updates.  The commits need not have associated Differential
-              revisions.
-    update -- Synchronize the Differential revisions associated with the
-              specified commits.  Currently only the diff is updated; the
-              review description and other metadata is not synchronized.
-
-  The typical end-to-end usage looks something like this:
-
-    $ git commit -m "kern: Rewrite in Rust"
-    $ git arc create HEAD
-    <Make changes to the diff based on reviewer feedback.>
-    $ git commit --amend
-    $ git arc update HEAD
-    <Now that all reviewers are happy, it's time to push.>
-    $ git arc stage HEAD
-    $ git push freebsd HEAD:main
-
-Config Variables:
-  These are manipulated by git-config(1).
-
-    arc.assume_yes [bool]
-                       -- Assume a "yes" answer to all prompts instead of
-                          prompting the user.  Equivalent to the -y flag.
-
-    arc.browse [bool]  -- Try to open newly created reviews in a browser tab.
-                          Defaults to false.
-
-    arc.list [bool]    -- Always use "list mode" (-l) with create.  In this
-                          mode, the list of git revisions to create reviews for
-                          is listed with a single prompt before creating
-                          reviews.  The diffs for individual commits are not
-                          shown.
-
-    arc.verbose [bool] -- Verbose output.  Equivalent to the -v flag.
-
-Examples:
-  Create a Phabricator review using the contents of the most recent commit in
-  your git checkout.  The commit title is used as the review title, the commit
-  log message is used as the review description, markj@FreeBSD.org is added as
-  a reviewer.
-
-  $ git arc create -r markj HEAD
-
-  Create a series of Phabricator reviews for each of HEAD~2, HEAD~ and HEAD.
-  Pairs of consecutive commits are linked into a patch stack.  Note that the
-  first commit in the specified range is excluded.
-
-  $ git arc create HEAD~3..HEAD
-
-  Update the review corresponding to commit b409afcfedcdda.  The title of the
-  commit must be the same as it was when the review was created.  The review
-  description is not automatically updated.
-
-  $ git arc update b409afcfedcdda
-
-  Apply the patch in review D12345 to the currently checked-out tree, and stage
-  it.
-
-  $ git arc patch D12345
-
-  Apply the patch in review D12345 to the currently checked-out tree, and
-  commit it using the review's title, summary and author.
-
-  $ git arc patch -c D12345
-
-  List the status of reviews for all the commits in the branch "feature":
-
-  $ git arc list main..feature
-
+See git-arc(1) for details.
 __EOF__
-
     exit 1
+}
+
+# Use xmktemp instead of mktemp when creating temporary files.
+xmktemp()
+{
+    mktemp "${GITARC_TMPDIR:?}/tmp.XXXXXXXXXX" || exit 1
+}
+
+#
+# Fetch the value of a boolean config variable ($1) and return true
+# (0) if the variable is true.  The default value to use if the
+# variable is not set is passed in $2.
+#
+get_bool_config()
+{
+    test "$(git config --bool --get $1 2>/dev/null || echo $2)" != "false"
+}
+
+#
+# Invoke the actual arc command.  This allows us to only rely on the
+# devel/arcanist-lib port, which installs the actual script, rather than
+# the devel/arcanist-port, which installs a symlink in ${LOCALBASE}/bin
+# but conflicts with the archivers/arc port.
+#
+: ${LOCALBASE:=$(sysctl -n user.localbase)}
+: ${LOCALBASE:=/usr/local}
+: ${ARC_CMD:=${LOCALBASE}/lib/php/arcanist/bin/arc}
+arc()
+{
+    ${ARC_CMD} "$@"
 }
 
 #
@@ -181,6 +132,20 @@ diff2phid()
         jq -r "select(.response != []) | .response.${diff}.phid"
 }
 
+phid2diff()
+{
+    local diff phid
+
+    phid=$1
+    if ! expr "$phid" : 'PHID-DREV-[0-9A-Za-z]*$' >/dev/null; then
+        err "invalid diff PHID $phid"
+    fi
+    diff=$(echo '{"constraints": {"phids": ["'"$phid"'"]}}' |
+        arc_call_conduit -- differential.revision.search |
+        jq -r '.response.data[0].id')
+    echo "D${diff}"
+}
+
 diff2status()
 {
     local diff tmp status summary
@@ -190,13 +155,26 @@ diff2status()
         err "invalid diff ID $diff"
     fi
 
-    tmp=$(mktemp)
+    tmp=$(xmktemp)
     echo '{"names":["'"$diff"'"]}' |
         arc_call_conduit -- phid.lookup > "$tmp"
     status=$(jq -r "select(.response != []) | .response.${diff}.status" < "$tmp")
     summary=$(jq -r "select(.response != []) |
-         .response.${diff}.fullName" < "$tmp")
+        .response.${diff}.fullName" < "$tmp")
     printf "%-14s %s\n" "${status}" "${summary}"
+}
+
+diff2parents()
+{
+    local dep dependencies diff parents phid
+
+    diff=$1
+    phid=$(diff2phid "$diff")
+    for dep in $(echo '{"phids": ["'"$phid"'"]}' |
+        arc_call_conduit -- differential.query |
+        jq -r '.response[0].auxiliary."phabricator:depends-on"[]'); do
+        echo $(phid2diff $dep)
+    done
 }
 
 log2diff()
@@ -218,7 +196,7 @@ title2diff()
 {
     local title
 
-    title=$(echo $1 | sed 's/"/\\"/g')
+    title=$(echo "$1" | sed 's/"/\\"/g')
     arc_list --no-ansi |
         awk -F': ' '{
             if (substr($0, index($0, FS) + length(FS)) == "'"$title"'") {
@@ -269,7 +247,7 @@ create_one_review()
         return 1
     fi
 
-    msg=$(mktemp)
+    msg=$(xmktemp)
     git show -s --format='%B' "$commit" > "$msg"
     printf "\nTest Plan:\n" >> "$msg"
     printf "\nReviewers:\n" >> "$msg"
@@ -277,7 +255,7 @@ create_one_review()
     printf "\nSubscribers:\n" >> "$msg"
     printf "%s\n" "${subscribers}" >> "$msg"
 
-    yes | env EDITOR=true \
+    yes | EDITOR=true \
         arc diff --message-file "$msg" --never-apply-patches --create \
         --allow-untracked $BROWSE --head "$commit" "${commit}~"
     [ $? -eq 0 ] || err "could not create Phabricator diff"
@@ -295,10 +273,9 @@ create_one_review()
                     "type": "parents.add",
                     "value": ["'"${parentphid}"'"]
                 }
-             ]}' |
+            ]}' |
             arc_call_conduit -- differential.revision.edit >&3
     fi
-    rm -f "$msg"
     return 0
 }
 
@@ -311,17 +288,17 @@ diff2reviewers()
     reviewid=$(diff2phid "$diff")
     userids=$( \
         echo '{
-                  "constraints": {"phids": ["'"$reviewid"'"]},
-                  "attachments": {"reviewers": true}
-              }' |
+        "constraints": {"phids": ["'"$reviewid"'"]},
+        "attachments": {"reviewers": true}
+        }' |
         arc_call_conduit -- differential.revision.search |
         jq '.response.data[0].attachments.reviewers.reviewers[] | select(.status == "accepted").reviewerPHID')
     if [ -n "$userids" ]; then
         echo '{
-                  "constraints": {"phids": ['"$(echo -n "$userids" | tr '[:space:]' ',')"']}
-              }' |
-            arc_call_conduit -- user.search |
-            jq -r '.response.data[].fields.username'
+        "constraints": {"phids": ['"$(echo $userids | tr '[:blank:]' ',')"']}
+        }' |
+        arc_call_conduit -- user.search |
+        jq -r '.response.data[].fields.username'
     fi
 }
 
@@ -378,7 +355,7 @@ gitarc__create()
 
     list=
     prev=""
-    if [ "$(git config --bool --get arc.list 2>/dev/null || echo false)" != "false" ]; then
+    if get_bool_config arc.list false; then
         list=1
     fi
     doprompt=1
@@ -417,7 +394,7 @@ gitarc__create()
 
     for commit in ${commits}; do
         if create_one_review "$commit" "$reviewers" "$subscribers" "$prev" \
-                             "$doprompt"; then
+            "$doprompt"; then
             prev=$(commit2diff "$commit")
         else
             prev=""
@@ -434,12 +411,12 @@ gitarc__list()
 
     for commit in $commits; do
         chash=$(git show -s --format='%C(auto)%h' "$commit")
-        echo -n "${chash} "
+        printf "%s" "${chash} "
 
         diff=$(log2diff "$commit")
         if [ -n "$diff" ]; then
-                diff2status "$diff"
-                continue
+            diff2status "$diff"
+            continue
         fi
 
         # This does not use commit2diff as it needs to handle errors
@@ -447,11 +424,11 @@ gitarc__list()
         title=$(git show -s --format=%s "$commit")
         diff=$(echo "$openrevs" | \
             awk -F'D[1-9][0-9]*: ' \
-                '{if ($2 == "'"$(echo $title | sed 's/"/\\"/g')"'") print $0}')
+            '{if ($2 == "'"$(echo "$title" | sed 's/"/\\"/g')"'") print $0}')
         if [ -z "$diff" ]; then
             echo "No Review            : $title"
         elif [ "$(echo "$diff" | wc -l)" -ne 1 ]; then
-            echo -n "Ambiguous Reviews: "
+            printf "%s" "Ambiguous Reviews: "
             echo "$diff" | grep -E -o 'D[1-9][0-9]*:' | tr -d ':' \
                 | paste -sd ',' - | sed 's/,/, /g'
         else
@@ -481,18 +458,19 @@ find_author()
     # freebsd.org (which isn't surprising for ports committers getting src
     # commits reviewed).
     case "${addr}" in
-    *.*) ;;		# external user
+    *.*) ;;             # external user
+    guest-*) ;;		# Fake email address, not a FreeBSD user
     *)
-	echo "${name} <${addr}@FreeBSD.org>"
-	return
-	;;
+        echo "${name} <${addr}@FreeBSD.org>"
+        return
+        ;;
     esac
 
     # Choice 2: author_addr and author_name were set in the bundle, so use
     # that. We may need to filter some known bogus ones, should they crop up.
     if [ -n "$author_name" -a -n "$author_addr" ]; then
-	echo "${author_name} <${author_addr}>"
-	return
+        echo "${author_name} <${author_addr}>"
+        return
     fi
 
     # Choice 3: We can find this user in the FreeBSD repo. They've submited
@@ -500,8 +478,8 @@ find_author()
     # similar to their phab username.
     email=$(git log -1 --author "$(echo ${addr} | tr _ .)" --pretty="%aN <%aE>")
     if [ -n "${email}" ]; then
-	echo "${email}"
-	return
+        echo "${email}"
+        return
     fi
 
     # Choice 4: We know this user. They've committed before, and they happened
@@ -509,11 +487,11 @@ find_author()
     # might not be a good idea, since names can be somewhat common (there
     # are two Andrew Turners that have contributed to FreeBSD, for example).
     if ! (echo "${name}" | grep -w "[Uu]ser" -q); then
-	email=$(git log -1 --author "${name}" --pretty="%aN <%aE>")
-	if [ -n "$email" ]; then
-	    echo "$email"
-	    return
-	fi
+        email=$(git log -1 --author "${name}" --pretty="%aN <%aE>")
+        if [ -n "$email" ]; then
+            echo "$email"
+            return
+        fi
     fi
 
     # Choice 5: Wing it as best we can. In this scenario, we replace the last _
@@ -522,60 +500,81 @@ find_author()
     # don't know if the prior _ are _ or + or any number of other characters.
     # Since there's issues here, prompt
     a=$(printf "%s <%s>\n" "${name}" $(echo "$addr" | sed -e 's/\(.*\)_/\1@/'))
-    echo "Making best guess: Truning ${addr} to ${a}"
+    echo "Making best guess: Turning ${addr} to ${a}" >&2
     if ! prompt; then
-       echo "ABORT"
-       return
+        echo "ABORT"
+        return
     fi
     echo "${a}"
 }
 
+patch_branch()
+{
+    local base new suffix
+
+    if [ $# -eq 1 ]; then
+        base="gitarc-$1"
+    else
+        base="gitarc-$(printf "%s-" "$@" | sed 's/-$//')"
+    fi
+
+    new="$base"
+    suffix=1
+    while git show-ref --quiet --branches "$new"; do
+        new="${base}_$suffix"
+        suffix=$((suffix + 1))
+    done
+
+    git checkout -b "$new"
+}
+
 patch_commit()
 {
-    local diff reviewid review_data authorid user_data user_addr user_name author
-    local tmp author_addr author_name
+    local diff reviewid review_data authorid user_data user_addr user_name
+    local diff_data author_addr author_name author tmp
 
     diff=$1
     reviewid=$(diff2phid "$diff")
     # Get the author phid for this patch
-    review_data=$(echo '{
-                  "constraints": {"phids": ["'"$reviewid"'"]}
-		}' |
-        arc_call_conduit -- differential.revision.search)
-    authorid=$(echo "$review_data" | jq -r '.response.data[].fields.authorPHID' )
+    review_data=$(xmktemp)
+    echo '{"constraints": {"phids": ["'"$reviewid"'"]}}' | \
+        arc_call_conduit -- differential.revision.search > "$review_data"
+    authorid=$(jq -r '.response.data[].fields.authorPHID' "$review_data")
     # Get metadata about the user that submitted this patch
-    user_data=$(echo '{
-                  "constraints": {"phids": ["'"$authorid"'"]}
-		}' |
-            arc call-conduit -- user.search | grep -v ^Warning: |
-            jq -r '.response.data[].fields')
-    user_addr=$(echo "$user_data" | jq -r '.username')
-    user_name=$(echo "$user_data" | jq -r '.realName')
+    user_data=$(xmktemp)
+    echo '{"constraints": {"phids": ["'"$authorid"'"]}}' | \
+        arc_call_conduit -- user.search | \
+        jq -r '.response.data[].fields' > "$user_data"
+    user_addr=$(jq -r '.username' "$user_data")
+    user_name=$(jq -r '.realName' "$user_data")
     # Dig the data out of querydiffs api endpoint, although it's deprecated,
     # since it's one of the few places we can get email addresses. It's unclear
     # if we can expect multiple difference ones of these. Some records don't
     # have this data, so we remove all the 'null's. We sort the results and
     # remove duplicates 'just to be sure' since we've not seen multiple
     # records that match.
-    diff_data=$(echo '{
-		"revisionIDs": [ '"${diff#D}"' ]
-		}' | arc_call_conduit -- differential.querydiffs |
-	     jq -r '.response | flatten | .[]')
-    author_addr=$(echo "$diff_data" | jq -r ".authorEmail?" | sort -u)
-    author_name=$(echo "$diff_data" | jq -r ".authorName?" | sort -u)
+    diff_data=$(xmktemp)
+    echo '{"revisionIDs": [ '"${diff#D}"' ]}' | \
+        arc_call_conduit -- differential.querydiffs |
+        jq -r '.response | flatten | .[]' > "$diff_data"
+    # If the differential revision has multiple revisions, just take the first
+    # non-null value we get.
+    author_addr=$(jq -r ".authorEmail?" "$diff_data" | grep -v '^null$' | head -n 1)
+    author_name=$(jq -r ".authorName?" "$diff_data" | grep -v '^null$' | head -n 1)
+
     author=$(find_author "$user_addr" "$user_name" "$author_addr" "$author_name")
 
     # If we had to guess, and the user didn't want to guess, abort
     if [ "${author}" = "ABORT" ]; then
-	warn "Not committing due to uncertainty over author name"
-	exit 1
+        warn "Not committing due to uncertainty over author name"
+        exit 1
     fi
 
-    tmp=$(mktemp)
-    echo "$review_data" | jq -r '.response.data[].fields.title' > $tmp
-    echo >> $tmp
-    echo "$review_data" | jq -r '.response.data[].fields.summary' >> $tmp
-    echo >> $tmp
+    tmp=$(xmktemp)
+    jq -r '.response.data[].fields.title' "$review_data" > "$tmp"
+    echo >> "$tmp"
+    jq -r '.response.data[].fields.summary' "$review_data" >> "$tmp"
+    echo >> "$tmp"
     # XXX this leaves an extra newline in some cases.
     reviewers=$(diff2reviewers "$diff" | sed '/^$/d' | paste -sd ',' - | sed 's/,/, /g')
     if [ -n "$reviewers" ]; then
@@ -584,23 +583,62 @@ patch_commit()
     # XXX TODO refactor with gitarc__stage maybe?
     printf "Differential Revision:\thttps://reviews.freebsd.org/%s\n" "${diff}" >> "$tmp"
     git commit --author "${author}" --file "$tmp"
-    rm "$tmp"
+}
+
+apply_rev()
+{
+    local commit parent parents raw rev stack
+
+    rev=$1
+    commit=$2
+    raw=$3
+    stack=$4
+
+    if $stack; then
+        parents=$(diff2parents "$rev")
+        for parent in $parents; do
+            echo "Applying parent ${parent}..."
+            if ! apply_rev $parent $commit $raw $stack; then
+                return 1
+            fi
+        done
+    fi
+
+    if $raw; then
+        fetch -o /dev/stdout "https://reviews.freebsd.org/${rev}.diff" | git apply --index
+    else
+        arc patch --skip-dependencies --nobranch --nocommit --force $rev
+    fi
+
+    if ${commit}; then
+        patch_commit $rev
+    fi
+    return 0
 }
 
 gitarc__patch()
 {
-    local rev commit
+    local branch commit o raw rev stack
 
-    if [ $# -eq 0 ]; then
-        err_usage
-    fi
-
+    branch=false
     commit=false
-    while getopts c o; do
+    raw=false
+    stack=false
+    while getopts bcrs o; do
         case "$o" in
+        b)
+            require_clean_work_tree "patch -b"
+            branch=true
+            ;;
         c)
-	    require_clean_work_tree "patch -c"
+            require_clean_work_tree "patch -c"
             commit=true
+            ;;
+        r)
+            raw=true
+            ;;
+        s)
+            stack=true
             ;;
         *)
             err_usage
@@ -609,13 +647,16 @@ gitarc__patch()
     done
     shift $((OPTIND-1))
 
+    if [ $# -eq 0 ]; then
+        err_usage
+    fi
+
+    if ${branch}; then
+        patch_branch "$@"
+    fi
     for rev in "$@"; do
-        arc patch --skip-dependencies --nocommit --nobranch --force "$rev"
         echo "Applying ${rev}..."
-        [ $? -eq 0 ] || break
-	if ${commit}; then
-	    patch_commit $rev
-	fi
+        apply_rev $rev $commit $raw $stack
     done
 }
 
@@ -644,7 +685,7 @@ gitarc__stage()
         git checkout -q -b "${branch}" main
     fi
 
-    tmp=$(mktemp)
+    tmp=$(xmktemp)
     for commit in $commits; do
         git show -s --format=%B "$commit" > "$tmp"
         title=$(git show -s --format=%s "$commit")
@@ -669,10 +710,18 @@ gitarc__stage()
 
 gitarc__update()
 {
-    local commit commits diff have_msg msg
+    local commit commits diff doprompt have_msg list o msg
 
-    while getopts m: o; do
+    list=
+    if get_bool_config arc.list false; then
+        list=1
+    fi
+    doprompt=1
+    while getopts lm: o; do
         case "$o" in
+        l)
+            list=1
+            ;;
         m)
             msg="$OPTARG"
             have_msg=1
@@ -685,10 +734,21 @@ gitarc__update()
     shift $((OPTIND-1))
 
     commits=$(build_commit_list "$@")
+
+    if [ "$list" ]; then
+        for commit in ${commits}; do
+            git --no-pager show --oneline --no-patch "$commit"
+        done | git_pager
+        if ! prompt; then
+            return
+        fi
+        doprompt=
+    fi
+
     for commit in ${commits}; do
         diff=$(commit2diff "$commit")
 
-        if ! show_and_prompt "$commit"; then
+        if [ "$doprompt" ] && ! show_and_prompt "$commit"; then
             break
         fi
 
@@ -708,7 +768,7 @@ gitarc__update()
 set -e
 
 ASSUME_YES=
-if [ "$(git config --bool --get arc.assume-yes 2>/dev/null || echo false)" != "false" ]; then
+if get_bool_config arc.assume-yes false; then
     ASSUME_YES=1
 fi
 
@@ -730,7 +790,7 @@ shift $((OPTIND-1))
 
 [ $# -ge 1 ] || err_usage
 
-which arc >/dev/null 2>&1 || err "arc is required, install devel/arcanist"
+[ -x "${ARC_CMD}" ] || err "arc is required, install devel/arcanist-lib"
 which jq >/dev/null 2>&1 || err "jq is required, install textproc/jq"
 
 if [ "$VERBOSE" ]; then
@@ -782,8 +842,11 @@ list|patch)
     ;;
 esac
 
-if [ "$(git config --bool --get arc.browse 2>/dev/null || echo false)" != "false" ]; then
+if get_bool_config arc.browse false; then
     BROWSE=--browse
 fi
+
+GITARC_TMPDIR=$(mktemp -d) || exit 1
+trap cleanup EXIT HUP INT QUIT TRAP USR1 TERM
 
 gitarc__"${verb}" "$@"

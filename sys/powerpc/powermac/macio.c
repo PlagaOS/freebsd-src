@@ -81,7 +81,7 @@ static int  macio_attach(device_t);
 static int  macio_print_child(device_t dev, device_t child);
 static void macio_probe_nomatch(device_t, device_t);
 static struct rman *macio_get_rman(device_t, int, u_int);
-static struct   resource *macio_alloc_resource(device_t, device_t, int, int *,
+static struct   resource *macio_alloc_resource(device_t, device_t, int, int,
 					       rman_res_t, rman_res_t, rman_res_t,
 					       u_int);
 static int  macio_adjust_resource(device_t, device_t, struct resource *,
@@ -392,7 +392,7 @@ macio_attach(device_t dev)
 			for (subchild = OF_child(child); subchild != 0;
 			    subchild = OF_peer(subchild))
 				macio_add_intr(subchild, dinfo);
-		cdev = device_add_child(dev, NULL, -1);
+		cdev = device_add_child(dev, NULL, DEVICE_UNIT_ANY);
 		if (cdev == NULL) {
 			device_printf(dev, "<%s>: device_add_child failed\n",
 			    dinfo->mdi_obdinfo.obd_name);
@@ -461,7 +461,8 @@ macio_attach(device_t dev)
 	}
 #endif
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 }
 
 static int
@@ -520,7 +521,7 @@ macio_get_rman(device_t bus, int type, u_int flags)
 }
 
 static struct resource *
-macio_alloc_resource(device_t bus, device_t child, int type, int *rid,
+macio_alloc_resource(device_t bus, device_t child, int type, int rid,
 		     rman_res_t start, rman_res_t end, rman_res_t count,
 		     u_int flags)
 {
@@ -534,10 +535,10 @@ macio_alloc_resource(device_t bus, device_t child, int type, int *rid,
 	case SYS_RES_MEMORY:
 	case SYS_RES_IOPORT:
 		rle = resource_list_find(&dinfo->mdi_resources, SYS_RES_MEMORY,
-		    *rid);
+		    rid);
 		if (rle == NULL) {
 			device_printf(bus, "no rle for %s memory %d\n",
-			    device_get_nameunit(child), *rid);
+			    device_get_nameunit(child), rid);
 			return (NULL);
 		}
 
@@ -567,7 +568,7 @@ macio_alloc_resource(device_t bus, device_t child, int type, int *rid,
 			    type, rid, start, end, count, flags);
 
 		rle = resource_list_find(&dinfo->mdi_resources, SYS_RES_IRQ,
-		    *rid);
+		    rid);
 		if (rle == NULL) {
 			if (dinfo->mdi_ninterrupts >= 6) {
 				device_printf(bus,
@@ -686,6 +687,7 @@ macio_map_resource(device_t bus, device_t child, struct resource *r,
 	    length, args.memattr);
 	if (map->r_vaddr == NULL)
 		return (ENOMEM);
+	map->r_size = length;
 	map->r_bustag = &bs_le_tag;
 	map->r_bushandle = (bus_space_handle_t)map->r_vaddr;
 	return (0);

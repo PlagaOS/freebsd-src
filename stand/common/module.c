@@ -43,6 +43,7 @@
 #endif
 
 #include "bootstrap.h"
+#include "modinfo.h"
 
 #define	MDIR_REMOVED	0x0001
 #define	MDIR_NOHINTS	0x0002
@@ -64,7 +65,8 @@ static char			*mod_searchmodule(char *name, struct mod_depend *verinfo);
 static char *			mod_searchmodule_pnpinfo(const char *bus, const char *pnpinfo);
 static void			file_insert_tail(struct preloaded_file *mp);
 static void			file_remove(struct preloaded_file *fp);
-struct file_metadata*		metadata_next(struct file_metadata *base_mp, int type);
+static void			file_remove_tail(struct preloaded_file *fp);
+static struct file_metadata *	metadata_next(struct file_metadata *base_mp, int type);
 static void			moduledir_readhints(struct moduledir *mdp);
 static void			moduledir_rebuild(void);
 
@@ -453,7 +455,8 @@ command_pnpload(int argc, char *argv[])
 
 #if defined(LOADER_FDT_SUPPORT)
 static void
-pnpautoload_fdt_bus(const char *busname) {
+pnpautoload_fdt_bus(const char *busname)
+{
 	const char *pnpstring;
 	const char *compatstr;
 	char *pnpinfo = NULL;
@@ -551,7 +554,7 @@ command_pnpautoload(int argc, char *argv[])
 /*
  * File level interface, functions file_*
  */
-int
+static int
 file_load(char *filename, vm_offset_t dest, struct preloaded_file **result)
 {
 	static int last_file_format = 0;
@@ -560,8 +563,7 @@ file_load(char *filename, vm_offset_t dest, struct preloaded_file **result)
 	int i;
 
 	TSENTER2(filename);
-	if (archsw.arch_loadaddr != NULL)
-		dest = archsw.arch_loadaddr(LOAD_RAW, filename, dest);
+	dest = md_align(dest);
 
 	error = EFTYPE;
 	for (i = last_file_format, fp = NULL;
@@ -651,7 +653,7 @@ file_load_dependencies(struct preloaded_file *base_file)
  * no arguments or anything.
  */
 struct preloaded_file *
-file_loadraw(const char *fname, char *type, int insert)
+file_loadraw(const char *fname, const char *type, int insert)
 {
 	struct preloaded_file	*fp;
 	char			*name;
@@ -711,8 +713,7 @@ file_loadraw(const char *fname, char *type, int insert)
 #endif
 #endif
 
-	if (archsw.arch_loadaddr != NULL)
-		loadaddr = archsw.arch_loadaddr(LOAD_RAW, name, loadaddr);
+	loadaddr = md_align(loadaddr);
 
 	if (module_verbose > MODULE_VERBOSE_SILENT)
 		printf("%s ", name);
@@ -876,7 +877,7 @@ mod_loadkld(const char *kldname, int argc, char *argv[])
 		file_insert_tail(fp);	/* Add to the list of loaded files */
 		if (file_load_dependencies(fp) != 0) {
 			err = ENOENT;
-			file_remove(fp);
+			file_remove_tail(fp);
 			loadaddr = loadaddr_saved;
 			fp = NULL;
 			break;
@@ -914,7 +915,7 @@ file_findfile(const char *name, const char *type)
  * Find a module matching (name) inside of given file.
  * NULL may be passed as a wildcard.
  */
-struct kernel_module *
+static struct kernel_module *
 file_findmodule(struct preloaded_file *fp, char *modname,
 	struct mod_depend *verinfo)
 {
@@ -1013,9 +1014,7 @@ file_addbuf(const char *name, const char *type, size_t len, void *buf)
 	}
 
 	/* Figure out where to load the data. */
-	dest = loadaddr;
-	if (archsw.arch_loadaddr != NULL)
-		dest = archsw.arch_loadaddr(LOAD_RAW, (void *)name, dest);
+	dest = md_align(loadaddr);
 
 	/* Create & populate control structure */
 	fp = file_alloc();
@@ -1048,7 +1047,7 @@ file_addbuf(const char *name, const char *type, size_t len, void *buf)
 	return(0);
 }
 
-struct file_metadata *
+static struct file_metadata *
 metadata_next(struct file_metadata *md, int type)
 {
 
@@ -1637,23 +1636,43 @@ file_insert_tail(struct preloaded_file *fp)
  * Remove module from the chain
  */
 static void
-file_remove(struct preloaded_file *fp)
+file_remove_impl(struct preloaded_file *fp, bool keep_tail)
 {
-	struct preloaded_file   *cm;
+	struct preloaded_file   *cm, *next;
 
 	if (preloaded_files == NULL)
 		return;
 
+	if (keep_tail)
+		next = fp->f_next;
+	else
+		next = NULL;
+
 	if (preloaded_files == fp) {
-		preloaded_files = fp->f_next;
+		preloaded_files = next;
 		return;
         }
+
         for (cm = preloaded_files; cm->f_next != NULL; cm = cm->f_next) {
 		if (cm->f_next == fp) {
-			cm->f_next = fp->f_next;
+			cm->f_next = next;
 			return;
 		}
 	}
+}
+
+static void
+file_remove(struct preloaded_file *fp)
+{
+
+	file_remove_impl(fp, true);
+}
+
+static void
+file_remove_tail(struct preloaded_file *fp)
+{
+
+	file_remove_impl(fp, false);
 }
 
 static char *

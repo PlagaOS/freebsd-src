@@ -110,10 +110,10 @@ calls(void *arg __unused)
 {
 	time_t start;
 	ucontext_t uc;
-	int i, n;
+	int n;
 
 	start = time(NULL);
-	for (i = 0; time(NULL) - start < 10; i++) {
+	while (time(NULL) - start < 10) {
 		n = 0;
 		if (getcontext(&uc) == -1)
 			err(1, "getcontext");
@@ -147,7 +147,7 @@ main(int argc, char **argv)
 		fprintf(stderr, "Running sigreturn4 as root for %s.\n",
 				argv[1]);
 	else {
-		if (setgroups(1, &pw->pw_gid) ||
+		if (setgroups(0, NULL) ||
 		    setegid(pw->pw_gid) || setgid(pw->pw_gid) ||
 		    seteuid(pw->pw_uid) || setuid(pw->pw_uid))
 			err(1, "Can't drop privileges to \"nobody\"");
@@ -202,7 +202,6 @@ cc -o $prog -Wall -Wextra -O0 $prog.c -lpthread || exit 1
 start=`date +%s`
 while [ $((`date +%s` - start)) -lt 300 ]; do
 	./$prog > /dev/null 2>&1
-	date +%T
 done
-rm -f /tmp/$prog /tmp/$ptog.c /tmp/$prog.core
+rm -f /tmp/$prog /tmp/$prog.c /tmp/$prog.core
 exit 0

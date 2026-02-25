@@ -29,7 +29,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
@@ -76,6 +75,7 @@
 #include <netinet/tcp_seq.h>
 #include <netinet/tcp_timer.h>
 #include <netinet/tcp_var.h>
+#include <netinet/tcp_log_buf.h>
 #include <netinet/tcpip.h>
 
 #include <netinet/udp.h>
@@ -87,11 +87,27 @@
 
 #include <security/mac/mac_framework.h>
 
-VNET_DEFINE_STATIC(bool, nolocaltimewait) = true;
-#define	V_nolocaltimewait	VNET(nolocaltimewait)
-SYSCTL_BOOL(_net_inet_tcp, OID_AUTO, nolocaltimewait,
-    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(nolocaltimewait), true,
-    "Do not create TCP TIME_WAIT state for local connections");
+static u_int
+tcp_eff_msl(struct tcpcb *tp)
+{
+	struct inpcb *inp = tptoinpcb(tp);
+#ifdef INET6
+	bool isipv6 = inp->inp_inc.inc_flags & INC_ISIPV6;
+#endif
+
+	if (
+#ifdef INET6
+	    isipv6 ? in6_localip(&inp->in6p_faddr) :
+#endif
+#ifdef INET
+	    in_localip(inp->inp_faddr))
+#else
+	    false)
+#endif
+		return (V_tcp_msl_local);
+	else
+		return (V_tcp_msl);
+}
 
 /*
  * Move a TCP connection into TIME_WAIT state.
@@ -107,9 +123,6 @@ void
 tcp_twstart(struct tcpcb *tp)
 {
 	struct inpcb *inp = tptoinpcb(tp);
-#ifdef INET6
-	bool isipv6 = inp->inp_inc.inc_flags & INC_ISIPV6;
-#endif
 
 	NET_EPOCH_ASSERT();
 	INP_WLOCK_ASSERT(inp);
@@ -123,24 +136,9 @@ tcp_twstart(struct tcpcb *tp)
 	soisdisconnected(inp->inp_socket);
 
 	if (tp->t_flags & TF_ACKNOW)
-		tcp_output(tp);
+		(void) tcp_output(tp);
 
-	if (V_nolocaltimewait && (
-#ifdef INET6
-	    isipv6 ? in6_localaddr(&inp->in6p_faddr) :
-#endif
-#ifdef INET
-	    in_localip(inp->inp_faddr)
-#else
-	    false
-#endif
-	    )) {
-		if ((tp = tcp_close(tp)) != NULL)
-			INP_WUNLOCK(inp);
-		return;
-	}
-
-	tcp_timer_activate(tp, TT_2MSL, 2 * V_tcp_msl);
+	tcp_timer_activate(tp, TT_2MSL, 2 * tcp_eff_msl(tp));
 	INP_WUNLOCK(inp);
 }
 
@@ -283,14 +281,16 @@ tcp_twcheck(struct inpcb *inp, struct tcpopt *to, struct tcphdr *th,
 	if (thflags & TH_FIN) {
 		seq = th->th_seq + tlen + (thflags & TH_SYN ? 1 : 0);
 		if (seq + 1 == tp->rcv_nxt)
-			tcp_timer_activate(tp, TT_2MSL, 2 * V_tcp_msl);
+			tcp_timer_activate(tp, TT_2MSL, 2 * tcp_eff_msl(tp));
 	}
 
 	/*
 	 * Acknowledge the segment if it has data or is not a duplicate ACK.
 	 */
-	if (thflags != TH_ACK || tlen != 0 ||
+	if ((thflags & (TH_SYN | TH_FIN)) != 0 || tlen != 0 ||
 	    th->th_seq != tp->rcv_nxt || th->th_ack != tp->snd_nxt) {
+		TCP_LOG_EVENT(tp, th, NULL, NULL, TCP_LOG_IN, 0, tlen, NULL,
+		    true);
 		TCP_PROBE5(receive, NULL, NULL, m, NULL, th);
 		tcp_respond(tp, mtod(m, void *), th, m, tp->rcv_nxt,
 		    tp->snd_nxt, TH_ACK);

@@ -43,7 +43,6 @@ SRCS+=	u2f.c
 SRCS+=	util.c
 
 SRCS+=	openbsd-compat/freezero.c
-SRCS+=	openbsd-compat/recallocarray.c
 
 CFLAGS+= -I ${DIST}/src -I${SRCTOP}/contrib/libcbor/src -I${.CURDIR}/../libcbor
 CFLAGS+= -D_FIDO_INTERNAL
@@ -71,7 +70,7 @@ CFLAGS+= -DHAVE_UNISTD_H
 CFLAGS+= -DOPENSSL_API_COMPAT=0x10100000L
 CFLAGS+= -DTLS=__thread
 CFLAGS+= -D_FIDO_MAJOR=1
-CFLAGS+= -D_FIDO_MINOR=13
+CFLAGS+= -D_FIDO_MINOR=14
 CFLAGS+= -D_FIDO_PATCH=0
 
 LIBADD=	crypto z

@@ -47,7 +47,7 @@ v4_head()
 {
 	atf_set descr 'Test killing states by IPv4 address'
 	atf_set require.user root
-	atf_set require.progs scapy
+	atf_set require.progs python3 scapy
 }
 
 v4_body()
@@ -105,21 +105,80 @@ v4_cleanup()
 	pft_cleanup
 }
 
+atf_test_case "src_dst" "cleanup"
+src_dst_head()
+{
+	atf_set descr 'Test killing a state with source and destination specified'
+	atf_set require.user root
+	atf_set require.progs python3 scapy
+}
+
+src_dst_body()
+{
+	pft_init
+
+	epair=$(vnet_mkepair)
+	ifconfig ${epair}a 192.0.2.1/24 up
+
+	vnet_mkjail alcatraz ${epair}b
+	jexec alcatraz ifconfig ${epair}b 192.0.2.2/24 up
+	jexec alcatraz pfctl -e
+
+	pft_set_rules alcatraz "block all" \
+		"pass in proto icmp" \
+		"set skip on lo"
+
+	# Sanity check & establish state
+	atf_check -s exit:0 -o ignore ${common_dir}/pft_ping.py \
+		--sendif ${epair}a \
+		--to 192.0.2.2 \
+		--replyif ${epair}a
+
+	# Change rules to now deny the ICMP traffic
+	pft_set_rules noflush alcatraz "block all"
+	if ! find_state;
+	then
+		atf_fail "Setting new rules removed the state."
+	fi
+
+	# Killing with the wrong source IP doesn't affect our state
+	jexec alcatraz pfctl -k 192.0.2.3 -k 192.0.2.2
+	if ! find_state;
+	then
+		atf_fail "Killing with the wrong source IP removed our state."
+	fi
+
+	# Killing with the wrong destination IP doesn't affect our state
+	jexec alcatraz pfctl -k 192.0.2.1 -k 192.0.2.3
+	if ! find_state;
+	then
+		atf_fail "Killing with the wrong destination IP removed our state."
+	fi
+
+	# But it does with the correct one
+	jexec alcatraz pfctl -k 192.0.2.1 -k 192.0.2.2
+	if find_state;
+	then
+		atf_fail "Killing with the correct IPs did not remove our state."
+	fi
+}
+
+src_dst_cleanup()
+{
+	pft_cleanup
+}
+
 atf_test_case "v6" "cleanup"
 v6_head()
 {
 	atf_set descr 'Test killing states by IPv6 address'
 	atf_set require.user root
-	atf_set require.progs scapy
+	atf_set require.progs python3 scapy
 }
 
 v6_body()
 {
 	pft_init
-
-	if [ "$(atf_config_get ci false)" = "true" ]; then
-		atf_skip "https://bugs.freebsd.org/260458"
-	fi
 
 	epair=$(vnet_mkepair)
 	ifconfig ${epair}a inet6 2001:db8::1/64 up no_dad
@@ -129,12 +188,14 @@ v6_body()
 	jexec alcatraz pfctl -e
 
 	pft_set_rules alcatraz "block all" \
+		"pass quick inet6 proto ipv6-icmp all icmp6-type { neighbrsol, neighbradv } no state" \
 		"pass in proto icmp6" \
 		"set skip on lo"
 
 	# Sanity check & establish state
 	atf_check -s exit:0 -o ignore ${common_dir}/pft_ping.py \
 		--sendif ${epair}a \
+		--fromaddr 2001:db8::1 \
 		--to 2001:db8::2 \
 		--replyif ${epair}a
 
@@ -177,7 +238,7 @@ label_head()
 {
 	atf_set descr 'Test killing states by label'
 	atf_set require.user root
-	atf_set require.progs scapy
+	atf_set require.progs python3 scapy
 }
 
 label_body()
@@ -241,7 +302,7 @@ multilabel_head()
 {
 	atf_set descr 'Test killing states with multiple labels by label'
 	atf_set require.user root
-	atf_set require.progs scapy
+	atf_set require.progs python3 scapy
 }
 
 multilabel_body()
@@ -321,7 +382,7 @@ gateway_head()
 {
 	atf_set descr 'Test killing states by route-to/reply-to address'
 	atf_set require.user root
-	atf_set require.progs scapy
+	atf_set require.progs python3 scapy
 }
 
 gateway_body()
@@ -410,7 +471,7 @@ match_body()
 	vnet_mkjail singsing ${epair_two}b
 	jexec singsing ifconfig ${epair_two}b 198.51.100.2/24 up
 	jexec singsing route add default 198.51.100.1
-	jexec singsing /usr/sbin/inetd -p inetd-echo.pid \
+	jexec singsing /usr/sbin/inetd -p ${PWD}/inetd-echo.pid \
 	    $(atf_get_srcdir)/echo_inetd.conf
 
 	route add 198.51.100.0/24 192.0.2.2
@@ -462,7 +523,7 @@ interface_head()
 {
 	atf_set descr 'Test killing states based on interface'
 	atf_set require.user root
-	atf_set require.progs scapy
+	atf_set require.progs python3 scapy
 }
 
 interface_body()
@@ -518,7 +579,7 @@ id_head()
 {
 	atf_set descr 'Test killing states by id'
 	atf_set require.user root
-	atf_set require.progs scapy
+	atf_set require.progs python3 scapy
 }
 
 id_body()
@@ -574,12 +635,68 @@ id_cleanup()
 	pft_cleanup
 }
 
+atf_test_case "key" "cleanup"
+key_head()
+{
+	atf_set descr 'Test killing states by their key'
+	atf_set require.user root
+	atf_set require.progs python3 scapy
+}
+
+key_body()
+{
+	pft_init
+
+	epair=$(vnet_mkepair)
+	ifconfig ${epair}a 192.0.2.1/24 up
+
+	vnet_mkjail alcatraz ${epair}b
+	jexec alcatraz ifconfig ${epair}b 192.0.2.2/24 up
+	jexec alcatraz pfctl -e
+
+	pft_set_rules alcatraz \
+		"block all" \
+		"pass in proto tcp" \
+		"pass in proto icmp"
+
+	# Sanity check & establish state
+	atf_check -s exit:0 -o ignore ${common_dir}/pft_ping.py \
+		--sendif ${epair}a \
+		--to 192.0.2.2 \
+		--replyif ${epair}a
+
+	# Get the state key
+	key=$(jexec alcatraz pfctl -ss -vvv | awk '/icmp/ { print($2 " " $3 " " $4 " " $5); }')
+	bad_key=$(echo ${key} | sed 's/icmp/tcp/')
+
+	# Kill the wrong key
+	atf_check -s exit:0 -e "match:killed 0 states" \
+	    jexec alcatraz pfctl -k key -k "${bad_key}"
+	if ! find_state;
+	then
+		atf_fail "Killing a different ID removed the state."
+	fi
+
+	# Kill the correct key
+	atf_check -s exit:0 -e "match:killed 1 states" \
+	    jexec alcatraz pfctl -k key -k "${key}"
+	if find_state;
+	then
+		atf_fail "Killing the state did not remove it."
+	fi
+}
+
+key_cleanup()
+{
+	pft_cleanup
+}
+
 atf_test_case "nat" "cleanup"
 nat_head()
 {
 	atf_set descr 'Test killing states by their NAT-ed IP address'
 	atf_set require.user root
-	atf_set require.progs scapy
+	atf_set require.progs python3 scapy
 }
 
 nat_body()
@@ -646,6 +763,7 @@ nat_cleanup()
 atf_init_test_cases()
 {
 	atf_add_test_case "v4"
+	atf_add_test_case "src_dst"
 	atf_add_test_case "v6"
 	atf_add_test_case "label"
 	atf_add_test_case "multilabel"
@@ -653,5 +771,6 @@ atf_init_test_cases()
 	atf_add_test_case "match"
 	atf_add_test_case "interface"
 	atf_add_test_case "id"
+	atf_add_test_case "key"
 	atf_add_test_case "nat"
 }

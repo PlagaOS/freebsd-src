@@ -1,4 +1,3 @@
-
 SUBDIR=	beyond4.3 \
 	bufbio \
 	contents \
@@ -8,7 +7,6 @@ SUBDIR=	beyond4.3 \
 	jail \
 	kernmalloc \
 	kerntune \
-	malloc \
 	newvm \
 	relengr \
 	sysperf \

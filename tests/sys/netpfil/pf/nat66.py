@@ -29,36 +29,21 @@ import ipaddress
 import pytest
 import re
 import socket
-import threading
-import time
+from utils import DelayedSend
 from atf_python.sys.net.tools import ToolsHelper
 from atf_python.sys.net.vnet import VnetTestTemplate
 
-class DelayedSend(threading.Thread):
-    def __init__(self, packet):
-        threading.Thread.__init__(self)
-        self._packet = packet
-
-        self.start()
-
-    def run(self):
-        import scapy.all as sp
-        time.sleep(1)
-        sp.send(self._packet)
-
 class TestNAT66(VnetTestTemplate):
-    REQUIRED_MODUES = [ "pf" ]
+    REQUIRED_MODULES = [ "pf" ]
     TOPOLOGY = {
         "vnet1": {"ifaces": ["if1"]},
         "vnet2": {"ifaces": ["if1", "if2"]},
         "vnet3": {"ifaces": ["if2"]},
-        "if1": {"prefixes6": [("2001:db8::2/64", "2001:db8::1/64")]},
+        "if1": {"prefixes6": [("2001:db8::2/64", "2001:db8::1/64")], "mtu": 9000},
         "if2": {"prefixes6": [("2001:db8:1::1/64", "2001:db8:1::2/64")]},
     }
 
     def vnet2_handler(self, vnet):
-        ifname = vnet.iface_alias_map["if1"].name
-        ToolsHelper.print_output("/sbin/ifconfig %s mtu 9000" % ifname)
         outifname = vnet.iface_alias_map["if2"].name
 
         ToolsHelper.print_output("/sbin/pfctl -e")
@@ -140,10 +125,9 @@ class TestNAT66(VnetTestTemplate):
         assert found
 
     @pytest.mark.require_user("root")
+    @pytest.mark.require_progs(["scapy"])
     def test_npt_icmp(self):
         cl_vnet = self.vnet_map["vnet1"]
-        ifname = cl_vnet.iface_alias_map["if1"].name
-        ToolsHelper.print_output("/sbin/ifconfig %s mtu 9000" % ifname)
 
         ToolsHelper.print_output("/sbin/route add -6 2001:db8:1::/64 2001:db8::1")
 
@@ -168,10 +152,10 @@ class TestNAT66(VnetTestTemplate):
         self.check_icmp_too_big(sp, 12000, 5000)
 
     @pytest.mark.require_user("root")
+    @pytest.mark.require_progs(["scapy"])
     def test_npt_route_to_icmp(self):
         cl_vnet = self.vnet_map["vnet1"]
         ifname = cl_vnet.iface_alias_map["if1"].name
-        ToolsHelper.print_output("/sbin/ifconfig %s mtu 9000" % ifname)
         ToolsHelper.print_output("/sbin/ifconfig %s inet6 alias 2001:db8::3/64" % ifname)
 
         ToolsHelper.print_output("/sbin/route add -6 2001:db8:1::/64 2001:db8::1")

@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2021-2023 Alfonso Sabato Siciliano
+ * Copyright (c) 2021-2025 Alfonso Sabato Siciliano
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -30,6 +30,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <wchar.h>
 
 #include <bsddialog.h>
 #include <bsddialog_theme.h>
@@ -81,7 +82,7 @@ int gauge_builder(BUILDER_ARGS)
 
 	perc = 0;
 	if (argc == 1) {
-		perc = (u_int)strtoul(argv[0], NULL, 10);
+		perc = (unsigned int)strtoul(argv[0], NULL, 10);
 		perc = perc > 100 ? 100 : perc;
 	} else if (argc > 1) {
 		error_args(opt->name, argc - 1, argv + 1);
@@ -105,7 +106,7 @@ int mixedgauge_builder(BUILDER_ARGS)
 		exit_error(true,
 		    "bad %s pair number [<minilabel> <miniperc>]", opt->name);
 
-	mainperc = (u_int)strtoul(argv[0], NULL, 10);
+	mainperc = (unsigned int)strtoul(argv[0], NULL, 10);
 	mainperc = mainperc > 100 ? 100 : mainperc;
 	argc--;
 	argv++;
@@ -137,7 +138,7 @@ int pause_builder(BUILDER_ARGS)
 	if (argc > 1)
 		error_args(opt->name, argc - 1, argv + 1);
 
-	secs = (u_int)strtoul(argv[0], NULL, 10);
+	secs = (unsigned int)strtoul(argv[0], NULL, 10);
 	output = bsddialog_pause(conf, text, rows, cols, &secs);
 
 	return (output);
@@ -188,9 +189,9 @@ static int date(BUILDER_ARGS)
 		error_args(opt->name, argc - 3, argv + 3);
 	} else if (argc == 3) {
 		/* lib checks/sets max and min */
-		dd = (u_int)strtoul(argv[0], NULL, 10);
-		mm = (u_int)strtoul(argv[1], NULL, 10);
-		yy = (u_int)strtoul(argv[2], NULL, 10);
+		dd = (unsigned int)strtoul(argv[0], NULL, 10);
+		mm = (unsigned int)strtoul(argv[1], NULL, 10);
+		yy = (unsigned int)strtoul(argv[2], NULL, 10);
 	}
 
 	if (strcmp(opt->name, "--datebox") == 0)
@@ -258,9 +259,9 @@ int timebox_builder(BUILDER_ARGS)
 	if (argc > 3) {
 		error_args("--timebox", argc - 3, argv + 3);
 	} else if (argc == 3) {
-		hh = (u_int)strtoul(argv[0], NULL, 10);
-		mm = (u_int)strtoul(argv[1], NULL, 10);
-		ss = (u_int)strtoul(argv[2], NULL, 10);
+		hh = (unsigned int)strtoul(argv[0], NULL, 10);
+		mm = (unsigned int)strtoul(argv[1], NULL, 10);
+		ss = (unsigned int)strtoul(argv[2], NULL, 10);
 	}
 
 	output = bsddialog_timebox(conf, text, rows, cols, &hh, &mm, &ss);
@@ -314,7 +315,7 @@ get_menu_items(int argc, char **argv, bool setprefix, bool setdepth,
 	for (i = 0; i < *nitems; i++) {
 		(*items)[i].prefix = setprefix ? argv[j++] : "";
 		(*items)[i].depth = setdepth ?
-		    (u_int)strtoul(argv[j++], NULL, 0) : 0;
+		    (unsigned int)strtoul(argv[j++], NULL, 0) : 0;
 		(*items)[i].name = setname ? argv[j++] : "";
 		(*items)[i].desc = setdesc ? argv[j++] : "";
 		if (setstatus) {
@@ -435,7 +436,7 @@ int checklist_builder(BUILDER_ARGS)
 
 	if (argc < 1)
 		exit_error(true, "--checklist missing <menurows>");
-	menurows = (u_int)strtoul(argv[0], NULL, 10);
+	menurows = (unsigned int)strtoul(argv[0], NULL, 10);
 
 	get_menu_items(argc-1, argv+1, opt->item_prefix, opt->item_depth, true,
 	    true, true, opt->item_bottomdesc, &nitems, &items, &focusitem, opt);
@@ -460,7 +461,7 @@ int menu_builder(BUILDER_ARGS)
 
 	if (argc < 1)
 		exit_error(true, "--menu missing <menurows>");
-	menurows = (u_int)strtoul(argv[0], NULL, 10);
+	menurows = (unsigned int)strtoul(argv[0], NULL, 10);
 
 	get_menu_items(argc-1, argv+1, opt->item_prefix, opt->item_depth, true,
 	    true, false, opt->item_bottomdesc, &nitems, &items, &focusitem,
@@ -486,7 +487,7 @@ int radiolist_builder(BUILDER_ARGS)
 
 	if (argc < 1)
 		exit_error(true, "--radiolist missing <menurows>");
-	menurows = (u_int)strtoul(argv[0], NULL, 10);
+	menurows = (unsigned int)strtoul(argv[0], NULL, 10);
 
 	get_menu_items(argc-1, argv+1, opt->item_prefix, opt->item_depth, true,
 	    true, true, opt->item_bottomdesc, &nitems, &items, &focusitem, opt);
@@ -511,7 +512,7 @@ int treeview_builder(BUILDER_ARGS)
 
 	if (argc < 1)
 		exit_error(true, "--treeview missing <menurows>");
-	menurows = (u_int)strtoul(argv[0], NULL, 10);
+	menurows = (unsigned int)strtoul(argv[0], NULL, 10);
 
 	get_menu_items(argc-1, argv+1, opt->item_prefix, true, true, true, true,
 	    opt->item_bottomdesc, &nitems, &items, &focusitem, opt);
@@ -532,6 +533,29 @@ int treeview_builder(BUILDER_ARGS)
 }
 
 /* form */
+static unsigned int strcols(const char *string)
+{
+	int w;
+	unsigned int ncol;
+	size_t charlen, mb_cur_max;
+	wchar_t wch;
+	mbstate_t mbs;
+
+	mb_cur_max = MB_CUR_MAX;
+	ncol = 0;
+	memset(&mbs, 0, sizeof(mbs));
+	while ((charlen = mbrlen(string, mb_cur_max, &mbs)) != 0 &&
+	    charlen != (size_t)-1 && charlen != (size_t)-2) {
+		if (mbtowc(&wch, string, mb_cur_max) < 0)
+			return (0);
+		if ((w = wcwidth(wch)) > 0)
+			ncol += w;
+		string += charlen;
+	}
+
+	return (ncol);
+}
+
 static void
 print_form_items(int output, int nitems, struct bsddialog_formitem *items,
     int focusitem, struct options *opt)
@@ -551,26 +575,27 @@ print_form_items(int output, int nitems, struct bsddialog_formitem *items,
 				helpname = items[focusitem].bottomdesc;
 			dprintf(opt->output_fd, " %s", helpname);
 		}
-		if(opt->help_print_items == false)
+		if (opt->help_print_items == false)
 			return;
 		dprintf(opt->output_fd, "\n");
 	}
 
 	for (i = 0; i < nitems; i++) {
-		dprintf(opt->output_fd, "%s\n", items[i].value);
+		if (!(items[i].flags & BSDDIALOG_FIELDREADONLY))
+			dprintf(opt->output_fd, "%s\n", items[i].value);
 		free(items[i].value);
 	}
 }
 
 int form_builder(BUILDER_ARGS)
 {
-	int output, fieldlen, valuelen, focusitem;
+	int output, fieldlen, focusitem;
 	unsigned int i, j, flags, formheight, nitems, sizeitem;
 	struct bsddialog_formitem *items;
 
 	if (argc < 1)
 		exit_error(true, "--form missing <formheight>");
-	formheight = (u_int)strtoul(argv[0], NULL, 10);
+	formheight = (unsigned int)strtoul(argv[0], NULL, 10);
 
 	argc--;
 	argv++;
@@ -583,20 +608,24 @@ int form_builder(BUILDER_ARGS)
 		exit_error(false, "cannot allocate memory for form items");
 	j = 0;
 	for (i = 0; i < nitems; i++) {
-		items[i].label	= argv[j++];
-		items[i].ylabel = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].xlabel = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].init	= argv[j++];
-		items[i].yfield	= (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].xfield	= (u_int)strtoul(argv[j++], NULL, 10);
+		items[i].label  = argv[j++];
+		items[i].ylabel = (unsigned int)strtoul(argv[j++], NULL, 10);
+		items[i].xlabel = (unsigned int)strtoul(argv[j++], NULL, 10);
+		items[i].init   = argv[j++];
+		items[i].yfield = (unsigned int)strtoul(argv[j++], NULL, 10);
+		items[i].xfield = (unsigned int)strtoul(argv[j++], NULL, 10);
 
 		fieldlen = (int)strtol(argv[j++], NULL, 10);
-		items[i].fieldlen = abs(fieldlen);
+		if (fieldlen == 0)
+			items[i].fieldlen = strcols(items[i].init);
+		else
+			items[i].fieldlen = abs(fieldlen);
 
-		valuelen = (int)strtol(argv[j++], NULL, 10);
-		items[i].maxvaluelen = valuelen == 0 ? abs(fieldlen) : valuelen;
+		items[i].maxvaluelen = (unsigned int)strtoul(argv[j++], NULL, 10);
+		if (items[i].maxvaluelen == 0)
+			items[i].maxvaluelen = items[i].fieldlen;
 
-		flags = (fieldlen < 0 ? BSDDIALOG_FIELDREADONLY : 0);
+		flags = (fieldlen <= 0) ? BSDDIALOG_FIELDREADONLY : 0;
 		items[i].flags = flags;
 
 		items[i].bottomdesc = opt->item_bottomdesc ? argv[j++] : "";
@@ -622,15 +651,15 @@ int inputbox_builder(BUILDER_ARGS)
 	if (argc > 1)
 		error_args("--inputbox", argc - 1, argv + 1);
 
-	item.label	 = "";
-	item.ylabel	 = 0;
-	item.xlabel	 = 0;
-	item.init	 = argc > 0 ? argv[0] : "";
-	item.yfield	 = 0;
-	item.xfield	 = 0;
+	item.label       = "";
+	item.ylabel      = 0;
+	item.xlabel      = 0;
+	item.init        = argc > 0 ? argv[0] : "";
+	item.yfield      = 0;
+	item.xfield      = 0;
 	item.fieldlen    = 1;
 	item.maxvaluelen = opt->max_input_form;
-	item.flags	 = BSDDIALOG_FIELDNOCOLOR;
+	item.flags       = BSDDIALOG_FIELDNOCOLOR;
 	item.flags      |= BSDDIALOG_FIELDCURSOREND;
 	item.flags      |= BSDDIALOG_FIELDEXTEND;
 	item.bottomdesc  = "";
@@ -643,13 +672,13 @@ int inputbox_builder(BUILDER_ARGS)
 
 int mixedform_builder(BUILDER_ARGS)
 {
-	int output, focusitem;
+	int output, fieldlen, focusitem;
 	unsigned int i, j, formheight, nitems, sizeitem;
 	struct bsddialog_formitem *items;
 
 	if (argc < 1)
 		exit_error(true, "--mixedform missing <formheight>");
-	formheight = (u_int)strtoul(argv[0], NULL, 10);
+	formheight = (unsigned int)strtoul(argv[0], NULL, 10);
 
 	argc--;
 	argv++;
@@ -662,21 +691,35 @@ int mixedform_builder(BUILDER_ARGS)
 		exit_error(false, "cannot allocate memory for form items");
 	j = 0;
 	for (i = 0; i < nitems; i++) {
-		items[i].label	     = argv[j++];
-		items[i].ylabel      = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].xlabel      = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].init	     = argv[j++];
-		items[i].yfield	     = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].xfield	     = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].fieldlen    = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].maxvaluelen = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].flags       = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].bottomdesc  = opt->item_bottomdesc ? argv[j++] : "";
+		items[i].label  = argv[j++];
+		items[i].ylabel = (unsigned int)strtoul(argv[j++], NULL, 10);
+		items[i].xlabel = (unsigned int)strtoul(argv[j++], NULL, 10);
+		items[i].init   = argv[j++];
+		items[i].yfield = (unsigned int)strtoul(argv[j++], NULL, 10);
+		items[i].xfield = (unsigned int)strtoul(argv[j++], NULL, 10);
+		fieldlen        = (int)strtol(argv[j++], NULL, 10);
+		if (fieldlen == 0)
+			items[i].fieldlen = strcols(items[i].init);
+		else
+			items[i].fieldlen = abs(fieldlen);
+		items[i].maxvaluelen = (unsigned int)strtoul(argv[j++], NULL, 10);
+		if (items[i].maxvaluelen == 0)
+			items[i].maxvaluelen = items[i].fieldlen;
+
+		items[i].flags = (unsigned int)strtoul(argv[j++], NULL, 10);
+		if (fieldlen <= 0)
+			items[i].flags |= BSDDIALOG_FIELDREADONLY;
+
+		items[i].bottomdesc = opt->item_bottomdesc ? argv[j++] : "";
 	}
 
 	focusitem = -1;
 	output = bsddialog_form(conf, text, rows, cols, formheight, nitems,
 	    items, &focusitem);
+	for (i = 0; i < nitems; i++) {
+		if ((int)strtol(argv[i * sizeitem + 6], NULL, 10) > 0)
+			items[i].flags &= ~ BSDDIALOG_FIELDREADONLY;
+	}
 	print_form_items(output, nitems, items, focusitem, opt);
 	free(items);
 
@@ -694,13 +737,13 @@ int passwordbox_builder(BUILDER_ARGS)
 	if (argc > 1)
 		error_args("--passwordbox", argc - 1, argv + 1);
 
-	item.label	 = "";
-	item.ylabel	 = 0;
-	item.xlabel	 = 0;
-	item.init	 = argc > 0 ? argv[0] : "";
-	item.yfield	 = 0;
-	item.xfield	 = 0;
-	item.fieldlen	 = 1;
+	item.label       = "";
+	item.ylabel      = 0;
+	item.xlabel      = 0;
+	item.init        = argc > 0 ? argv[0] : "";
+	item.yfield      = 0;
+	item.xfield      = 0;
+	item.fieldlen    = 1;
 	item.maxvaluelen = opt->max_input_form;
 	item.flags       = BSDDIALOG_FIELDHIDDEN;
 	item.flags      |= BSDDIALOG_FIELDNOCOLOR;
@@ -722,7 +765,7 @@ int passwordform_builder(BUILDER_ARGS)
 
 	if (argc < 1)
 		exit_error(true, "--passwordform missing <formheight>");
-	formheight = (u_int)strtoul(argv[0], NULL, 10);
+	formheight = (unsigned int)strtoul(argv[0], NULL, 10);
 
 	argc--;
 	argv++;
@@ -736,12 +779,12 @@ int passwordform_builder(BUILDER_ARGS)
 		exit_error(false, "cannot allocate memory for form items");
 	j = 0;
 	for (i = 0; i < nitems; i++) {
-		items[i].label	= argv[j++];
-		items[i].ylabel = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].xlabel = (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].init	= argv[j++];
-		items[i].yfield	= (u_int)strtoul(argv[j++], NULL, 10);
-		items[i].xfield	= (u_int)strtoul(argv[j++], NULL, 10);
+		items[i].label  = argv[j++];
+		items[i].ylabel = (unsigned int)strtoul(argv[j++], NULL, 10);
+		items[i].xlabel = (unsigned int)strtoul(argv[j++], NULL, 10);
+		items[i].init   = argv[j++];
+		items[i].yfield = (unsigned int)strtoul(argv[j++], NULL, 10);
+		items[i].xfield = (unsigned int)strtoul(argv[j++], NULL, 10);
 
 		fieldlen = (int)strtol(argv[j++], NULL, 10);
 		items[i].fieldlen = abs(fieldlen);
@@ -763,6 +806,44 @@ int passwordform_builder(BUILDER_ARGS)
 
 	if (output == BSDDIALOG_HELP && opt->item_bottomdesc)
 		output = BSDDIALOG_ITEM_HELP;
+
+	return (output);
+}
+
+int slider_builder(BUILDER_ARGS)
+{
+	bool resize;
+	int output;
+  char *unit;
+	unsigned int i, nblocks;
+	unsigned long length, start, end, (*blocks)[2];
+
+	if (argc < 5)
+		exit_error(true, "--slider requires: <unit> <lenght> <start> <end> <resize>");
+  unit = argv[0];
+	length = strtoul(argv[1], NULL, 10);
+	start = strtoul(argv[2], NULL, 10);
+	end = strtoul(argv[3], NULL, 10);
+	resize = strtoul(argv[4], NULL, 10) == 0 ? false : true;
+
+	argc -= 5;
+	argv += 5;
+	if (argc & 1)
+		exit_error(true, "bad [<start_block> <end_block> ...] number");
+	nblocks = argc / 2;
+	if ((blocks = malloc(nblocks * sizeof(*blocks))) == NULL)
+		exit_error(false, "Cannot allocate memory for blocks");
+	for (i = 0; i < nblocks; i++) {
+		blocks[i][0] = strtoul(argv[2 * i], NULL, 10);
+		blocks[i][1] = strtoul(argv[2 * i + 1], NULL, 10);
+	}
+
+	output = bsddialog_slider(conf, text, rows, cols, unit, length, &start, &end,
+	    resize, nblocks, blocks);
+	free(blocks);
+
+	if (output != BSDDIALOG_ERROR)
+		dprintf(opt->output_fd, "%lu %lu", start, end);
 
 	return (output);
 }

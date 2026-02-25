@@ -1,4 +1,3 @@
-
 .include <src.opts.mk>
 
 CONFGROUPS=	ETC ROOT
@@ -69,12 +68,5 @@ token.h: mktokens
 
 HAS_TESTS=
 SUBDIR.${MK_TESTS}+= tests
-
-beforeinstallconfig:
-	rm -f ${DESTDIR}/.profile
-
-LINKMODE=${CONFMODE}
-afterinstallconfig:
-	${INSTALL_LINK} ${TAG_ARGS} ${DESTDIR}/root/.profile ${DESTDIR}/.profile
 
 .include <bsd.prog.mk>

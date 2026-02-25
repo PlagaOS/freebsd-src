@@ -246,12 +246,12 @@ main(int argc, char *argv[])
 		syslog(LOG_ERR, "bind: %m");
 		exit(1);
 	}
-	if (setgid(unpriv_gid) != 0) {
-		syslog(LOG_ERR, "setgid: %m");
+	if (setgroups(0, NULL) != 0) {
+		syslog(LOG_ERR, "setgroups: %m");
 		exit(1);
 	}
-	if (setgroups(1, &unpriv_gid) != 0) {	/* XXX BOGUS groups[0] = egid */
-		syslog(LOG_ERR, "setgroups: %m");
+	if (setgid(unpriv_gid) != 0) {
+		syslog(LOG_ERR, "setgid: %m");
 		exit(1);
 	}
 	if (setuid(unpriv_uid) != 0) {
@@ -478,7 +478,7 @@ sender_process(void)
 				we->we_idle = htonl(now - stb.st_atime);
 		}
 		(void) getloadavg(avenrun,
-		    sizeof(avenrun) / sizeof(avenrun[0]));
+		    nitems(avenrun));
 		for (i = 0; i < 3; i++)
 			mywd.wd_loadav[i] = htonl((u_long)(avenrun[i] * 100));
 		cc = (char *)wend - (char *)&mywd;

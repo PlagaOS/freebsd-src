@@ -66,7 +66,7 @@
 
 static struct vop_vector devfs_vnodeops;
 static struct vop_vector devfs_specops;
-static struct fileops devfs_ops_f;
+static const struct fileops devfs_ops_f;
 
 #include <fs/devfs/devfs.h>
 #include <fs/devfs/devfs_int.h>
@@ -200,14 +200,25 @@ devfs_foreach_cdevpriv(struct cdev *dev, int (*cb)(void *data, void *arg),
 void
 devfs_destroy_cdevpriv(struct cdev_privdata *p)
 {
+	struct file *fp;
+	struct cdev_priv *cdp;
 
 	mtx_assert(&cdevpriv_mtx, MA_OWNED);
-	KASSERT(p->cdpd_fp->f_cdevpriv == p,
-	    ("devfs_destoy_cdevpriv %p != %p", p->cdpd_fp->f_cdevpriv, p));
-	p->cdpd_fp->f_cdevpriv = NULL;
+	fp = p->cdpd_fp;
+	KASSERT(fp->f_cdevpriv == p,
+	    ("devfs_destoy_cdevpriv %p != %p", fp->f_cdevpriv, p));
+	cdp = cdev2priv((struct cdev *)fp->f_data);
+	cdp->cdp_fdpriv_dtrc++;
+	fp->f_cdevpriv = NULL;
 	LIST_REMOVE(p, cdpd_list);
 	mtx_unlock(&cdevpriv_mtx);
 	(p->cdpd_dtr)(p->cdpd_data);
+	mtx_lock(&cdevpriv_mtx);
+	MPASS(cdp->cdp_fdpriv_dtrc >= 1);
+	cdp->cdp_fdpriv_dtrc--;
+	if (cdp->cdp_fdpriv_dtrc == 0)
+		wakeup(&cdp->cdp_fdpriv_dtrc);
+	mtx_unlock(&cdevpriv_mtx);
 	free(p, M_CDEVPDATA);
 }
 
@@ -355,6 +366,9 @@ devfs_populate_vp(struct vnode *vp)
 	int locked;
 
 	ASSERT_VOP_LOCKED(vp, "devfs_populate_vp");
+
+	if (VN_IS_DOOMED(vp))
+		return (ENOENT);
 
 	dmp = VFSTODEVFS(vp->v_mount);
 	if (!devfs_populate_needed(dmp)) {
@@ -555,8 +569,7 @@ loop:
 		if (devfs_allocv_drop_refs(0, dmp, de)) {
 			vput(vp);
 			return (ENOENT);
-		}
-		else if (VN_IS_DOOMED(vp)) {
+		} else if (VN_IS_DOOMED(vp)) {
 			mtx_lock(&devfs_de_interlock);
 			if (de->de_vnode == vp) {
 				de->de_vnode = NULL;
@@ -1062,7 +1075,7 @@ devfs_lookupx(struct vop_lookup_args *ap, int *dm_unlock)
 	mp = dvp->v_mount;
 	dmp = VFSTODEVFS(mp);
 	dd = dvp->v_data;
-	*vpp = NULLVP;
+	*vpp = NULL;
 
 	if ((flags & ISLASTCN) && nameiop == RENAME)
 		return (EOPNOTSUPP);
@@ -1081,7 +1094,7 @@ devfs_lookupx(struct vop_lookup_args *ap, int *dm_unlock)
 		if ((flags & ISLASTCN) && nameiop != LOOKUP)
 			return (EINVAL);
 		*vpp = dvp;
-		VREF(dvp);
+		vref(dvp);
 		return (0);
 	}
 
@@ -1118,8 +1131,25 @@ devfs_lookupx(struct vop_lookup_args *ap, int *dm_unlock)
 		cdev = NULL;
 		DEVFS_DMP_HOLD(dmp);
 		sx_xunlock(&dmp->dm_lock);
+		dvplocked = VOP_ISLOCKED(dvp);
+
+		/*
+		 * Invoke the dev_clone handler.  Unlock dvp around it
+		 * to simplify the cloner operations.
+		 *
+		 * If dvp is reclaimed while we unlocked it, we return
+		 * with ENOENT by some of the paths below.  If cloner
+		 * returned cdev, then devfs_populate_vp() notes the
+		 * reclamation.  Otherwise, note that either our devfs
+		 * mount is being unmounted, then DEVFS_DMP_DROP()
+		 * returns true, and we return ENOENT this way.  Or,
+		 * because de == NULL, the check for it after the loop
+		 * returns ENOENT.
+		 */
+		VOP_UNLOCK(dvp);
 		EVENTHANDLER_INVOKE(dev_clone,
 		    td->td_ucred, pname, strlen(pname), &cdev);
+		vn_lock(dvp, dvplocked | LK_RETRY);
 
 		if (cdev == NULL)
 			sx_xlock(&dmp->dm_lock);
@@ -1171,7 +1201,7 @@ devfs_lookupx(struct vop_lookup_args *ap, int *dm_unlock)
 		if (error)
 			return (error);
 		if (*vpp == dvp) {
-			VREF(dvp);
+			vref(dvp);
 			*vpp = dvp;
 			return (0);
 		}
@@ -1451,6 +1481,7 @@ devfs_readdir(struct vop_readdir_args *ap)
 	struct devfs_mount *dmp;
 	off_t off;
 	int *tmp_ncookies = NULL;
+	ssize_t startresid;
 
 	if (ap->a_vp->v_type != VDIR)
 		return (ENOTDIR);
@@ -1483,6 +1514,7 @@ devfs_readdir(struct vop_readdir_args *ap)
 	error = 0;
 	de = ap->a_vp->v_data;
 	off = 0;
+	startresid = uio->uio_resid;
 	TAILQ_FOREACH(dd, &de->de_dlist, de_list) {
 		KASSERT(dd->de_cdp != (void *)0xdeadc0de, ("%s %d\n", __func__, __LINE__));
 		if (dd->de_flags & (DE_COVERED | DE_WHITEOUT))
@@ -1495,8 +1527,13 @@ devfs_readdir(struct vop_readdir_args *ap)
 			de = dd;
 		dp = dd->de_dirent;
 		MPASS(dp->d_reclen == GENERIC_DIRSIZ(dp));
-		if (dp->d_reclen > uio->uio_resid)
+		if (dp->d_reclen > uio->uio_resid) {
+			/* Nothing was copied out, return EINVAL. */
+			if (uio->uio_resid == startresid)
+				error = EINVAL;
+			/* Otherwise stop. */
 			break;
+		}
 		dp->d_fileno = de->de_inode;
 		/* NOTE: d_off is the offset for the *next* entry. */
 		dp->d_off = off + dp->d_reclen;
@@ -1516,6 +1553,8 @@ devfs_readdir(struct vop_readdir_args *ap)
 	 */
 	if (tmp_ncookies != NULL)
 		ap->a_ncookies = tmp_ncookies;
+	if (dd == NULL && error == 0 && ap->a_eofflag != NULL)
+		*ap->a_eofflag = 1;
 
 	return (error);
 }
@@ -2038,7 +2077,7 @@ devfs_cmp_f(struct file *fp1, struct file *fp2, struct thread *td)
 	return (kcmp_cmp((uintptr_t)fp1->f_data, (uintptr_t)fp2->f_data));
 }
 
-static struct fileops devfs_ops_f = {
+static const struct fileops devfs_ops_f = {
 	.fo_read =	devfs_read_f,
 	.fo_write =	devfs_write_f,
 	.fo_truncate =	devfs_truncate_f,

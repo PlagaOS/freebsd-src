@@ -193,8 +193,6 @@ static struct so_name so_names[] = {
 	tcp_entry(TCP_KEEPINTVL),		/* unsigned int */
 	tcp_entry(TCP_KEEPINIT),		/* unsigned int */
 	tcp_entry(TCP_KEEPCNT),			/* unsigned int */
-	tcp_entry(TCP_PCAP_OUT),		/* int */
-	tcp_entry(TCP_PCAP_IN),			/* int */
 	tcp_entry(TCP_LOG),			/* int */
 	tcp_entry(TCP_LOGID),			/* char * */
 	tcp_entry(TCP_LOGDUMP),			/* char * */
@@ -207,7 +205,6 @@ static struct so_name so_names[] = {
 	tcp_entry(TCP_PACING_RATE_CAP),		/* uint64_t */
 #endif
 	tcp_entry(TCP_HDWR_UP_ONLY),		/* int */
-	tcp_entry(TCP_FAST_RSM_HACK),		/* int */
 	tcp_entry(TCP_DELACK),			/* int */
 	tcp_entry(TCP_REC_ABC_VAL),		/* int */
 	tcp_entry(TCP_USE_CMP_ACKS),		/* int */
@@ -215,7 +212,6 @@ static struct so_name so_names[] = {
 	tcp_entry(TCP_SHARED_CWND_ENABLE),	/* int */
 	tcp_entry(TCP_DATA_AFTER_CLOSE),	/* int */
 	tcp_entry(TCP_DEFER_OPTIONS),		/* int */
-	tcp_entry(TCP_MAXPEAKRATE),		/* int */
 	tcp_entry(TCP_TIMELY_DYN_ADJ),		/* int */
 	tcp_entry(TCP_RACK_TLP_REDUCE),		/* int */
 	tcp_entry(TCP_RACK_PACE_ALWAYS),	/* int */
@@ -256,10 +252,8 @@ static struct so_name so_names[] = {
 	tcp_entry(TCP_BBR_IWINTSO),		/* int */
 	tcp_entry(TCP_BBR_ALGORITHM),		/* int */
 	tcp_entry(TCP_BBR_TSLIMITS),		/* int */
-	tcp_entry(TCP_BBR_RECFORCE),		/* int */
 	tcp_entry(TCP_BBR_STARTUP_PG),		/* int */
 	tcp_entry(TCP_BBR_DRAIN_PG),		/* int */
-	tcp_entry(TCP_BBR_RWND_IS_APP),		/* int */
 	tcp_entry(TCP_BBR_PROBE_RTT_INT),	/* int */
 	tcp_entry(TCP_BBR_PROBE_RTT_GAIN),	/* int */
 	tcp_entry(TCP_BBR_PROBE_RTT_LEN),	/* int */
@@ -275,7 +269,6 @@ static struct so_name so_names[] = {
 	tcp_entry(TCP_BBR_MIN_TOPACEOUT),	/* int */
 	tcp_entry(TCP_BBR_FLOOR_MIN_TSO),	/* int */
 	tcp_entry(TCP_BBR_TSTMP_RAISES),	/* int */
-	tcp_entry(TCP_BBR_POLICER_DETECT),	/* int */
 	tcp_entry(TCP_BBR_USE_RACK_CHEAT),	/* int */
 	tcp_entry(TCP_BBR_PACE_SEG_MAX),	/* int */
 	tcp_entry(TCP_BBR_PACE_SEG_MIN),	/* int */

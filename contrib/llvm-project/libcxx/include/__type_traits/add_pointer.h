@@ -11,9 +11,7 @@
 
 #include <__config>
 #include <__type_traits/is_referenceable.h>
-#include <__type_traits/is_same.h>
 #include <__type_traits/is_void.h>
-#include <__type_traits/remove_cv.h>
 #include <__type_traits/remove_reference.h>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
@@ -22,7 +20,7 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-#if !defined(_LIBCPP_WORKAROUND_OBJCXX_COMPILER_INTRINSICS) && __has_builtin(__add_pointer)
+#if !defined(_LIBCPP_WORKAROUND_OBJCXX_COMPILER_INTRINSICS) && __has_builtin(__add_pointer) && !defined(_LIBCPP_COMPILER_GCC)
 
 template <class _Tp>
 using __add_pointer_t = __add_pointer(_Tp);

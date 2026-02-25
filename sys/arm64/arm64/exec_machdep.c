@@ -51,6 +51,7 @@
 #include <vm/vm_map.h>
 
 #include <machine/armreg.h>
+#include <machine/elf.h>
 #include <machine/kdb.h>
 #include <machine/md_var.h>
 #include <machine/pcb.h>
@@ -58,6 +59,10 @@
 #ifdef VFP
 #include <machine/vfp.h>
 #endif
+
+#define	CTX_SIZE_SVE(buf_size)					\
+    roundup2(sizeof(struct sve_context) + (buf_size),		\
+      _Alignof(struct sve_context))
 
 _Static_assert(sizeof(mcontext_t) == 880, "mcontext_t size incorrect");
 _Static_assert(sizeof(ucontext_t) == 960, "ucontext_t size incorrect");
@@ -191,17 +196,27 @@ int
 fill_dbregs(struct thread *td, struct dbreg *regs)
 {
 	struct debug_monitor_state *monitor;
+	uint64_t dfr0;
 	int i;
 	uint8_t debug_ver, nbkpts, nwtpts;
 
 	memset(regs, 0, sizeof(*regs));
 
-	extract_user_id_field(ID_AA64DFR0_EL1, ID_AA64DFR0_DebugVer_SHIFT,
-	    &debug_ver);
-	extract_user_id_field(ID_AA64DFR0_EL1, ID_AA64DFR0_BRPs_SHIFT,
-	    &nbkpts);
-	extract_user_id_field(ID_AA64DFR0_EL1, ID_AA64DFR0_WRPs_SHIFT,
-	    &nwtpts);
+	/*
+	 * Read these the Debug Feature Register 0 to get info we need.
+	 * It will be identical on FreeBSD and Linux, so there is no need
+	 * to check which the target is.
+	 */
+	if (!get_user_reg(ID_AA64DFR0_EL1, &dfr0, true)) {
+		debug_ver = ID_AA64DFR0_DebugVer_8;
+		nbkpts = 0;
+		nwtpts = 0;
+	} else {
+		debug_ver = ID_AA64DFR0_DebugVer_VAL(dfr0) >>
+		    ID_AA64DFR0_DebugVer_SHIFT;
+		nbkpts = ID_AA64DFR0_BRPs_VAL(dfr0) >> ID_AA64DFR0_BRPs_SHIFT;
+		nwtpts = ID_AA64DFR0_WRPs_VAL(dfr0) >> ID_AA64DFR0_WRPs_SHIFT;
+	}
 
 	/*
 	 * The BRPs field contains the number of breakpoints - 1. Armv8-A
@@ -401,6 +416,7 @@ exec_setregs(struct thread *td, struct image_params *imgp, uintptr_t stack)
 {
 	struct trapframe *tf = td->td_frame;
 	struct pcb *pcb = td->td_pcb;
+	uint64_t new_tcr, tcr;
 
 	memset(tf, 0, sizeof(struct trapframe));
 
@@ -422,6 +438,35 @@ exec_setregs(struct thread *td, struct image_params *imgp, uintptr_t stack)
 	 * Clear debug register state. It is not applicable to the new process.
 	 */
 	bzero(&pcb->pcb_dbg_regs, sizeof(pcb->pcb_dbg_regs));
+
+	/* If the process is new enough enable TBI */
+	if (td->td_proc->p_osrel >= TBI_VERSION)
+		new_tcr = TCR_TBI0;
+	else
+		new_tcr = 0;
+	td->td_proc->p_md.md_tcr = new_tcr;
+
+	/* TODO: should create a pmap function for this... */
+	tcr = READ_SPECIALREG(tcr_el1);
+	if ((tcr & MD_TCR_FIELDS) != new_tcr) {
+		uint64_t asid;
+
+		tcr &= ~MD_TCR_FIELDS;
+		tcr |= new_tcr;
+		WRITE_SPECIALREG(tcr_el1, tcr);
+		isb();
+
+		/*
+		 * TCR_EL1.TBI0 is permitted to be cached in the TLB, so
+		 * we need to perform a TLB invalidation.
+		 */
+		asid = READ_SPECIALREG(ttbr0_el1) & TTBR_ASID_MASK;
+		__asm __volatile(
+		    "tlbi aside1is, %0		\n"
+		    "dsb ish			\n"
+		    "isb			\n"
+		    : : "r" (asid));
+	}
 
 	/* Generate new pointer authentication keys */
 	ptrauth_exec(td);
@@ -463,9 +508,10 @@ set_mcontext(struct thread *td, mcontext_t *mcp)
 #define	PSR_13_MASK	0xfffffffful
 	struct arm64_reg_context ctx;
 	struct trapframe *tf = td->td_frame;
+	struct pcb *pcb;
 	uint64_t spsr;
 	vm_offset_t addr;
-	int error;
+	int error, seen_types;
 	bool done;
 
 	spsr = mcp->mc_gpregs.gp_spsr;
@@ -511,7 +557,11 @@ set_mcontext(struct thread *td, mcontext_t *mcp)
 	/* Read any register contexts we find */
 	if (mcp->mc_ptr != 0) {
 		addr = mcp->mc_ptr;
+		pcb = td->td_pcb;
 
+#define	CTX_TYPE_FLAG_SVE	(1 << 0)
+
+		seen_types = 0;
 		done = false;
 		do {
 			if (!__is_aligned(addr,
@@ -523,6 +573,37 @@ set_mcontext(struct thread *td, mcontext_t *mcp)
 				return (error);
 
 			switch (ctx.ctx_id) {
+#ifdef VFP
+			case ARM64_CTX_SVE: {
+				struct sve_context sve_ctx;
+				size_t buf_size;
+
+				if ((seen_types & CTX_TYPE_FLAG_SVE) != 0)
+					return (EINVAL);
+				seen_types |= CTX_TYPE_FLAG_SVE;
+
+				if (pcb->pcb_svesaved == NULL)
+					return (EINVAL);
+
+				/* XXX: Check pcb_svesaved is valid */
+
+				buf_size = sve_buf_size(td);
+				/* Check the size is valid */
+				if (ctx.ctx_size != CTX_SIZE_SVE(buf_size))
+					return (EINVAL);
+
+				memset(pcb->pcb_svesaved, 0,
+				    sve_max_buf_size());
+
+				/* Copy the SVE registers from userspace */
+				if (copyin((void *)(addr + sizeof(sve_ctx)),
+				    pcb->pcb_svesaved, buf_size) != 0)
+					return (EINVAL);
+
+				pcb->pcb_fpflags |= PCB_FP_SVEVALID;
+				break;
+			}
+#endif
 			case ARM64_CTX_END:
 				done = true;
 				break;
@@ -532,6 +613,8 @@ set_mcontext(struct thread *td, mcontext_t *mcp)
 
 			addr += ctx.ctx_size;
 		} while (!done);
+
+#undef CTX_TYPE_FLAG_SVE
 	}
 
 	return (0);
@@ -592,7 +675,7 @@ set_fpcontext(struct thread *td, mcontext_t *mcp)
 		    sizeof(mcp->mc_fpregs.fp_q));
 		curpcb->pcb_fpustate.vfp_fpcr = mcp->mc_fpregs.fp_cr;
 		curpcb->pcb_fpustate.vfp_fpsr = mcp->mc_fpregs.fp_sr;
-		curpcb->pcb_fpflags = mcp->mc_fpregs.fp_flags & PCB_FP_USERMASK;
+		curpcb->pcb_fpflags = mcp->mc_fpregs.fp_flags & PCB_FP_STARTED;
 	}
 #endif
 }
@@ -606,9 +689,18 @@ sys_sigreturn(struct thread *td, struct sigreturn_args *uap)
 	if (copyin(uap->sigcntxp, &uc, sizeof(uc)))
 		return (EFAULT);
 
+	/* Stop an interrupt from causing the sve state to be dropped */
+	td->td_sa.code = -1;
 	error = set_mcontext(td, &uc.uc_mcontext);
 	if (error != 0)
 		return (error);
+
+	/*
+	 * Sync the VFP and SVE registers. To be backwards compatible we
+	 * use the VFP registers to restore the lower bits of the SVE
+	 * register it aliases.
+	 */
+	vfp_to_sve_sync(td);
 
 	/* Restore signal mask. */
 	kern_sigprocmask(td, SIG_SETMASK, &uc.uc_sigmask, NULL, 0);
@@ -635,9 +727,48 @@ sendsig_ctx_end(struct thread *td, vm_offset_t *addrp)
 	return (true);
 }
 
+static bool
+sendsig_ctx_sve(struct thread *td, vm_offset_t *addrp)
+{
+	struct sve_context ctx;
+	struct pcb *pcb;
+	size_t buf_size, ctx_size;
+	vm_offset_t ctx_addr;
+
+	pcb = td->td_pcb;
+	/* Do nothing if sve hasn't started */
+	if (pcb->pcb_svesaved == NULL)
+		return (true);
+
+	MPASS(pcb->pcb_svesaved != NULL);
+
+	buf_size = sve_buf_size(td);
+	ctx_size = CTX_SIZE_SVE(buf_size);
+
+	/* Address for the full context */
+	*addrp -= ctx_size;
+	ctx_addr = *addrp;
+
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.sve_ctx.ctx_id = ARM64_CTX_SVE;
+	ctx.sve_ctx.ctx_size = ctx_size;
+	ctx.sve_vector_len = pcb->pcb_sve_len;
+	ctx.sve_flags = 0;
+
+	/* Copy out the header and data */
+	if (copyout(&ctx, (void *)ctx_addr, sizeof(ctx)) != 0)
+		return (false);
+	if (copyout(pcb->pcb_svesaved, (void *)(ctx_addr + sizeof(ctx)),
+	    buf_size) != 0)
+		return (false);
+
+	return (true);
+}
+
 typedef bool(*ctx_func)(struct thread *, vm_offset_t *);
 static const ctx_func ctx_funcs[] = {
 	sendsig_ctx_end,	/* Must be first to end the linked list */
+	sendsig_ctx_sve,
 	NULL,
 };
 
@@ -707,7 +838,7 @@ sendsig(sig_t catcher, ksiginfo_t *ksi, sigset_t *mask)
 	/* Make room, keeping the stack aligned */
 	fp = (struct sigframe *)addr;
 	fp--;
-	fp = (struct sigframe *)STACKALIGN(fp);
+	fp = STACKALIGN(fp);
 
 	/* Copy the sigframe out to the user's stack. */
 	if (copyout(&frame, fp, sizeof(*fp)) != 0) {

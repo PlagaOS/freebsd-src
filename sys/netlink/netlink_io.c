@@ -58,6 +58,9 @@ nl_buf_alloc(size_t len, int mflag)
 {
 	struct nl_buf *nb;
 
+	KASSERT(len > 0 && len <= UINT_MAX, ("%s: invalid length %zu",
+	    __func__, len));
+
 	nb = malloc(sizeof(struct nl_buf) + len, M_NETLINK, mflag);
 	if (__predict_true(nb != NULL)) {
 		nb->buflen = len;
@@ -106,6 +109,7 @@ nl_process_received_one(struct nlpcb *nlp)
 	SOCK_RECVBUF_LOCK(so);
 	if (sb->sb_hiwat <= sb->sb_ccc) {
 		SOCK_RECVBUF_UNLOCK(so);
+		NL_LOG(LOG_DEBUG3, "socket %p stuck", so);
 		return (false);
 	}
 	SOCK_RECVBUF_UNLOCK(so);
@@ -212,15 +216,16 @@ nl_send(struct nl_writer *nw, struct nlpcb *nlp)
 		    hdr->nlmsg_len);
 	}
 
-	if (nlp->nl_linux && linux_netlink_p != NULL &&
-	    __predict_false(!linux_netlink_p->msgs_to_linux(nw, nlp))) {
+	if (nlp->nl_linux && linux_netlink_p != NULL) {
+		nb = linux_netlink_p->msgs_to_linux(nw->buf, nlp, nw->ifp);
 		nl_buf_free(nw->buf);
 		nw->buf = NULL;
-		return (false);
+		if (nb == NULL)
+			return (false);
+	} else {
+		nb = nw->buf;
+		nw->buf = NULL;
 	}
-
-	nb = nw->buf;
-	nw->buf = NULL;
 
 	SOCK_RECVBUF_LOCK(so);
 	if (!nw->ignore_limit && __predict_false(sb->sb_hiwat <= sb->sb_ccc)) {
@@ -251,7 +256,7 @@ nl_send(struct nl_writer *nw, struct nlpcb *nlp)
 	}
 }
 
-static int
+static __noinline int
 nl_receive_message(struct nlmsghdr *hdr, int remaining_length,
     struct nlpcb *nlp, struct nl_pstate *npt)
 {
@@ -275,25 +280,21 @@ nl_receive_message(struct nlmsghdr *hdr, int remaining_length,
 
 	npt->hdr = hdr;
 
-	if (hdr->nlmsg_flags & NLM_F_REQUEST && hdr->nlmsg_type >= NLMSG_MIN_TYPE) {
+	if (hdr->nlmsg_flags & NLM_F_REQUEST &&
+	    hdr->nlmsg_type >= NLMSG_MIN_TYPE) {
 		NL_LOG(LOG_DEBUG2, "handling message with msg type: %d",
 		   hdr->nlmsg_type);
-
-		if (nlp->nl_linux && linux_netlink_p != NULL) {
-			struct nlmsghdr *hdr_orig = hdr;
-			hdr = linux_netlink_p->msg_from_linux(nlp->nl_proto, hdr, npt);
-			if (hdr == NULL) {
-				 /* Failed to translate to kernel format. Report an error back */
-				hdr = hdr_orig;
-				npt->hdr = hdr;
-				if (hdr->nlmsg_flags & NLM_F_ACK)
-					nlmsg_ack(nlp, EOPNOTSUPP, hdr, npt);
-				return (0);
-			}
+		if (nlp->nl_linux) {
+			MPASS(linux_netlink_p != NULL);
+			error = linux_netlink_p->msg_from_linux(nlp->nl_proto,
+			    &hdr, npt);
+			if (error)
+				goto ack;
 		}
 		error = handler(hdr, npt);
 		NL_LOG(LOG_DEBUG2, "retcode: %d", error);
 	}
+ack:
 	if ((hdr->nlmsg_flags & NLM_F_ACK) || (error != 0 && error != EINTR)) {
 		if (!npt->nw->suppress_ack) {
 			NL_LOG(LOG_DEBUG3, "ack");
@@ -308,6 +309,7 @@ static void
 npt_clear(struct nl_pstate *npt)
 {
 	lb_clear(&npt->lb);
+	npt->cookie = NULL;
 	npt->error = 0;
 	npt->err_msg = NULL;
 	npt->err_off = 0;
@@ -321,13 +323,13 @@ npt_clear(struct nl_pstate *npt)
 static bool
 nl_process_nbuf(struct nl_buf *nb, struct nlpcb *nlp)
 {
+	struct nl_writer nw;
 	struct nlmsghdr *hdr;
 	int error;
 
 	NL_LOG(LOG_DEBUG3, "RX netlink buf %p on %p", nb, nlp->nl_socket);
 
-	struct nl_writer nw = {};
-	if (!nlmsg_get_unicast_writer(&nw, NLMSG_SMALL, nlp)) {
+	if (!nl_writer_unicast(&nw, NLMSG_SMALL, nlp, false)) {
 		NL_LOG(LOG_DEBUG, "error allocating socket writer");
 		return (true);
 	}

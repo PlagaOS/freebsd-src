@@ -78,7 +78,7 @@ static const struct snl_field_parser _fp_p_mp_nh[] = {
 static inline bool
 _cb_p_mp_nh(struct snl_state *ss __unused, void *_target)
 {
-	struct rta_mpath_nh *target = _target;
+	struct rta_mpath_nh *target = (struct rta_mpath_nh *)_target;
 
 	finalize_sockaddr(target->gw, target->ifindex);
 	return (true);
@@ -158,7 +158,7 @@ static const struct snl_field_parser _fp_p_route[] = {
 static inline bool
 _cb_p_route(struct snl_state *ss __unused, void *_target)
 {
-	struct snl_parsed_route *target = _target;
+	struct snl_parsed_route *target = (struct snl_parsed_route *)_target;
 
 	finalize_sockaddr(target->rta_dst, target->rta_oif);
 	finalize_sockaddr(target->rta_gw, target->rta_oif);
@@ -277,7 +277,7 @@ static struct snl_field_parser _fp_p_neigh_s[] = {
 static inline bool
 _cb_p_neigh(struct snl_state *ss __unused, void *_target)
 {
-	struct snl_parsed_neigh *target = _target;
+	struct snl_parsed_neigh *target = (struct snl_parsed_neigh *)_target;
 
 	finalize_sockaddr(target->nda_dst, target->nda_ifindex);
 	return (true);
@@ -326,7 +326,7 @@ static const struct snl_field_parser _fp_p_addr_s[] = {
 static inline bool
 _cb_p_addr(struct snl_state *ss __unused, void *_target)
 {
-	struct snl_parsed_addr *target = _target;
+	struct snl_parsed_addr *target = (struct snl_parsed_addr *)_target;
 
 	finalize_sockaddr(target->ifa_address, target->ifa_index);
 	finalize_sockaddr(target->ifa_local, target->ifa_index);
@@ -379,7 +379,7 @@ static const struct snl_attr_parser _nla_p_nh[] = {
 static inline bool
 _cb_p_nh(struct snl_state *ss __unused, void *_target)
 {
-	struct snl_parsed_nhop *target = _target;
+	struct snl_parsed_nhop *target = (struct snl_parsed_nhop *)_target;
 
 	finalize_sockaddr(target->nha_gw, target->nha_oif);
 	return (true);
@@ -388,12 +388,5 @@ _cb_p_nh(struct snl_state *ss __unused, void *_target)
 #undef _OUT
 SNL_DECLARE_PARSER_EXT(snl_nhmsg_parser, sizeof(struct nhmsg),
 		sizeof(struct snl_parsed_nhop), _fp_p_nh, _nla_p_nh, _cb_p_nh);
-
-static const struct snl_hdr_parser *snl_all_route_parsers[] = {
-	&_metrics_mp_nh_parser, &_mpath_nh_parser, &_metrics_parser, &snl_rtm_route_parser,
-	&_link_fbsd_parser, &snl_rtm_link_parser, &snl_rtm_link_parser_simple,
-	&_neigh_fbsd_parser, &snl_rtm_neigh_parser,
-	&_addr_fbsd_parser, &snl_rtm_addr_parser, &_nh_fbsd_parser, &snl_nhmsg_parser,
-};
 
 #endif

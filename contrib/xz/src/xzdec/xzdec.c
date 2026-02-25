@@ -14,6 +14,7 @@
 
 #include <stdarg.h>
 #include <errno.h>
+#include <locale.h>
 #include <stdio.h>
 
 #ifndef _MSC_VER
@@ -24,19 +25,18 @@
 #	include <sys/capsicum.h>
 #endif
 
-#ifdef HAVE_LINUX_LANDLOCK_H
-#	include <linux/landlock.h>
-#	include <sys/prctl.h>
-#	include <sys/syscall.h>
+#ifdef HAVE_LINUX_LANDLOCK
+#	include "my_landlock.h"
 #endif
 
 #if defined(HAVE_CAP_RIGHTS_LIMIT) || defined(HAVE_PLEDGE) \
-		|| defined(HAVE_LINUX_LANDLOCK_H)
+		|| defined(HAVE_LINUX_LANDLOCK)
 #	define ENABLE_SANDBOX 1
 #endif
 
 #include "getopt.h"
 #include "tuklib_progname.h"
+#include "tuklib_mbstr_nonprint.h"
 #include "tuklib_exit.h"
 
 #ifdef TUKLIB_DOSLIKE
@@ -119,7 +119,7 @@ version(void)
 static void
 parse_options(int argc, char **argv)
 {
-	static const char short_opts[] = "cdkM:hqQV";
+	static const char short_opts[] = "cdkhqQV";
 	static const struct option long_opts[] = {
 		{ "stdout",       no_argument,         NULL, 'c' },
 		{ "to-stdout",    no_argument,         NULL, 'c' },
@@ -204,7 +204,8 @@ uncompress(lzma_stream *strm, FILE *file, const char *filename)
 				// an error occurred. ferror() doesn't
 				// touch errno.
 				my_errorf("%s: Error reading input file: %s",
-						filename, strerror(errno));
+					tuklib_mask_nonprint(filename),
+					strerror(errno));
 				exit(EXIT_FAILURE);
 			}
 
@@ -229,8 +230,17 @@ uncompress(lzma_stream *strm, FILE *file, const char *filename)
 				// Wouldn't be a surprise if writing to stderr
 				// would fail too but at least try to show an
 				// error message.
-				my_errorf("Cannot write to standard output: "
+#if defined(_WIN32) && !defined(__CYGWIN__)
+				// On native Windows, broken pipe is reported
+				// as EINVAL. Don't show an error message
+				// in this case.
+				if (errno != EINVAL)
+#endif
+				{
+					my_errorf("Cannot write to "
+						"standard output: "
 						"%s", strerror(errno));
+				}
 				exit(EXIT_FAILURE);
 			}
 
@@ -287,7 +297,8 @@ uncompress(lzma_stream *strm, FILE *file, const char *filename)
 				break;
 			}
 
-			my_errorf("%s: %s", filename, msg);
+			my_errorf("%s: %s", tuklib_mask_nonprint(filename),
+					msg);
 			exit(EXIT_FAILURE);
 		}
 	}
@@ -310,13 +321,15 @@ sandbox_enter(int src_fd)
 
 	// If not reading from stdin, remove all capabilities from it.
 	if (src_fd != STDIN_FILENO && cap_rights_limit(
-			STDIN_FILENO, cap_rights_clear(&rights)))
+			STDIN_FILENO, cap_rights_init(&rights)))
 		goto error;
 
-	if (cap_rights_limit(STDOUT_FILENO, cap_rights_init(&rights, CAP_WRITE)))
+	if (cap_rights_limit(STDOUT_FILENO, cap_rights_init(&rights,
+			CAP_WRITE)))
 		goto error;
 
-	if (cap_rights_limit(STDERR_FILENO, cap_rights_init(&rights, CAP_WRITE)))
+	if (cap_rights_limit(STDERR_FILENO, cap_rights_init(&rights,
+			CAP_WRITE)))
 		goto error;
 
 #elif defined(HAVE_PLEDGE)
@@ -325,32 +338,26 @@ sandbox_enter(int src_fd)
 		goto error;
 
 	(void)src_fd;
-#elif defined(HAVE_LINUX_LANDLOCK_H)
-	int landlock_abi = syscall(SYS_landlock_create_ruleset,
-			(void *)NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
 
-	if (landlock_abi > 0) {
-		// We support ABI versions 1-3.
-		if (landlock_abi > 3)
-			landlock_abi = 3;
-
-		const struct landlock_ruleset_attr attr = {
-			.handled_access_fs = (1ULL << (12 + landlock_abi)) - 1
-		};
-
-		const int ruleset_fd = syscall(SYS_landlock_create_ruleset,
-				&attr, sizeof(attr), 0U);
+#elif defined(HAVE_LINUX_LANDLOCK)
+	struct landlock_ruleset_attr attr;
+	if (my_landlock_ruleset_attr_forbid_all(&attr) > 0) {
+		const int ruleset_fd = my_landlock_create_ruleset(
+				&attr, sizeof(attr), 0);
 		if (ruleset_fd < 0)
 			goto error;
 
 		// All files we need should have already been opened. Thus,
 		// we don't need to add any rules using landlock_add_rule(2)
 		// before activating the sandbox.
-		if (syscall(SYS_landlock_restrict_self, ruleset_fd, 0U) != 0)
+		if (my_landlock_restrict_self(ruleset_fd, 0) != 0)
 			goto error;
+
+		(void)close(ruleset_fd);
 	}
 
 	(void)src_fd;
+
 #else
 #	error ENABLE_SANDBOX is defined but no sandboxing method was found.
 #endif
@@ -367,6 +374,7 @@ error:
 	if (errno == ENOSYS)
 		return;
 #endif
+
 	my_errorf("Failed to enable the sandbox");
 	exit(EXIT_FAILURE);
 }
@@ -376,6 +384,9 @@ error:
 int
 main(int argc, char **argv)
 {
+	// Initialize progname which will be used in error messages.
+	tuklib_progname_init(argv);
+
 #ifdef HAVE_PLEDGE
 	// OpenBSD's pledge(2) sandbox.
 	// Initially enable the sandbox slightly more relaxed so that
@@ -389,14 +400,27 @@ main(int argc, char **argv)
 	}
 #endif
 
-#ifdef HAVE_LINUX_LANDLOCK_H
-	// Prevent the process from gaining new privileges. The return
-	// is ignored to keep compatibility with old kernels.
+#ifdef HAVE_LINUX_LANDLOCK
+	// Prevent the process from gaining new privileges. This must be done
+	// before landlock_restrict_self(2) but since we will never need new
+	// privileges, this call can be done here already.
+	//
+	// This is supported since Linux 3.5. Ignore the return value to
+	// keep compatibility with old kernels. landlock_restrict_self(2)
+	// will fail if the no_new_privs attribute isn't set, thus if prctl()
+	// fails here the error will still be detected when it matters.
 	(void)prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 #endif
 
-	// Initialize progname which we will be used in error messages.
-	tuklib_progname_init(argv);
+	// We need to set the locale even though we don't have any
+	// translated messages:
+	//
+	//   - tuklib_mask_nonprint() has locale-specific behavior (LC_CTYPE).
+	//
+	//   - This is needed on Windows to make non-ASCII filenames display
+	//     properly when the active code page has been set to UTF-8
+	//     in the application manifest.
+	setlocale(LC_ALL, "");
 
 	// Parse the command line options.
 	parse_options(argc, argv);
@@ -432,25 +456,26 @@ main(int argc, char **argv)
 				src_name = argv[optind];
 				src_file = fopen(src_name, "rb");
 				if (src_file == NULL) {
-					my_errorf("%s: %s", src_name,
-							strerror(errno));
+					my_errorf("%s: %s",
+						tuklib_mask_nonprint(
+							src_name),
+						strerror(errno));
 					exit(EXIT_FAILURE);
 				}
 			}
 #ifdef ENABLE_SANDBOX
-			// Enable the sandbox for the last file. When the
-			// strict sandbox is enabled the process can no
-			// longer open additional files. It is likely that
-			// the most common way to use xzdec is to
-			// decompress a single file, so this fully protects
-			// most use cases.
+			// Enable the strict sandbox for the last file.
+			// Then the process can no longer open additional
+			// files. The typical xzdec use case is to decompress
+			// a single file so this way the strictest sandboxing
+			// is used in most cases.
 			if (optind == argc - 1)
 				sandbox_enter(fileno(src_file));
 #endif
 			uncompress(&strm, src_file, src_name);
 
 			if (src_file != stdin)
-				fclose(src_file);
+				(void)fclose(src_file);
 		} while (++optind < argc);
 	}
 

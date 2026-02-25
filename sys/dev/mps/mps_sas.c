@@ -30,7 +30,6 @@
  * Avago Technologies (LSI) MPT-Fusion Host Adapter FreeBSD
  */
 
-#include <sys/cdefs.h>
 /* Communications core for Avago Technologies (LSI) MPT2 */
 
 /* TODO Move headers to mpsvar */
@@ -51,12 +50,11 @@
 #include <sys/kthread.h>
 #include <sys/taskqueue.h>
 #include <sys/sbuf.h>
+#include <sys/stdarg.h>
 
 #include <machine/bus.h>
 #include <machine/resource.h>
 #include <sys/rman.h>
-
-#include <machine/stdarg.h>
 
 #include <cam/cam.h>
 #include <cam/cam_ccb.h>
@@ -81,6 +79,12 @@
 #include <dev/mps/mpsvar.h>
 #include <dev/mps/mps_table.h>
 #include <dev/mps/mps_sas.h>
+
+#include <sys/sdt.h>
+
+/* SDT Probes */
+SDT_PROBE_DEFINE4(cam, , mps, complete, "union ccb *",
+    "struct mps_command *", "u_int", "u32");
 
 /*
  * static array to check SCSI OpCode for EEDP protection bits
@@ -859,7 +863,7 @@ mps_detach_sas(struct mps_softc *sc)
 	if (sassc->devq != NULL)
 		cam_simq_free(sassc->devq);
 
-	for(i=0; i< sassc->maxtargets ;i++) {
+	for (i = 0; i < sassc->maxtargets; i++) {
 		targ = &sassc->targets[i];
 		SLIST_FOREACH_SAFE(lun, &targ->luns, lun_link, lun_tmp) {
 			free(lun, M_MPT2);
@@ -2077,6 +2081,9 @@ mpssas_scsiio_complete(struct mps_softc *sc, struct mps_command *cm)
 		mps_dprint(sc, MPS_INFO, "Decrementing SSU count.\n");
 		sc->SSU_refcount--;
 	}
+
+	SDT_PROBE4(cam, , mps, complete, ccb, cm, sassc->flags,
+	    sc->mapping_table[target_id].device_info);
 
 	/* Take the fast path to completion */
 	if (cm->cm_reply == NULL) {
@@ -3397,7 +3404,7 @@ mpssas_realloc_targets(struct mps_softc *sc, int maxtargets)
 	 * the allocated LUNs for each target and then the target buffer
 	 * itself.
 	 */
-	for (i=0; i< maxtargets; i++) {
+	for (i = 0; i < maxtargets; i++) {
 		targ = &sassc->targets[i];
 		SLIST_FOREACH_SAFE(lun, &targ->luns, lun_link, lun_tmp) {
 			free(lun, M_MPT2);

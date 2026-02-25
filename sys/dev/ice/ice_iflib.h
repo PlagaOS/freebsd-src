@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/*  Copyright (c) 2023, Intel Corporation
+/*  Copyright (c) 2024, Intel Corporation
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -139,6 +139,9 @@ struct ice_irq_vector {
  * @tc: traffic class queue belongs to
  * @q_handle: qidx in tc; used in TXQ enable functions
  *
+ * ice_iov.c requires the following parameters (when PCI_IOV is defined):
+ * @itr_idx: ITR index to use for this queue
+ *
  * Other parameters may be iflib driver specific
  */
 struct ice_tx_queue {
@@ -146,7 +149,6 @@ struct ice_tx_queue {
 	struct ice_tx_desc	*tx_base;
 	bus_addr_t		tx_paddr;
 	struct tx_stats		stats;
-	u64			tso;
 	u16			desc_count;
 	u32			tail;
 	struct ice_irq_vector	*irqv;
@@ -154,6 +156,9 @@ struct ice_tx_queue {
 	u32			me;
 	u16			q_handle;
 	u8			tc;
+#ifdef PCI_IOV
+	u8			itr_idx;
+#endif
 
 	/* descriptor writeback status */
 	qidx_t			*tx_rsq;
@@ -176,6 +181,9 @@ struct ice_tx_queue {
  * @stats: queue statistics
  * @tc: traffic class queue belongs to
  *
+ * ice_iov.c requires the following parameters (when PCI_IOV is defined):
+ * @itr_idx: ITR index to use for this queue
+ *
  * Other parameters may be iflib driver specific
  */
 struct ice_rx_queue {
@@ -188,8 +196,34 @@ struct ice_rx_queue {
 	struct ice_irq_vector		*irqv;
 	u32				me;
 	u8				tc;
+#ifdef PCI_IOV
+	u8				itr_idx;
+#endif
 
 	struct if_irq			que_irq;
+};
+
+/**
+ * @struct ice_mirr_if
+ * @brief structure representing a mirroring interface
+ */
+struct ice_mirr_if {
+	struct ice_softc *back;
+	struct ifnet *ifp;
+	struct ice_vsi *vsi;
+
+	device_t subdev;
+	if_ctx_t subctx;
+	if_softc_ctx_t subscctx;
+
+	u16 num_irq_vectors;
+	u16 *if_imap;
+	u16 *os_imap;
+	struct ice_irq_vector *rx_irqvs;
+
+	u32 state;
+
+	bool if_attached;
 };
 
 /**
@@ -262,7 +296,7 @@ struct ice_softc {
 	struct ice_resmgr rx_qmgr;
 
 	/* Interrupt allocation manager */
-	struct ice_resmgr imgr;
+	struct ice_resmgr dev_imgr;
 	u16 *pf_imap;
 	int lan_vectors;
 
@@ -302,7 +336,7 @@ struct ice_softc {
 	/* NVM link override settings */
 	struct ice_link_default_override_tlv ldo_tlv;
 
-	u16 fw_debug_dump_cluster_mask;
+	u32 fw_debug_dump_cluster_mask;
 
 	struct sx *iflib_ctx_lock;
 
@@ -310,6 +344,15 @@ struct ice_softc {
 	ice_declare_bitmap(feat_cap, ICE_FEATURE_COUNT);
 	ice_declare_bitmap(feat_en, ICE_FEATURE_COUNT);
 
+#ifdef PCI_IOV
+	struct ice_vf *vfs;
+	u16 num_vfs;
+#endif
+	struct ice_resmgr os_imgr;
+	/* For mirror interface */
+	struct ice_mirr_if *mirr_if;
+	int extra_vectors;
+	int last_rid;
 };
 
 #endif /* _ICE_IFLIB_H_ */

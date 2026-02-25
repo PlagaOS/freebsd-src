@@ -84,7 +84,6 @@
 #include <vm/vm.h>
 #include <vm/vm_param.h>
 #include <vm/vm_domainset.h>
-#include <vm/vm_object.h>
 #include <vm/vm_page.h>
 #include <vm/vm_pageout.h>
 #include <vm/vm_phys.h>
@@ -1222,7 +1221,7 @@ zone_timeout(uma_zone_t zone, void *unused)
 
 trim:
 	/* Trim caches not used for a long time. */
-	if ((zone->uz_flags & UMA_ZONE_UNMANAGED) == 0) {
+	if ((zone->uz_flags & (UMA_ZONE_UNMANAGED | UMA_ZONE_NOTRIM)) == 0) {
 		for (int i = 0; i < vm_ndomains; i++) {
 			if (bucket_cache_reclaim_domain(zone, false, false, i) &&
 			    (zone->uz_flags & UMA_ZFLAG_CACHE) == 0)
@@ -1791,6 +1790,9 @@ keg_alloc_slab(uma_keg_t keg, uma_zone_t zone, int domain, int flags,
 	if (keg->uk_flags & UMA_ZONE_NODUMP)
 		aflags |= M_NODUMP;
 
+	if (keg->uk_flags & UMA_ZONE_NOFREE)
+		aflags |= M_NEVERFREED;
+
 	/* zone is passed for legacy reasons. */
 	size = keg->uk_ppera * PAGE_SIZE;
 	mem = keg->uk_allocf(zone, size, domain, &sflags, aflags);
@@ -1890,8 +1892,7 @@ startup_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *pflag,
 
 	pa = VM_PAGE_TO_PHYS(m);
 	for (i = 0; i < pages; i++, pa += PAGE_SIZE) {
-#if defined(__aarch64__) || defined(__amd64__) || \
-    defined(__riscv) || defined(__powerpc64__)
+#if MINIDUMP_PAGE_TRACKING && MINIDUMP_STARTUP_PAGE_TRACKING
 		if ((wait & M_NODUMP) == 0)
 			dump_add_page(pa);
 #endif
@@ -1918,8 +1919,7 @@ startup_free(void *mem, vm_size_t bytes)
 	if (va >= bootstart && va + bytes <= bootmem)
 		pmap_remove(kernel_pmap, va, va + bytes);
 	for (; bytes != 0; bytes -= PAGE_SIZE, m++) {
-#if defined(__aarch64__) || defined(__amd64__) || \
-    defined(__riscv) || defined(__powerpc64__)
+#if MINIDUMP_PAGE_TRACKING && MINIDUMP_STARTUP_PAGE_TRACKING
 		dump_drop_page(VM_PAGE_TO_PHYS(m));
 #endif
 		vm_page_unwire_noq(m);
@@ -1986,18 +1986,18 @@ pcpu_page_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *pflag,
 		}
 		if (__predict_false(p == NULL))
 			goto fail;
-		TAILQ_INSERT_TAIL(&alloctail, p, listq);
+		TAILQ_INSERT_TAIL(&alloctail, p, plinks.q);
 	}
 	if ((addr = kva_alloc(bytes)) == 0)
 		goto fail;
 	zkva = addr;
-	TAILQ_FOREACH(p, &alloctail, listq) {
+	TAILQ_FOREACH(p, &alloctail, plinks.q) {
 		pmap_qenter(zkva, &p, 1);
 		zkva += PAGE_SIZE;
 	}
 	return ((void*)addr);
 fail:
-	TAILQ_FOREACH_SAFE(p, &alloctail, listq, p_next) {
+	TAILQ_FOREACH_SAFE(p, &alloctail, plinks.q, p_next) {
 		vm_page_unwire_noq(p);
 		vm_page_free(p);
 	}
@@ -2036,11 +2036,7 @@ noobj_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *flags,
 	while (npages > 0) {
 		p = vm_page_alloc_noobj_domain(domain, req);
 		if (p != NULL) {
-			/*
-			 * Since the page does not belong to an object, its
-			 * listq is unused.
-			 */
-			TAILQ_INSERT_TAIL(&alloctail, p, listq);
+			TAILQ_INSERT_TAIL(&alloctail, p, plinks.q);
 			npages--;
 			continue;
 		}
@@ -2048,7 +2044,7 @@ noobj_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *flags,
 		 * Page allocation failed, free intermediate pages and
 		 * exit.
 		 */
-		TAILQ_FOREACH_SAFE(p, &alloctail, listq, p_next) {
+		TAILQ_FOREACH_SAFE(p, &alloctail, plinks.q, p_next) {
 			vm_page_unwire_noq(p);
 			vm_page_free(p); 
 		}
@@ -2058,7 +2054,7 @@ noobj_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *flags,
 	zkva = keg->uk_kva +
 	    atomic_fetchadd_long(&keg->uk_offset, round_page(bytes));
 	retkva = zkva;
-	TAILQ_FOREACH(p, &alloctail, listq) {
+	TAILQ_FOREACH(p, &alloctail, plinks.q) {
 		pmap_qenter(zkva, &p, 1);
 		zkva += PAGE_SIZE;
 	}
@@ -2078,6 +2074,28 @@ contig_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *pflag,
 	return ((void *)kmem_alloc_contig_domainset(DOMAINSET_FIXED(domain),
 	    bytes, wait, 0, ~(vm_paddr_t)0, 1, 0, VM_MEMATTR_DEFAULT));
 }
+
+#if defined(UMA_USE_DMAP) && !defined(UMA_MD_SMALL_ALLOC)
+void *
+uma_small_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *flags,
+    int wait)
+{
+	vm_page_t m;
+	vm_paddr_t pa;
+	void *va;
+
+	*flags = UMA_SLAB_PRIV;
+	m = vm_page_alloc_noobj_domain(domain,
+	    malloc2vm_flags(wait) | VM_ALLOC_WIRED);
+	if (m == NULL)
+		return (NULL);
+	pa = m->phys_addr;
+	if ((wait & M_NODUMP) == 0)
+		dump_add_page(pa);
+	va = (void *)PHYS_TO_DMAP(pa);
+	return (va);
+}
+#endif
 
 /*
  * Frees a number of pages to the system
@@ -2140,6 +2158,21 @@ pcpu_page_free(void *mem, vm_size_t size, uint8_t flags)
 	pmap_qremove(sva, size >> PAGE_SHIFT);
 	kva_free(sva, size);
 }
+
+#if defined(UMA_USE_DMAP) && !defined(UMA_MD_SMALL_ALLOC)
+void
+uma_small_free(void *mem, vm_size_t size, uint8_t flags)
+{
+	vm_page_t m;
+	vm_paddr_t pa;
+
+	pa = DMAP_TO_PHYS((vm_offset_t)mem);
+	dump_drop_page(pa);
+	m = PHYS_TO_VM_PAGE(pa);
+	vm_page_unwire_noq(m);
+	vm_page_free(m);
+}
+#endif
 
 /*
  * Zero fill initializer
@@ -2488,7 +2521,7 @@ keg_ctor(void *mem, int size, void *udata, int flags)
 	 * If we haven't booted yet we need allocations to go through the
 	 * startup cache until the vm is ready.
 	 */
-#ifdef UMA_MD_SMALL_ALLOC
+#ifdef UMA_USE_DMAP
 	if (keg->uk_ppera == 1)
 		keg->uk_allocf = uma_small_alloc;
 	else
@@ -2501,7 +2534,7 @@ keg_ctor(void *mem, int size, void *udata, int flags)
 		keg->uk_allocf = contig_alloc;
 	else
 		keg->uk_allocf = page_alloc;
-#ifdef UMA_MD_SMALL_ALLOC
+#ifdef UMA_USE_DMAP
 	if (keg->uk_ppera == 1)
 		keg->uk_freef = uma_small_free;
 	else
@@ -3154,7 +3187,7 @@ uma_startup1(vm_offset_t virtual_avail)
 	smr_init();
 }
 
-#ifndef UMA_MD_SMALL_ALLOC
+#ifndef UMA_USE_DMAP
 extern void vm_radix_reserve_kva(void);
 #endif
 
@@ -3174,7 +3207,7 @@ uma_startup2(void)
 		vm_map_unlock(kernel_map);
 	}
 
-#ifndef UMA_MD_SMALL_ALLOC
+#ifndef UMA_USE_DMAP
 	/* Set up radix zone to use noobj_alloc. */
 	vm_radix_reserve_kva();
 #endif
@@ -3976,20 +4009,15 @@ restart:
 	/*
 	 * Use the keg's policy if upper layers haven't already specified a
 	 * domain (as happens with first-touch zones).
-	 *
-	 * To avoid races we run the iterator with the keg lock held, but that
-	 * means that we cannot allow the vm_domainset layer to sleep.  Thus,
-	 * clear M_WAITOK and handle low memory conditions locally.
 	 */
 	rr = rdomain == UMA_ANYDOMAIN;
+	aflags = flags;
 	if (rr) {
-		aflags = (flags & ~M_WAITOK) | M_NOWAIT;
-		vm_domainset_iter_policy_ref_init(&di, &keg->uk_dr, &domain,
-		    &aflags);
-	} else {
-		aflags = flags;
+		if (vm_domainset_iter_policy_ref_init(&di, &keg->uk_dr, &domain,
+		    &aflags) != 0)
+			return (NULL);
+	} else
 		domain = rdomain;
-	}
 
 	for (;;) {
 		slab = keg_fetch_free_slab(keg, domain, rr, flags);
@@ -4019,13 +4047,8 @@ restart:
 			if ((flags & M_WAITOK) == 0)
 				break;
 			vm_wait_domain(domain);
-		} else if (vm_domainset_iter_policy(&di, &domain) != 0) {
-			if ((flags & M_WAITOK) != 0) {
-				vm_wait_doms(&keg->uk_dr.dr_policy->ds_mask, 0);
-				goto restart;
-			}
+		} else if (vm_domainset_iter_policy(&di, &domain) != 0)
 			break;
-		}
 	}
 
 	/*
@@ -5171,7 +5194,7 @@ uma_zone_reserve_kva(uma_zone_t zone, int count)
 
 	pages = howmany(count, keg->uk_ipers) * keg->uk_ppera;
 
-#ifdef UMA_MD_SMALL_ALLOC
+#ifdef UMA_USE_DMAP
 	if (keg->uk_ppera > 1) {
 #else
 	if (1) {
@@ -5186,7 +5209,7 @@ uma_zone_reserve_kva(uma_zone_t zone, int count)
 	keg->uk_kva = kva;
 	keg->uk_offset = 0;
 	zone->uz_max_items = pages * keg->uk_ipers;
-#ifdef UMA_MD_SMALL_ALLOC
+#ifdef UMA_USE_DMAP
 	keg->uk_allocf = (keg->uk_ppera > 1) ? noobj_alloc : uma_small_alloc;
 #else
 	keg->uk_allocf = noobj_alloc;
@@ -5211,9 +5234,10 @@ uma_prealloc(uma_zone_t zone, int items)
 	KEG_GET(zone, keg);
 	slabs = howmany(items, keg->uk_ipers);
 	while (slabs-- > 0) {
-		aflags = M_NOWAIT;
-		vm_domainset_iter_policy_ref_init(&di, &keg->uk_dr, &domain,
-		    &aflags);
+		aflags = M_WAITOK;
+		if (vm_domainset_iter_policy_ref_init(&di, &keg->uk_dr, &domain,
+		    &aflags) != 0)
+			panic("%s: Domainset is empty", __func__);
 		for (;;) {
 			slab = keg_alloc_slab(keg, zone, domain, M_WAITOK,
 			    aflags);
@@ -5231,7 +5255,8 @@ uma_prealloc(uma_zone_t zone, int items)
 				break;
 			}
 			if (vm_domainset_iter_policy(&di, &domain) != 0)
-				vm_wait_doms(&keg->uk_dr.dr_policy->ds_mask, 0);
+				panic("%s: Cannot allocate from any domain",
+				    __func__);
 		}
 	}
 }
@@ -5268,8 +5293,13 @@ uma_reclaim_domain_cb(uma_zone_t zone, void *arg)
 	struct uma_reclaim_args *args;
 
 	args = arg;
-	if ((zone->uz_flags & UMA_ZONE_UNMANAGED) == 0)
-		uma_zone_reclaim_domain(zone, args->req, args->domain);
+	if ((zone->uz_flags & UMA_ZONE_UNMANAGED) != 0)
+		return;
+	if ((args->req == UMA_RECLAIM_TRIM) &&
+	    (zone->uz_flags & UMA_ZONE_NOTRIM) !=0)
+		return;
+
+	uma_zone_reclaim_domain(zone, args->req, args->domain);
 }
 
 /* See uma.h */
@@ -5296,6 +5326,13 @@ uma_reclaim_domain(int req, int domain)
 		zone_foreach(uma_reclaim_domain_cb, &args);
 		break;
 	case UMA_RECLAIM_DRAIN_CPU:
+		/*
+		 * Reclaim globally visible free items from all zones, then drain
+		 * per-CPU buckets, then reclaim items freed while draining.
+		 * This approach minimizes expensive context switching needed to
+		 * drain each zone's per-CPU buckets.
+		 */
+		args.req = UMA_RECLAIM_DRAIN;
 		zone_foreach(uma_reclaim_domain_cb, &args);
 		pcpu_cache_drain_safe(NULL);
 		zone_foreach(uma_reclaim_domain_cb, &args);

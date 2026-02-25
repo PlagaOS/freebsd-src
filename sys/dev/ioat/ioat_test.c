@@ -35,12 +35,12 @@
 #include <sys/module.h>
 #include <sys/mutex.h>
 #include <sys/rman.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcivar.h>
 #include <machine/bus.h>
 #include <machine/resource.h>
-#include <machine/stdarg.h>
 #include <vm/vm.h>
 #include <vm/vm_param.h>
 #include <vm/pmap.h>
@@ -82,17 +82,11 @@ static void _ioat_test_log(int verbosity, const char *fmt, ...);
 static void
 ioat_test_transaction_destroy(struct test_transaction *tx)
 {
-	struct ioat_test *test;
 	int i;
-
-	test = tx->test;
 
 	for (i = 0; i < IOAT_MAX_BUFS; i++) {
 		if (tx->buf[i] != NULL) {
-			if (test->testkind == IOAT_TEST_DMA_8K)
-				free(tx->buf[i], M_IOAT_TEST);
-			else
-				contigfree(tx->buf[i], tx->length, M_IOAT_TEST);
+			free(tx->buf[i], M_IOAT_TEST);
 			tx->buf[i] = NULL;
 		}
 	}

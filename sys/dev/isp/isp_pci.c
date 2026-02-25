@@ -212,7 +212,7 @@ static device_method_t isp_pci_methods[] = {
 	DEVMETHOD(device_probe,		isp_pci_probe),
 	DEVMETHOD(device_attach,	isp_pci_attach),
 	DEVMETHOD(device_detach,	isp_pci_detach),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t isp_pci_driver = {
@@ -289,6 +289,15 @@ isp_get_generic_options(device_t dev, ispsoftc_t *isp)
 	tval = 0;
 	if (resource_int_value(device_get_name(dev), device_get_unit(dev), "fwload_disable", &tval) == 0 && tval != 0) {
 		isp->isp_confopts |= ISP_CFG_NORELOAD;
+	}
+	tval = 0;
+	if (resource_int_value(device_get_name(dev), device_get_unit(dev), "fwload_force", &tval) == 0 && tval != 0) {
+		isp->isp_confopts |= ISP_CFG_FWLOAD_FORCE;
+	}
+	if ((isp->isp_confopts & (ISP_CFG_NORELOAD|ISP_CFG_FWLOAD_FORCE)) ==
+	    (ISP_CFG_NORELOAD|ISP_CFG_FWLOAD_FORCE)) {
+		device_printf(dev, "WARNING: both fwload_disable and "
+		    "fwload_force set, ispfw(4) loading disabled\n");
 	}
 	tval = 0;
 	if (resource_int_value(device_get_name(dev), device_get_unit(dev), "ignore_nvram", &tval) == 0 && tval != 0) {

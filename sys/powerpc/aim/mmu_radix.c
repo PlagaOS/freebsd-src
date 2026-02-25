@@ -480,7 +480,7 @@ static void	mmu_radix_bootstrap(vm_offset_t, vm_offset_t);
 static void mmu_radix_copy_page(vm_page_t, vm_page_t);
 static void mmu_radix_copy_pages(vm_page_t *ma, vm_offset_t a_offset,
     vm_page_t *mb, vm_offset_t b_offset, int xfersize);
-static void mmu_radix_growkernel(vm_offset_t);
+static int mmu_radix_growkernel(vm_offset_t);
 static void mmu_radix_init(void);
 static int mmu_radix_mincore(pmap_t, vm_offset_t, vm_paddr_t *);
 static vm_offset_t mmu_radix_map(vm_offset_t *, vm_paddr_t, vm_paddr_t, int);
@@ -501,7 +501,7 @@ static struct pmap_funcs mmu_radix_methods = {
 	.copy_page = mmu_radix_copy_page,
 	.copy_pages = mmu_radix_copy_pages,
 	.cpu_bootstrap = mmu_radix_cpu_bootstrap,
-	.growkernel = mmu_radix_growkernel,
+	.growkernel_nopanic = mmu_radix_growkernel,
 	.init = mmu_radix_init,
 	.map =      		mmu_radix_map,
 	.mincore =      	mmu_radix_mincore,
@@ -632,7 +632,6 @@ static unsigned int isa3_base_pid;
  */
 static struct	mem_region *regions, *pregions;
 static struct	numa_mem_region *numa_pregions;
-static u_int	phys_avail_count;
 static int	regions_sz, pregions_sz, numa_pregions_sz;
 static struct pate *isa3_parttab;
 static struct prte *isa3_proctab;
@@ -3138,6 +3137,28 @@ out:
 }
 
 /*
+ * Release a page table page reference after a failed attempt to create a
+ * mapping.
+ */
+static void
+pmap_abort_ptp(pmap_t pmap, vm_offset_t va, vm_page_t pdpg)
+{
+	struct spglist free;
+
+	SLIST_INIT(&free);
+	if (pmap_unwire_ptp(pmap, va, pdpg, &free)) {
+		/*
+		 * Although "va" is not mapped, paging-
+		 * structure caches could nonetheless have
+		 * entries that refer to the freed page table
+		 * pages.  Invalidate those entries.
+		 */
+		pmap_invalidate_page(pmap, va);
+		vm_page_free_pages_toq(&free, true);
+	}
+}
+
+/*
  * Tries to create a read- and/or execute-only 2MB page mapping.  Returns true
  * if successful.  Returns false if (1) a page table page cannot be allocated
  * without sleeping, (2) a mapping already exists at the specified virtual
@@ -3246,12 +3267,15 @@ pmap_enter_l3e(pmap_t pmap, vm_offset_t va, pml3_entry_t newpde, u_int flags,
 	uwptpg = NULL;
 	if ((newpde & PG_W) != 0 && pmap != kernel_pmap) {
 		uwptpg = vm_page_alloc_noobj(VM_ALLOC_WIRED);
-		if (uwptpg == NULL)
+		if (uwptpg == NULL) {
+			pmap_abort_ptp(pmap, va, pdpg);
 			return (KERN_RESOURCE_SHORTAGE);
+		}
 		uwptpg->pindex = pmap_l3e_pindex(va);
 		if (pmap_insert_pt_page(pmap, uwptpg)) {
 			vm_page_unwire_noq(uwptpg);
 			vm_page_free(uwptpg);
+			pmap_abort_ptp(pmap, va, pdpg);
 			return (KERN_RESOURCE_SHORTAGE);
 		}
 		pmap_resident_count_inc(pmap, 1);
@@ -3264,17 +3288,7 @@ pmap_enter_l3e(pmap_t pmap, vm_offset_t va, pml3_entry_t newpde, u_int flags,
 		 * Abort this mapping if its PV entry could not be created.
 		 */
 		if (!pmap_pv_insert_l3e(pmap, va, newpde, flags, lockp)) {
-			SLIST_INIT(&free);
-			if (pmap_unwire_ptp(pmap, va, pdpg, &free)) {
-				/*
-				 * Although "va" is not mapped, paging-
-				 * structure caches could nonetheless have
-				 * entries that refer to the freed page table
-				 * pages.  Invalidate those entries.
-				 */
-				pmap_invalidate_page(pmap, va);
-				vm_page_free_pages_toq(&free, true);
-			}
+			pmap_abort_ptp(pmap, va, pdpg);
 			if (uwptpg != NULL) {
 				mt = pmap_remove_pt_page(pmap, va);
 				KASSERT(mt == uwptpg,
@@ -3319,33 +3333,34 @@ void
 mmu_radix_enter_object(pmap_t pmap, vm_offset_t start,
     vm_offset_t end, vm_page_t m_start, vm_prot_t prot)
 {
-
+	struct pctrie_iter pages;
 	struct rwlock *lock;
 	vm_offset_t va;
 	vm_page_t m, mpte;
-	vm_pindex_t diff, psize;
 	bool invalidate;
+
 	VM_OBJECT_ASSERT_LOCKED(m_start->object);
 
 	CTR6(KTR_PMAP, "%s(%p, %#x, %#x, %p, %#x)", __func__, pmap, start,
 	    end, m_start, prot);
-
 	invalidate = false;
-	psize = atop(end - start);
 	mpte = NULL;
-	m = m_start;
+	vm_page_iter_limit_init(&pages, m_start->object,
+	    m_start->pindex + atop(end - start));
+	m = vm_radix_iter_lookup(&pages, m_start->pindex);
 	lock = NULL;
 	PMAP_LOCK(pmap);
-	while (m != NULL && (diff = m->pindex - m_start->pindex) < psize) {
-		va = start + ptoa(diff);
+	while (m != NULL) {
+		va = start + ptoa(m->pindex - m_start->pindex);
 		if ((va & L3_PAGE_MASK) == 0 && va + L3_PAGE_SIZE <= end &&
 		    m->psind == 1 && mmu_radix_ps_enabled(pmap) &&
-		    pmap_enter_2mpage(pmap, va, m, prot, &lock))
-			m = &m[L3_PAGE_SIZE / PAGE_SIZE - 1];
-		else
+		    pmap_enter_2mpage(pmap, va, m, prot, &lock)) {
+			m = vm_radix_iter_jump(&pages, L3_PAGE_SIZE / PAGE_SIZE);
+		} else {
 			mpte = mmu_radix_enter_quick_locked(pmap, va, m, prot,
 			    mpte, &lock, &invalidate);
-		m = TAILQ_NEXT(m, listq);
+			m = vm_radix_iter_step(&pages);
+		}
 	}
 	ptesync();
 	if (lock != NULL)
@@ -3544,7 +3559,7 @@ mmu_radix_extract_and_hold(pmap_t pmap, vm_offset_t va, vm_prot_t prot)
 	return (m);
 }
 
-static void
+static int
 mmu_radix_growkernel(vm_offset_t addr)
 {
 	vm_paddr_t paddr;
@@ -3555,7 +3570,7 @@ mmu_radix_growkernel(vm_offset_t addr)
 	CTR2(KTR_PMAP, "%s(%#x)", __func__, addr);
 	if (VM_MIN_KERNEL_ADDRESS < addr &&
 		addr < (VM_MIN_KERNEL_ADDRESS + nkpt * L3_PAGE_SIZE))
-		return;
+		return (KERN_SUCCESS);
 
 	addr = roundup2(addr, L3_PAGE_SIZE);
 	if (addr - 1 >= vm_map_max(kernel_map))
@@ -3565,9 +3580,9 @@ mmu_radix_growkernel(vm_offset_t addr)
 		if ((be64toh(*l2e) & PG_V) == 0) {
 			/* We need a new PDP entry */
 			nkpg = vm_page_alloc_noobj(VM_ALLOC_INTERRUPT |
-			    VM_ALLOC_WIRED | VM_ALLOC_ZERO);
+			    VM_ALLOC_NOFREE | VM_ALLOC_WIRED | VM_ALLOC_ZERO);
 			if (nkpg == NULL)
-				panic("pmap_growkernel: no memory to grow kernel");
+				return (KERN_RESOURCE_SHORTAGE);
 			nkpg->pindex = kernel_vm_end >> L2_PAGE_SIZE_SHIFT;
 			paddr = VM_PAGE_TO_PHYS(nkpg);
 			pde_store(l2e, paddr);
@@ -3583,10 +3598,10 @@ mmu_radix_growkernel(vm_offset_t addr)
 			continue;
 		}
 
-		nkpg = vm_page_alloc_noobj(VM_ALLOC_INTERRUPT | VM_ALLOC_WIRED |
-		    VM_ALLOC_ZERO);
+		nkpg = vm_page_alloc_noobj(VM_ALLOC_INTERRUPT |
+		    VM_ALLOC_NOFREE | VM_ALLOC_WIRED | VM_ALLOC_ZERO);
 		if (nkpg == NULL)
-			panic("pmap_growkernel: no memory to grow kernel");
+			return (KERN_RESOURCE_SHORTAGE);
 		nkpg->pindex = pmap_l3e_pindex(kernel_vm_end);
 		paddr = VM_PAGE_TO_PHYS(nkpg);
 		pde_store(l3e, paddr);
@@ -3598,6 +3613,7 @@ mmu_radix_growkernel(vm_offset_t addr)
 		}
 	}
 	ptesync();
+	return (KERN_SUCCESS);
 }
 
 static MALLOC_DEFINE(M_RADIX_PGD, "radix_pgd", "radix page table root directory");
@@ -4028,6 +4044,7 @@ void
 mmu_radix_object_init_pt(pmap_t pmap, vm_offset_t addr,
     vm_object_t object, vm_pindex_t pindex, vm_size_t size)
 {
+	struct pctrie_iter pages;
 	pml3_entry_t *l3e;
 	vm_paddr_t pa, ptepa;
 	vm_page_t p, pdpg;
@@ -4044,7 +4061,9 @@ mmu_radix_object_init_pt(pmap_t pmap, vm_offset_t addr,
 			return;
 		if (!vm_object_populate(object, pindex, pindex + atop(size)))
 			return;
-		p = vm_page_lookup(object, pindex);
+		vm_page_iter_init(&pages, object);
+		p = vm_radix_iter_lookup(&pages, pindex);
+		
 		KASSERT(p->valid == VM_PAGE_BITS_ALL,
 		    ("pmap_object_init_pt: invalid page %p", p));
 		ma = p->md.mdpg_cache_attrs;
@@ -4062,15 +4081,14 @@ mmu_radix_object_init_pt(pmap_t pmap, vm_offset_t addr,
 		 * the pages are not physically contiguous or have differing
 		 * memory attributes.
 		 */
-		p = TAILQ_NEXT(p, listq);
 		for (pa = ptepa + PAGE_SIZE; pa < ptepa + size;
 		    pa += PAGE_SIZE) {
+			p = vm_radix_iter_next(&pages);
 			KASSERT(p->valid == VM_PAGE_BITS_ALL,
 			    ("pmap_object_init_pt: invalid page %p", p));
 			if (pa != VM_PAGE_TO_PHYS(p) ||
 			    ma != p->md.mdpg_cache_attrs)
 				return;
-			p = TAILQ_NEXT(p, listq);
 		}
 
 		PMAP_LOCK(pmap);
@@ -5918,6 +5936,10 @@ mmu_radix_page_set_memattr(vm_page_t m, vm_memattr_t ma)
 {
 
 	CTR3(KTR_PMAP, "%s(%p, %#x)", __func__, m, ma);
+
+	if (m->md.mdpg_cache_attrs == ma)
+		return;
+
 	m->md.mdpg_cache_attrs = ma;
 
 	/*
@@ -6423,7 +6445,7 @@ mmu_radix_page_array_startup(long pages)
 	start = VM_MIN_KERNEL_ADDRESS;
 	end = start + pages * sizeof(struct vm_page);
 
-	pa = vm_phys_early_alloc(0, end - start);
+	pa = vm_phys_early_alloc(-1, end - start);
 
 	start = mmu_radix_map(&start, pa, end - start, VM_MEMATTR_DEFAULT);
 #ifdef notyet

@@ -32,10 +32,9 @@ extern "C" {
 #include <sys/time.h>
 
 #include <fcntl.h>
+#include <mntopts.h>	// for build_iovec
 #include <signal.h>
 #include <unistd.h>
-
-#include "mntopts.h"	// for build_iovec
 }
 
 #include "mockfs.hh"
@@ -206,7 +205,7 @@ TEST_F(Fspacectl, enosys)
 	EXPECT_EQ(0, fspacectl(fd, SPACECTL_DEALLOC, &rqsr, 0, NULL));
 
 	/* Neither should posix_fallocate query the daemon */
-	EXPECT_EQ(EINVAL, posix_fallocate(fd, off1, len1));
+	EXPECT_EQ(EOPNOTSUPP, posix_fallocate(fd, off1, len1));
 
 	leak(fd);
 }
@@ -306,6 +305,57 @@ TEST_F(Fspacectl, erofs)
 
 	EXPECT_EQ(-1, fspacectl(fd, SPACECTL_DEALLOC, &rqsr, 0, NULL));
 	EXPECT_EQ(EROFS, errno);
+
+	leak(fd);
+}
+
+/*
+ * If FUSE_GETATTR fails when determining the size of the file, fspacectl
+ * should fail gracefully.  This failure mode is easiest to trigger when
+ * attribute caching is disabled.
+ */
+TEST_F(Fspacectl, getattr_fails)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	Sequence seq;
+	struct spacectl_range rqsr;
+	const uint64_t ino = 42;
+	const uint64_t fsize = 2000;
+	int fd;
+
+	expect_lookup(RELPATH, ino, S_IFREG | 0644, fsize, 1, 0);
+	expect_open(ino, 0, 1);
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([](auto in) {
+			return (in.header.opcode == FUSE_GETATTR &&
+				in.header.nodeid == ino);
+		}, Eq(true)),
+		_)
+	).Times(1)
+	.InSequence(seq)
+	.WillOnce(Invoke(ReturnImmediate([](auto i __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, attr);
+		out.body.attr.attr.ino = ino;
+		out.body.attr.attr.mode = S_IFREG | 0644;
+		out.body.attr.attr.size = fsize;
+		out.body.attr.attr_valid = 0;
+	})));
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([](auto in) {
+			return (in.header.opcode == FUSE_GETATTR &&
+				in.header.nodeid == ino);
+		}, Eq(true)),
+		_)
+	).InSequence(seq)
+	.WillOnce(ReturnErrno(EIO));
+
+	fd = open(FULLPATH, O_RDWR);
+	ASSERT_LE(0, fd) << strerror(errno);
+	rqsr.r_offset = 500;
+	rqsr.r_len = 1000;
+	EXPECT_EQ(-1, fspacectl(fd, SPACECTL_DEALLOC, &rqsr, 0, NULL));
+	EXPECT_EQ(EIO, errno);
 
 	leak(fd);
 }
@@ -498,7 +548,7 @@ INSTANTIATE_TEST_SUITE_P(FspacectlCache, FspacectlCache,
 
 /*
  * If the server returns ENOSYS, it indicates that the server does not support
- * FUSE_FALLOCATE.  This and future calls should return EINVAL.
+ * FUSE_FALLOCATE.  This and future calls should return EOPNOTSUPP.
  */
 TEST_F(PosixFallocate, enosys)
 {
@@ -520,10 +570,10 @@ TEST_F(PosixFallocate, enosys)
 
 	fd = open(FULLPATH, O_RDWR);
 	ASSERT_LE(0, fd) << strerror(errno);
-	EXPECT_EQ(EINVAL, posix_fallocate(fd, off0, len0));
+	EXPECT_EQ(EOPNOTSUPP, posix_fallocate(fd, off0, len0));
 
 	/* Subsequent calls shouldn't query the daemon*/
-	EXPECT_EQ(EINVAL, posix_fallocate(fd, off0, len0));
+	EXPECT_EQ(EOPNOTSUPP, posix_fallocate(fd, off0, len0));
 
 	/* Neither should VOP_DEALLOCATE query the daemon */
 	EXPECT_EQ(0, fspacectl(fd, SPACECTL_DEALLOC, &rqsr, 0, NULL));
@@ -557,10 +607,10 @@ TEST_F(PosixFallocate, eopnotsupp)
 
 	fd = open(FULLPATH, O_RDWR);
 	ASSERT_LE(0, fd) << strerror(errno);
-	EXPECT_EQ(EINVAL, posix_fallocate(fd, fsize, length));
+	EXPECT_EQ(EOPNOTSUPP, posix_fallocate(fd, fsize, length));
 
 	/* Subsequent calls should still query the daemon*/
-	EXPECT_EQ(EINVAL, posix_fallocate(fd, offset, length));
+	EXPECT_EQ(EOPNOTSUPP, posix_fallocate(fd, offset, length));
 
 	/* And subsequent VOP_DEALLOCATE calls should also query the daemon */
 	rqsr.r_len = length;
@@ -709,7 +759,7 @@ TEST_F(PosixFallocate, rlimit_fsize)
 }
 
 /* With older servers, no FUSE_FALLOCATE should be attempted */
-TEST_F(PosixFallocate_7_18, einval)
+TEST_F(PosixFallocate_7_18, eopnotsupp)
 {
 	const char FULLPATH[] = "mountpoint/some_file.txt";
 	const char RELPATH[] = "some_file.txt";
@@ -723,7 +773,7 @@ TEST_F(PosixFallocate_7_18, einval)
 
 	fd = open(FULLPATH, O_RDWR);
 	ASSERT_LE(0, fd) << strerror(errno);
-	EXPECT_EQ(EINVAL, posix_fallocate(fd, offset, length));
+	EXPECT_EQ(EOPNOTSUPP, posix_fallocate(fd, offset, length));
 
 	leak(fd);
 }

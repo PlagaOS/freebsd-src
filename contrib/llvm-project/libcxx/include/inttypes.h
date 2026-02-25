@@ -12,7 +12,7 @@
 // is defined until an inclusion of it without _STD_TYPES_T occurs, in which
 // case the header guard macro is defined.
 #if !defined(_AIX) || !defined(_STD_TYPES_T)
-#define _LIBCPP_INTTYPES_H
+#  define _LIBCPP_INTTYPES_H
 #endif // _STD_TYPES_T
 
 /*
@@ -241,11 +241,18 @@ uintmax_t wcstoumax(const wchar_t* restrict nptr, wchar_t** restrict endptr, int
 #  pragma GCC system_header
 #endif
 
-/* C99 stdlib (e.g. glibc < 2.18) does not provide format macros needed
-   for C++11 unless __STDC_FORMAT_MACROS is defined
+/* C99 stdlib (e.g. glibc < 2.18) does not provide macros needed
+   for C++11 unless __STDC_CONSTANT_MACROS, __STDC_FORMAT_MACROS
+   and __STDC_LIMIT_MACROS are defined
 */
+#if defined(__cplusplus) && !defined(__STDC_CONSTANT_MACROS)
+#  define __STDC_CONSTANT_MACROS
+#endif
 #if defined(__cplusplus) && !defined(__STDC_FORMAT_MACROS)
-#   define __STDC_FORMAT_MACROS
+#  define __STDC_FORMAT_MACROS
+#endif
+#if defined(__cplusplus) && !defined(__STDC_LIMIT_MACROS)
+#  define __STDC_LIMIT_MACROS
 #endif
 
 #if __has_include_next(<inttypes.h>)
@@ -254,10 +261,10 @@ uintmax_t wcstoumax(const wchar_t* restrict nptr, wchar_t** restrict endptr, int
 
 #ifdef __cplusplus
 
-#include <stdint.h>
+#  include <stdint.h>
 
-#undef imaxabs
-#undef imaxdiv
+#  undef imaxabs
+#  undef imaxdiv
 
 #endif // __cplusplus
 

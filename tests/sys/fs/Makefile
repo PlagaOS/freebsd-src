@@ -1,4 +1,3 @@
-
 .include <src.opts.mk>
 .include <bsd.compiler.mk>
 
@@ -15,6 +14,7 @@ TESTS_SUBDIRS+=		fusefs
 .endif
 TESTS_SUBDIRS+=		tarfs
 TESTS_SUBDIRS+=		tmpfs
+TESTS_SUBDIRS+=		unionfs
 
 ${PACKAGE}FILES+=	h_funcs.subr
 ${PACKAGE}FILESDIR=	${TESTSDIR}

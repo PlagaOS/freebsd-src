@@ -125,7 +125,6 @@ static pte_t ****kernel_ptbl_root;
 #define	VM_MAPDEV_PA_MAX	0x4000000000000000 /* Don't encroach on DMAP */
 
 static void tid_flush(tlbtid_t tid);
-static unsigned long ilog2(unsigned long);
 
 /**************************************************************************/
 /* Page table management */
@@ -680,12 +679,11 @@ mmu_booke_zero_page_area(vm_page_t m, int off, int size)
 static void
 mmu_booke_zero_page(vm_page_t m)
 {
-	vm_offset_t off, va;
+	vm_offset_t va;
 
 	va = PHYS_TO_DMAP(VM_PAGE_TO_PHYS(m));
 
-	for (off = 0; off < PAGE_SIZE; off += cacheline_size)
-		__asm __volatile("dcbz 0,%0" :: "r"(va + off));
+	bzero((void *)va, PAGE_SIZE);
 }
 
 /*
@@ -745,18 +743,6 @@ mmu_booke_quick_remove_page(vm_offset_t addr)
 /**************************************************************************/
 /* TID handling */
 /**************************************************************************/
-
-/*
- * Return the largest uint value log such that 2^log <= num.
- */
-static unsigned long
-ilog2(unsigned long num)
-{
-	long lz;
-
-	__asm ("cntlzd %0, %1" : "=r" (lz) : "r" (num));
-	return (63 - lz);
-}
 
 /*
  * Invalidate all TLB0 entries which match the given TID. Note this is

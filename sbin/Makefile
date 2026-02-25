@@ -1,4 +1,3 @@
-
 .include <src.opts.mk>
 
 SUBDIR=adjkerntz \
@@ -22,11 +21,9 @@ SUBDIR=adjkerntz \
 	fsck_msdosfs \
 	fsdb \
 	fsirand \
-	gbde \
 	geom \
 	ggate \
 	growfs \
-	gvinum \
 	ifconfig \
 	init \
 	kldconfig \
@@ -51,6 +48,7 @@ SUBDIR=adjkerntz \
 	newfs_msdos \
 	nfsiod \
 	nos-tun \
+	nvmecontrol \
 	pfilctl \
 	rcorder \
 	reboot \
@@ -64,6 +62,7 @@ SUBDIR=adjkerntz \
 	swapon \
 	sysctl \
 	tunefs \
+	umbctl \
 	umount
 
 .if ${MK_INET} != "no" || ${MK_INET6} != "no"
@@ -77,7 +76,6 @@ SUBDIR.${MK_INET6}+=	rtsol
 SUBDIR.${MK_IPFILTER}+=	ipf
 SUBDIR.${MK_IPFW}+=	ipfw
 SUBDIR.${MK_IPFW}+=	natd
-SUBDIR.${MK_NVME}+=	nvmecontrol
 SUBDIR.${MK_OPENSSL}+=	decryptcore
 SUBDIR.${MK_PF}+=	pfctl
 SUBDIR.${MK_PF}+=	pflogd

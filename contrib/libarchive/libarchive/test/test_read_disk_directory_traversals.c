@@ -23,7 +23,6 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #include "test.h"
-__FBSDID("$FreeBSD$");
 
 #include <limits.h>
 #if defined(_WIN32) && !defined(__CYGWIN__)
@@ -40,7 +39,7 @@ atimeIsUpdated(void)
 {
 	const char *fn = "fs_noatime";
 	struct stat st;
-#if defined(_WIN32) && !defined(CYGWIN)
+#if defined(_WIN32) && !defined(__CYGWIN__)
 	char *buff = NULL;
 	char *ptr;
 	int r;

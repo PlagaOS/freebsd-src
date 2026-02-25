@@ -1,4 +1,5 @@
 #!/bin/ksh -p
+# SPDX-License-Identifier: CDDL-1.0
 #
 # CDDL HEADER START
 #
@@ -40,19 +41,11 @@
 # 5. TRIM the first 1MB and last 2MB of the 5MB block of data.
 # 6. Observe 2MB of used space on the zvol
 # 7. Verify the trimmed regions are zero'd on the zvol
+# 8. Verify Secure Erase does not work on zvols (Linux only)
 
 verify_runnable "global"
 
 if is_linux ; then
-	if [[ $(linux_version) -gt $(linux_version "6.2") ]]; then
-		log_unsupported "Disabled while issue #14872 is being worked"
-	fi
-
-	# Disabled for the CentOS 9 kernel
-	if [[ $(linux_version) -eq $(linux_version "5.14") ]]; then
-		log_unsupported "Disabled while issue #14872 is being worked"
-	fi
-
 	# We need '--force' here since the prior tests may leave a filesystem
 	# on the zvol, and blkdiscard will see that filesystem and print a
 	# warning unless you force it.
@@ -64,6 +57,7 @@ if is_linux ; then
 	else
 		trimcmd='blkdiscard'
 	fi
+	secure_trimcmd="$trimcmd --secure"
 else
 	# By default, FreeBSD 'trim' always does a dry-run.  '-f' makes
 	# it perform the actual operation.
@@ -74,8 +68,8 @@ if ! is_physical_device $DISKS; then
 	log_unsupported "This directory cannot be run on raw files."
 fi
 
-typeset datafile1="$(mktemp zvol_misc_flags1.XXXXXX)"
-typeset datafile2="$(mktemp zvol_misc_flags2.XXXXXX)"
+typeset datafile1="$(mktemp -t zvol_misc_flags1.XXXXXX)"
+typeset datafile2="$(mktemp -t zvol_misc_flags2.XXXXXX)"
 typeset zvolpath=${ZVOL_DEVDIR}/$TESTPOOL/$TESTVOL
 
 function cleanup
@@ -122,6 +116,11 @@ function do_test {
 	log_must diff $datafile1 $datafile2
 
 	log_must rm $datafile1 $datafile2
+
+	# Secure erase should not work (Linux check only).
+	if [ -n "$secure_trimcmd" ] ; then
+		log_mustnot $secure_trimcmd $zvolpath
+	fi
 }
 
 log_assert "Verify that a ZFS volume can be TRIMed"

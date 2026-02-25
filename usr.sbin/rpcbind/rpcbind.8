@@ -1,6 +1,6 @@
 .\" Copyright 1989 AT&T
 .\" Copyright 1991 Sun Microsystems, Inc.
-.Dd August 31, 2023
+.Dd May 30, 2025
 .Dt RPCBIND 8
 .Os
 .Sh NAME
@@ -8,7 +8,7 @@
 .Nd universal addresses to RPC program number mapper
 .Sh SYNOPSIS
 .Nm
-.Op Fl 6adiLlNswW
+.Op Fl 6adIiLlNPswW
 .Op Fl h Ar bindip
 .Sh DESCRIPTION
 The
@@ -99,12 +99,21 @@ returning a UDP packet from a different IP address than it was
 sent to.
 Note that when specifying IP addresses with
 .Fl h ,
+and no
+.Fl I
+option is specified,
 .Nm
 will automatically add
 .Li 127.0.0.1
 and if IPv6 is enabled,
 .Li ::1
 to the list.
+.It Fl I
+Cause
+.Nm
+not to bind to the localhost when
+.Fl h
+has been specified.
 .It Fl i
 .Dq Insecure
 mode.
@@ -126,6 +135,10 @@ Run in foreground mode.
 In this mode,
 .Nm
 will not fork when it starts.
+.It Fl P
+Specify alternative location of a file where main process PID will be stored.
+The default location is
+.Pa /var/run/rpcbind.pid .
 .It Fl s
 Cause
 .Nm

@@ -30,8 +30,9 @@
 
 #include <efi.h>
 #include <efilib.h>
+#include <Protocol/SerialIo.h>
 
-static EFI_GUID serial = SERIAL_IO_PROTOCOL;
+static EFI_GUID serial = EFI_SERIAL_IO_PROTOCOL_GUID;
 
 #define	COMC_TXWAIT	0x40000		/* transmit timeout */
 
@@ -336,7 +337,7 @@ comc_probe(struct console *sc)
 		return;
 	}
 
-	if (env != NULL) 
+	if (env != NULL)
 		unsetenv("efi_com_port");
 	snprintf(value, sizeof (value), "%u", comc_port->ioaddr);
 	env_setenv("efi_com_port", EV_VOLATILE, value,
@@ -390,10 +391,10 @@ static int
 comc_init(int arg __unused)
 {
 	if (comc_setup())
-		return (CMD_OK);
+		return (0);
 
 	eficom.c_flags &= ~(C_ACTIVEIN | C_ACTIVEOUT);
-	return (CMD_ERROR);
+	return (1);
 }
 
 static void
@@ -497,7 +498,7 @@ comc_port_set(struct env_var *ev, int flags, const void *value)
 	if (value == NULL || comc_port == NULL)
 		return (CMD_ERROR);
 
-	if (comc_parse_intval(value, &port) != CMD_OK) 
+	if (comc_parse_intval(value, &port) != CMD_OK)
 		return (CMD_ERROR);
 
 	handle = efi_serial_get_handle(port, NULL);
@@ -510,7 +511,7 @@ comc_port_set(struct env_var *ev, int flags, const void *value)
 	    (void**)&sio, IH, NULL, EFI_OPEN_PROTOCOL_GET_PROTOCOL);
 
 	if (EFI_ERROR(status)) {
-		printf("OpenProtocol: %lu\n", EFI_ERROR_CODE(status));
+		printf("OpenProtocol: %lu\n", DECODE_ERROR(status));
 		return (CMD_ERROR);
 	}
 
@@ -532,7 +533,7 @@ comc_speed_set(struct env_var *ev, int flags, const void *value)
 	if (value == NULL || comc_port == NULL)
 		return (CMD_ERROR);
 
-	if (comc_parse_intval(value, &speed) != CMD_OK) 
+	if (comc_parse_intval(value, &speed) != CMD_OK)
 		return (CMD_ERROR);
 
 	comc_port->newbaudrate = speed;

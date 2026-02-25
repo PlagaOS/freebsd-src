@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /* Copyright (C) 2019 MediaTek Inc.
  *
  * Author: Roy Luo <royluo@google.com>
@@ -15,6 +15,7 @@
 #include "mcu.h"
 #include "eeprom.h"
 
+#if defined(__linux__)
 static ssize_t mt7615_thermal_show_temp(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
@@ -56,14 +57,15 @@ int mt7615_thermal_init(struct mt7615_dev *dev)
 
 	name = devm_kasprintf(&wiphy->dev, GFP_KERNEL, "mt7615_%s",
 			      wiphy_name(wiphy));
+	if (!name)
+		return -ENOMEM;
+
 	hwmon = devm_hwmon_device_register_with_groups(&wiphy->dev, name, dev,
 						       mt7615_hwmon_groups);
-	if (IS_ERR(hwmon))
-		return PTR_ERR(hwmon);
-
-	return 0;
+	return PTR_ERR_OR_ZERO(hwmon);
 }
 EXPORT_SYMBOL_GPL(mt7615_thermal_init);
+#endif
 
 static void
 mt7615_phy_init(struct mt7615_dev *dev)
@@ -273,7 +275,7 @@ void mt7615_init_txpower(struct mt7615_dev *dev,
 			 struct ieee80211_supported_band *sband)
 {
 	int i, n_chains = hweight8(dev->mphy.antenna_mask), target_chains;
-	int delta_idx, delta = mt76_tx_power_nss_delta(n_chains);
+	int delta_idx, delta = mt76_tx_power_path_delta(n_chains);
 	u8 *eep = (u8 *)dev->mt76.eeprom.data;
 	enum nl80211_band band = sband->band;
 	struct mt76_power_limits limits;
@@ -322,7 +324,7 @@ void mt7615_init_work(struct mt7615_dev *dev)
 	mt7615_mcu_set_eeprom(dev);
 	mt7615_mac_init(dev);
 	mt7615_phy_init(dev);
-	mt7615_mcu_del_wtbl_all(dev);
+	mt76_connac_mcu_del_wtbl_all(&dev->mt76);
 	mt7615_check_offload_capability(dev);
 }
 EXPORT_SYMBOL_GPL(mt7615_init_work);
@@ -566,11 +568,18 @@ int mt7615_register_ext_phy(struct mt7615_dev *dev)
 	 * Make the secondary PHY MAC address local without overlapping with
 	 * the usual MAC address allocation scheme on multiple virtual interfaces
 	 */
+#if defined(__linux__)
 	memcpy(mphy->macaddr, dev->mt76.eeprom.data + MT_EE_MAC_ADDR,
+#elif defined(__FreeBSD__)
+	memcpy(mphy->macaddr, (u8 *)dev->mt76.eeprom.data + MT_EE_MAC_ADDR,
+#endif
 	       ETH_ALEN);
 	mphy->macaddr[0] |= 2;
 	mphy->macaddr[0] ^= BIT(7);
-	mt76_eeprom_override(mphy);
+
+	ret = mt76_eeprom_override(mphy);
+	if (ret)
+		return ret;
 
 	/* second phy can only handle 5 GHz */
 	mphy->cap.has_5ghz = true;

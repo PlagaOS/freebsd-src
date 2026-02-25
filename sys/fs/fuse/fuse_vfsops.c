@@ -81,6 +81,8 @@
 #include <sys/mount.h>
 #include <sys/sysctl.h>
 #include <sys/fcntl.h>
+#define EXTERR_CATEGORY EXTERR_CAT_FUSE_VFS
+#include <sys/exterrvar.h>
 
 #include "fuse.h"
 #include "fuse_node.h"
@@ -272,21 +274,21 @@ fuse_vfsop_fhtovp(struct mount *mp, struct fid *fhp, int flags,
 	int error;
 
 	if (!(fuse_get_mpdata(mp)->dataflags & FSESS_EXPORT_SUPPORT))
-		return EOPNOTSUPP;
+		return (EXTERROR(EOPNOTSUPP, "NFS-style lookups are not supported"));
 
 	error = VFS_VGET(mp, ffhp->nid, LK_EXCLUSIVE, &nvp);
 	if (error) {
-		*vpp = NULLVP;
+		*vpp = NULL;
 		return (error);
 	}
 	fvdat = VTOFUD(nvp);
 	if (fvdat->generation != ffhp->gen ) {
 		vput(nvp);
-		*vpp = NULLVP;
+		*vpp = NULL;
 		return (ESTALE);
 	}
 	*vpp = nvp;
-	vnode_create_vobject(*vpp, 0, curthread);
+	vnode_create_vobject(*vpp, VNODE_NO_SIZE, curthread);
 	return (0);
 }
 
@@ -321,11 +323,11 @@ fuse_vfsop_mount(struct mount *mp)
 	opts = mp->mnt_optnew;
 
 	if (!opts)
-		return EINVAL;
+		return (EXTERROR(EINVAL, "Mount options were not supplied"));
 
 	/* `fspath' contains the mount point (eg. /mnt/fuse/sshfs); REQUIRED */
 	if (!vfs_getopts(opts, "fspath", &err))
-		return err;
+		return (EXTERROR(err, "Mount options are missing 'fspath'"));
 
 	/*
 	 * With the help of underscored options the mount program
@@ -335,6 +337,7 @@ fuse_vfsop_mount(struct mount *mp)
 	FUSE_FLAGOPT(push_symlinks_in, FSESS_PUSH_SYMLINKS_IN);
 	FUSE_FLAGOPT(default_permissions, FSESS_DEFAULT_PERMISSIONS);
 	FUSE_FLAGOPT(intr, FSESS_INTR);
+	FUSE_FLAGOPT(auto_unmount, FSESS_AUTO_UNMOUNT);
 
 	(void)vfs_scanopt(opts, "max_read=", "%u", &max_read);
 	(void)vfs_scanopt(opts, "linux_errnos", "%d", &linux_errnos);
@@ -358,11 +361,12 @@ fuse_vfsop_mount(struct mount *mp)
 	/* `from' contains the device name (eg. /dev/fuse0); REQUIRED */
 	fspec = vfs_getopts(opts, "from", &err);
 	if (!fspec)
-		return err;
+		return (EXTERROR(err, "Mount options are missing 'from'"));
 
 	/* `fd' contains the filedescriptor for this session; REQUIRED */
 	if (vfs_scanopt(opts, "fd", "%d", &fd) != 1)
-		return EINVAL;
+		return (EXTERROR(EINVAL, "Mount options contain an invalid value "
+		    "for 'fd'"));
 
 	err = fuse_getdevice(fspec, td, &fdev);
 	if (err != 0)
@@ -398,11 +402,17 @@ fuse_vfsop_mount(struct mount *mp)
 	/* Sanity + permission checks */
 	if (!data->daemoncred)
 		panic("fuse daemon found, but identity unknown");
-	if (mntopts & FSESS_DAEMON_CAN_SPY)
+	if (mntopts & FSESS_DAEMON_CAN_SPY) {
 		err = priv_check(td, PRIV_VFS_FUSE_ALLOWOTHER);
-	if (err == 0 && td->td_ucred->cr_uid != data->daemoncred->cr_uid)
+		EXTERROR(err, "FUSE daemon requires privileges "
+		    "due to 'allow_other' option");
+	}
+	if (err == 0 && td->td_ucred->cr_uid != data->daemoncred->cr_uid) {
 		/* are we allowed to do the first mount? */
 		err = priv_check(td, PRIV_VFS_FUSE_MOUNT_NONUSER);
+		EXTERROR(err, "Mounting as a user that is different from the FUSE "
+		    "daemon's requires privileges");
+	}
 	if (err) {
 		FUSE_UNLOCK();
 		goto out;
@@ -549,7 +559,7 @@ fuse_vfsop_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp)
 		 * nullfs mount of a fusefs file system.
 		 */
 		SDT_PROBE1(fusefs, , vfsops, invalidate_without_export, mp);
-		return (EOPNOTSUPP);
+		return (EXTERROR(EOPNOTSUPP, "NFS-style lookups are not supported"));
 	}
 
 	error = fuse_internal_get_cached_vnode(mp, ino, flags, vpp);
@@ -565,12 +575,25 @@ fuse_vfsop_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp)
 	error = fdisp_wait_answ(&fdi);
 
 	if (error)
-		return error;
+		goto out;
 
 	feo = (struct fuse_entry_out *)fdi.answ;
+
 	if (feo->nodeid == 0) {
 		/* zero nodeid means ENOENT and cache it */
 		error = ENOENT;
+		goto out;
+	}
+
+	if (feo->nodeid != nodeid) {
+		/*
+		 * Something is very wrong with the server if "foo/." has a
+		 * different inode number than "foo".
+		 */
+		static const char exterr[] = "Inconsistent LOOKUP response: "
+		    "\"FILE/.\" has a different inode number than \"FILE\".";
+		fuse_warn(data, FSESS_WARN_DOT_LOOKUP, exterr);
+		error = EXTERROR(EIO, exterr);
 		goto out;
 	}
 

@@ -48,10 +48,10 @@
 #include <sys/proc.h>
 #include <sys/sbuf.h>
 #include <sys/stack.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <sys/vmem.h>
 #include <machine/stack.h>
-#include <machine/stdarg.h>
 
 #include <sys/errno.h>
 #include <geom/geom.h>
@@ -74,6 +74,9 @@ static int	g_io_transient_map_bio(struct bio *bp);
 
 static struct g_bioq g_bio_run_down;
 static struct g_bioq g_bio_run_up;
+
+static u_long nomem_count;
+static u_long pause_count;
 
 /*
  * Pace is a hint that we've had some trouble recently allocating
@@ -275,7 +278,7 @@ g_io_init(void)
 
 	g_bioq_init(&g_bio_run_down);
 	g_bioq_init(&g_bio_run_up);
-	biozone = uma_zcreate("g_bio", sizeof (struct bio),
+	biozone = uma_zcreate("g_bio", sizeof(struct bio),
 	    NULL, NULL,
 	    NULL, NULL,
 	    0, 0);
@@ -701,6 +704,7 @@ g_io_deliver(struct bio *bp, int error)
 
 	if (bootverbose)
 		printf("ENOMEM %p on %p(%s)\n", bp, pp, pp->name);
+	atomic_add_long(&nomem_count, 1);	/* Rare event, but no locks held */
 	bp->bio_children = 0;
 	bp->bio_inbed = 0;
 	bp->bio_driver1 = NULL;
@@ -734,6 +738,12 @@ int inflight_transient_maps;
 SYSCTL_INT(_kern_geom, OID_AUTO, inflight_transient_maps, CTLFLAG_RD,
     &inflight_transient_maps, 0,
     "Current count of the active transient maps");
+SYSCTL_ULONG(_kern_geom, OID_AUTO, nomem_count, CTLFLAG_RD,
+    &nomem_count, 0,
+    "Total count of requests completed with status of ENOMEM");
+SYSCTL_ULONG(_kern_geom, OID_AUTO, pause_count, CTLFLAG_RD,
+    &pause_count, 0,
+    "Total count of requests stalled due to low memory in g_down");
 
 static int
 g_io_transient_map_bio(struct bio *bp)
@@ -799,20 +809,17 @@ g_io_schedule_down(struct thread *tp __unused)
 		biotrack(bp, __func__);
 		if (pace != 0) {
 			/*
-			 * There has been at least one memory allocation
-			 * failure since the last I/O completed. Pause 1ms to
-			 * give the system a chance to free up memory. We only
-			 * do this once because a large number of allocations
-			 * can fail in the direct dispatch case and there's no
-			 * relationship between the number of these failures and
-			 * the length of the outage. If there's still an outage,
-			 * we'll pause again and again until it's
-			 * resolved. Older versions paused longer and once per
-			 * allocation failure. This was OK for a single threaded
-			 * g_down, but with direct dispatch would lead to max of
-			 * 10 IOPs for minutes at a time when transient memory
-			 * issues prevented allocation for a batch of requests
-			 * from the upper layers.
+			 * There has been at least one memory allocation failure
+			 * since the last I/O completed. Pause 1ms to give the
+			 * system a chance to free up memory. Pause time is not
+			 * scaled to the number of I/O failures since they tend
+			 * to cluster and the number is not predictive of how
+			 * long a pause is needed.
+			 *
+			 * Older versions had a longer pause, which limited the
+			 * IOPS to 10, which prolonged memory shortages that could
+			 * be alleviated by I/O completing since it eliminated
+			 * direct dispatch as well.
 			 *
 			 * XXX This pacing is really lame. It needs to be solved
 			 * by other methods. This is OK only because the worst
@@ -822,7 +829,8 @@ g_io_schedule_down(struct thread *tp __unused)
 			 * for that I/O.
 			 */
 			CTR0(KTR_GEOM, "g_down pacing self");
-			pause("g_down", min(hz/1000, 1));
+			pause_count++;		/* g_down has only one thread */
+			pause_sbt("g_down", SBT_1MS, 0, 0);
 			pace = 0;
 		}
 		CTR2(KTR_GEOM, "g_down processing bp %p provider %s", bp,

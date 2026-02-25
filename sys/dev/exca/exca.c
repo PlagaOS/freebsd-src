@@ -643,7 +643,7 @@ exca_init(struct exca_softc *sc, device_t dev,
 	sc->flags = 0;
 	sc->getb = exca_mem_getb;
 	sc->putb = exca_mem_putb;
-	sc->pccarddev = device_add_child(dev, "pccard", -1);
+	sc->pccarddev = device_add_child(dev, "pccard", DEVICE_UNIT_ANY);
 	if (sc->pccarddev == NULL)
 		DEVPRINTF(brdev, "WARNING: cannot add pccard bus.\n");
 	else if (device_probe_and_attach(sc->pccarddev) != 0)
@@ -858,7 +858,7 @@ exca_deactivate_resource(struct exca_softc *exca, device_t child,
 
 #if 0
 static struct resource *
-exca_alloc_resource(struct exca_softc *sc, device_t child, int type, int *rid,
+exca_alloc_resource(struct exca_softc *sc, device_t child, int type, int rid,
     u_long start, u_long end, u_long count, uint flags)
 {
 	struct resource *res = NULL;
@@ -895,10 +895,10 @@ exca_alloc_resource(struct exca_softc *sc, device_t child, int type, int *rid,
 	    start, end, count, flags & ~RF_ACTIVE);
 	if (res == NULL)
 		return (NULL);
-	cbb_insert_res(sc, res, type, *rid);
+	cbb_insert_res(sc, res, type, rid);
 	if (flags & RF_ACTIVE) {
-		if (bus_activate_resource(child, type, *rid, res) != 0) {
-			bus_release_resource(child, type, *rid, res);
+		if (bus_activate_resource(child, type, rid, res) != 0) {
+			bus_release_resource(child, type, rid, res);
 			return (NULL);
 		}
 	}

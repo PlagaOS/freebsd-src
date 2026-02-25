@@ -39,13 +39,12 @@
 #include <sys/proc.h>
 #include <sys/queue.h>
 #include <sys/sbuf.h>
+#include <sys/stdarg.h>
 #include <sys/sx.h>
 #include <sys/sysent.h>
 #include <sys/systm.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
-
-#include <machine/stdarg.h>
 
 #include <cam/cam.h>
 #include <cam/cam_ccb.h>
@@ -733,7 +732,7 @@ enc_update_request(enc_softc_t *enc, uint32_t action)
 {
 	if ((enc->pending_actions & (0x1 << action)) == 0) {
 		enc->pending_actions |= (0x1 << action);
-		ENC_DLOG(enc, "%s: queing requested action %d\n",
+		ENC_DLOG(enc, "%s: queueing requested action %d\n",
 		    __func__, action);
 		if (enc->current_action == ENC_UPDATE_NONE)
 			wakeup(enc->enc_daemon);

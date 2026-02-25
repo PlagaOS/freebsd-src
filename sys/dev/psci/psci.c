@@ -71,6 +71,7 @@
 
 struct psci_softc {
 	device_t        dev;
+	device_t	smccc_dev;
 
 	uint32_t	psci_version;
 	uint32_t	psci_fnids[PSCI_FN_MAX];
@@ -341,11 +342,16 @@ psci_attach(device_t dev, psci_initfn_t psci_init, int default_version)
 	if (psci_init(dev, default_version))
 		return (ENXIO);
 
+	psci_softc = sc;
+
 #ifdef __aarch64__
 	smccc_init();
-#endif
+	sc->smccc_dev = device_add_child(dev, "smccc", DEVICE_UNIT_ANY);
+	if (sc->smccc_dev == NULL)
+		device_printf(dev, "Unable to add SMCCC device\n");
 
-	psci_softc = sc;
+	bus_attach_children(dev);
+#endif
 
 	return (0);
 }
@@ -378,12 +384,18 @@ psci_fdt_callfn(psci_callfn_t *callfn)
 {
 	phandle_t node;
 
-	node = ofw_bus_find_compatible(OF_peer(0), "arm,psci-0.2");
-	if (node == 0) {
-		node = ofw_bus_find_compatible(OF_peer(0), "arm,psci-1.0");
-		if (node == 0)
-			return (PSCI_MISSING);
+	/* XXX: This is suboptimal, we should walk the tree & check each
+	 * node against compat_data, but we only have a few entries so
+	 * it's ok for now.
+	 */
+	for (int i = 0; compat_data[i].ocd_str != NULL; i++) {
+		node = ofw_bus_find_compatible(OF_peer(0),
+		    compat_data[i].ocd_str);
+		if (node != 0)
+			break;
 	}
+	if (node == 0)
+		return (PSCI_MISSING);
 
 	if (!ofw_bus_node_status_okay(node))
 		return (PSCI_MISSING);
@@ -460,6 +472,19 @@ psci_cpu_on(unsigned long cpu, unsigned long entry, unsigned long context_id)
 
 	/* PSCI v0.1 and v0.2 both support cpu_on. */
 	return (psci_call(fnid, cpu, entry, context_id));
+}
+
+int
+psci_cpu_off(void)
+{
+	uint32_t fnid;
+
+	fnid = PSCI_FNID_CPU_OFF;
+	if (psci_softc != NULL)
+		fnid = psci_softc->psci_fnids[PSCI_FN_CPU_OFF];
+
+	/* Returns PSCI_RETVAL_DENIED on error. */
+	return (psci_call(fnid, 0, 0, 0));
 }
 
 static void

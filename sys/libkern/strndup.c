@@ -40,9 +40,9 @@ strndup(const char *string, size_t maxlen, struct malloc_type *type)
 	size_t len;
 	char *copy;
 
-	len = strnlen(string, maxlen) + 1;
-	copy = malloc(len, type, M_WAITOK);
-	bcopy(string, copy, len);
-	copy[len - 1] = '\0';
+	len = strnlen(string, maxlen);
+	copy = malloc(len + 1, type, M_WAITOK);
+	memcpy(copy, string, len);
+	copy[len] = '\0';
 	return (copy);
 }

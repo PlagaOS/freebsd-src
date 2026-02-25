@@ -28,6 +28,7 @@
  * SUCH DAMAGE.
  */
 
+#include <sys/param.h>
 #include <sys/stat.h>
 
 #include <assert.h>
@@ -177,6 +178,13 @@ fsnode_isroot(const fsnode *cur)
 	return (strcmp(cur->name, ".") == 0);
 }
 
+static bool
+fsnode_valid(const fsnode *cur)
+{
+	return (cur->type == S_IFREG || cur->type == S_IFDIR ||
+	    cur->type == S_IFLNK);
+}
+
 /*
  * Visit each node in a directory hierarchy, in pre-order depth-first order.
  */
@@ -186,9 +194,11 @@ fsnode_foreach(fsnode *root, int (*cb)(fsnode *, void *), void *arg)
 	assert(root->type == S_IFDIR);
 
 	for (fsnode *cur = root; cur != NULL; cur = cur->next) {
-		assert(cur->type == S_IFREG || cur->type == S_IFDIR ||
-		    cur->type == S_IFLNK);
-
+		if (!fsnode_valid(cur)) {
+			warnx("skipping unhandled %s %s/%s",
+			    inode_type(cur->type), cur->path, cur->name);
+			continue;
+		}
 		if (cb(cur, arg) == 0)
 			continue;
 		if (cur->type == S_IFDIR && cur->child != NULL)
@@ -374,16 +384,34 @@ fs_populate_sattrs(struct fs_populate_arg *arg, const fsnode *cur,
 		links = 1; /* .. */
 		objsize = 1; /* .. */
 
-		/*
-		 * The size of a ZPL directory is the number of entries
-		 * (including "." and ".."), and the link count is the number of
-		 * entries which are directories (including "." and "..").
-		 */
-		for (fsnode *c = fsnode_isroot(cur) ? cur->next : cur->child;
-		    c != NULL; c = c->next) {
-			if (c->type == S_IFDIR)
-				links++;
-			objsize++;
+		if ((cur->inode->flags & FI_ROOT) == 0 ) {
+			/*
+			 * The size of a ZPL directory is the number of entries
+			 * (including "." and ".."), and the link count is the
+			 * number of entries which are directories
+			 * (including "." and "..").
+			 */
+			for (fsnode *c =
+			    fsnode_isroot(cur) ? cur->next : cur->child;
+			    c != NULL; c = c->next) {
+				switch (c->type) {
+				case S_IFDIR:
+					links++;
+					/* FALLTHROUGH */
+				case S_IFREG:
+				case S_IFLNK:
+					objsize++;
+					break;
+				}
+			}
+		} else {
+			/*
+			 * Root directory children do belong to
+			 * different dataset and this directory is
+			 * empty in the current objset.
+			 */
+			links++;        /* . */
+			objsize++;      /* . */
 		}
 
 		/* The root directory is its own parent. */
@@ -652,6 +680,16 @@ fs_populate_symlink(fsnode *cur, struct fs_populate_arg *arg)
 	fs_populate_sattrs(arg, cur, dnode);
 }
 
+static fsnode *
+fsnode_next(fsnode *cur)
+{
+	for (cur = cur->next; cur != NULL; cur = cur->next) {
+		if (fsnode_valid(cur))
+			return (cur);
+	}
+	return (NULL);
+}
+
 static int
 fs_foreach_populate(fsnode *cur, void *_arg)
 {
@@ -678,7 +716,7 @@ fs_foreach_populate(fsnode *cur, void *_arg)
 
 	ret = (cur->inode->flags & FI_ROOT) != 0 ? 0 : 1;
 
-	if (cur->next == NULL &&
+	if (fsnode_next(cur) == NULL &&
 	    (cur->child == NULL || (cur->inode->flags & FI_ROOT) != 0)) {
 		/*
 		 * We reached a terminal node in a subtree.  Walk back up and
@@ -694,7 +732,7 @@ fs_foreach_populate(fsnode *cur, void *_arg)
 				eclose(dir->dirfd);
 			free(dir);
 			cur = cur->parent;
-		} while (cur != NULL && cur->next == NULL &&
+		} while (cur != NULL && fsnode_next(cur) == NULL &&
 		    (cur->inode->flags & FI_ROOT) == 0);
 	}
 
@@ -709,7 +747,7 @@ fs_add_zpl_attr_layout(zfs_zap_t *zap, unsigned int index,
 
 	assert(sizeof(layout[0]) == 2);
 
-	snprintf(ti, sizeof(ti), "%u", index);
+	(void)snprintf(ti, sizeof(ti), "%u", index);
 	zap_add(zap, ti, sizeof(sa_attr_type_t), sacnt,
 	    (const uint8_t *)layout);
 }

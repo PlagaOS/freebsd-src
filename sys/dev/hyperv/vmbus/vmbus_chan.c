@@ -34,11 +34,11 @@
 #include <sys/malloc.h>
 #include <sys/mutex.h>
 #include <sys/smp.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 
 #include <machine/atomic.h>
-#include <machine/stdarg.h>
 
 #include <vm/vm.h>
 #include <vm/pmap.h>
@@ -341,8 +341,7 @@ vmbus_chan_open(struct vmbus_channel *chan, int txbr_size, int rxbr_size,
 	 * Allocate the TX+RX bufrings.
 	 */
 	KASSERT(chan->ch_bufring == NULL, ("bufrings are allocated"));
-	chan->ch_bufring_size = txbr_size + rxbr_size;
-	chan->ch_bufring = contigmalloc(chan->ch_bufring_size, M_DEVBUF,
+	chan->ch_bufring = contigmalloc(txbr_size + rxbr_size, M_DEVBUF,
 	    M_WAITOK | M_ZERO, 0ul, ~0ul, PAGE_SIZE, 0);
 	if (chan->ch_bufring == NULL) {
 		vmbus_chan_printf(chan, "bufring allocation failed\n");
@@ -368,8 +367,7 @@ vmbus_chan_open(struct vmbus_channel *chan, int txbr_size, int rxbr_size,
 			    "leak %d bytes memory\n", chan->ch_id,
 			    txbr_size + rxbr_size);
 		} else {
-			contigfree(chan->ch_bufring, chan->ch_bufring_size,
-			    M_DEVBUF);
+			free(chan->ch_bufring, M_DEVBUF);
 		}
 		chan->ch_bufring = NULL;
 	}
@@ -939,7 +937,7 @@ disconnect:
 	 * Destroy the TX+RX bufrings.
 	 */
 	if (chan->ch_bufring != NULL) {
-		contigfree(chan->ch_bufring, chan->ch_bufring_size, M_DEVBUF);
+		free(chan->ch_bufring, M_DEVBUF);
 		chan->ch_bufring = NULL;
 	}
 	return (error);
@@ -1557,7 +1555,7 @@ vmbus_event_flags_proc(struct vmbus_softc *sc, volatile u_long *event_flags,
 			continue;
 
 		flags = atomic_swap_long(&event_flags[f], 0);
-		chid_base = f << VMBUS_EVTFLAG_SHIFT;
+		chid_base = f * VMBUS_EVTFLAG_LEN;
 
 		while ((chid_ofs = ffsl(flags)) != 0) {
 			struct vmbus_channel *chan;
@@ -1601,7 +1599,7 @@ vmbus_event_proc_compat(struct vmbus_softc *sc, int cpu)
 	eventf = VMBUS_PCPU_GET(sc, event_flags, cpu) + VMBUS_SINT_MESSAGE;
 	if (atomic_testandclear_long(&eventf->evt_flags[0], 0)) {
 		vmbus_event_flags_proc(sc, sc->vmbus_rx_evtflags,
-		    VMBUS_CHAN_MAX_COMPAT >> VMBUS_EVTFLAG_SHIFT);
+		    VMBUS_CHAN_MAX_COMPAT / VMBUS_EVTFLAG_LEN);
 	}
 }
 
@@ -1679,7 +1677,7 @@ vmbus_chan_free(struct vmbus_channel *chan)
 	KASSERT(chan->ch_poll_intvl == 0, ("chan%u: polling is activated",
 	    chan->ch_id));
 
-	contigfree(chan->ch_monprm, sizeof(struct hyperv_mon_param), M_DEVBUF);
+	free(chan->ch_monprm, M_DEVBUF);
 	mtx_destroy(&chan->ch_subchan_lock);
 	sx_destroy(&chan->ch_orphan_lock);
 	vmbus_rxbr_deinit(&chan->ch_rxbr);
@@ -1905,7 +1903,7 @@ vmbus_chan_msgproc_choffer(struct vmbus_softc *sc,
 	 * Setup event flag.
 	 */
 	chan->ch_evtflag =
-	    &sc->vmbus_tx_evtflags[chan->ch_id >> VMBUS_EVTFLAG_SHIFT];
+	    &sc->vmbus_tx_evtflags[chan->ch_id / VMBUS_EVTFLAG_LEN];
 	chan->ch_evtflag_mask = 1UL << (chan->ch_id & VMBUS_EVTFLAG_MASK);
 
 	/*

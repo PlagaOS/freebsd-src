@@ -126,6 +126,60 @@ tarfs_access(struct vop_access_args *ap)
 }
 
 static int
+tarfs_bmap(struct vop_bmap_args *ap)
+{
+	struct tarfs_node *tnp;
+	struct vnode *vp;
+	off_t off;
+	uint64_t iosize;
+	int ra, rb, rmax;
+
+	vp = ap->a_vp;
+	iosize = vp->v_mount->mnt_stat.f_iosize;
+
+	if (ap->a_bop != NULL)
+		*ap->a_bop = &vp->v_bufobj;
+	if (ap->a_bnp != NULL)
+		*ap->a_bnp = ap->a_bn * btodb(iosize);
+	if (ap->a_runp == NULL)
+		return (0);
+
+	tnp = VP_TO_TARFS_NODE(vp);
+	off = ap->a_bn * iosize;
+
+	ra = rb = 0;
+	for (u_int i = 0; i < tnp->nblk; i++) {
+		off_t bs, be;
+
+		bs = tnp->blk[i].o;
+		be = tnp->blk[i].o + tnp->blk[i].l;
+		if (off > be)
+			continue;
+		else if (off < bs) {
+			/* We're in a hole. */
+			ra = bs - off < iosize ?
+			    0 : howmany(bs - (off + iosize), iosize);
+			rb = howmany(off - (i == 0 ?
+			    0 : tnp->blk[i - 1].o + tnp->blk[i - 1].l),
+			    iosize);
+			break;
+		} else {
+			/* We'll be reading from the backing file. */
+			ra = be - off < iosize ?
+			    0 : howmany(be - (off + iosize), iosize);
+			rb = howmany(off - bs, iosize);
+			break;
+		}
+	}
+
+	rmax = vp->v_mount->mnt_iosize_max / iosize - 1;
+	*ap->a_runp = imin(ra, rmax);
+	if (ap->a_runb != NULL)
+		*ap->a_runb = imin(rb, rmax);
+	return (0);
+}
+
+static int
 tarfs_getattr(struct vop_getattr_args *ap)
 {
 	struct tarfs_node *tnp;
@@ -154,8 +208,7 @@ tarfs_getattr(struct vop_getattr_args *ap)
 	vap->va_birthtime = tnp->birthtime;
 	vap->va_gen = tnp->gen;
 	vap->va_flags = tnp->flags;
-	vap->va_rdev = (vp->v_type == VBLK || vp->v_type == VCHR) ?
-	    tnp->rdev : NODEV;
+	vap->va_rdev = VN_ISDEV(vp) ? tnp->rdev : NODEV;
 	vap->va_bytes = round_page(tnp->physize);
 	vap->va_filerev = 0;
 
@@ -178,7 +231,7 @@ tarfs_lookup(struct vop_cachedlookup_args *ap)
 	vpp = ap->a_vpp;
 	cnp = ap->a_cnp;
 
-	*vpp = NULLVP;
+	*vpp = NULL;
 	dirnode = VP_TO_TARFS_NODE(dvp);
 	parent = dirnode->parent;
 	tmp = dirnode->tmp;
@@ -203,7 +256,7 @@ tarfs_lookup(struct vop_cachedlookup_args *ap)
 		if (error != 0)
 			return (error);
 	} else if (cnp->cn_namelen == 1 && cnp->cn_nameptr[0] == '.') {
-		VREF(dvp);
+		vref(dvp);
 		*vpp = dvp;
 #ifdef TARFS_DEBUG
 	} else if (dirnode == dirnode->tmp->root &&
@@ -242,7 +295,7 @@ tarfs_lookup(struct vop_cachedlookup_args *ap)
 	    *vpp, tnp);
 #endif	/* TARFS_DEBUG */
 
-	/* Store the result the the cache if MAKEENTRY is specified in flags */
+	/* Store the result of the cache if MAKEENTRY is specified in flags */
 	if ((cnp->cn_flags & MAKEENTRY) != 0 && cnp->cn_nameiop != CREATE)
 		cache_enter(dvp, *vpp, cnp);
 
@@ -281,6 +334,10 @@ tarfs_readdir(struct vop_readdir_args *ap)
 	    tnp, tnp->name, uio->uio_offset, uio->uio_resid);
 
 	if (uio->uio_offset == TARFS_COOKIE_EOF) {
+		if (eofflag != NULL) {
+			TARFS_DPF(VNODE, "%s: Setting EOF flag\n", __func__);
+			*eofflag = 1;
+		}
 		TARFS_DPF(VNODE, "%s: EOF\n", __func__);
 		return (0);
 	}
@@ -461,7 +518,7 @@ tarfs_read(struct vop_read_args *ap)
 	uiop = ap->a_uio;
 	vp = ap->a_vp;
 
-	if (vp->v_type == VCHR || vp->v_type == VBLK)
+	if (VN_ISDEV(vp))
 		return (EOPNOTSUPP);
 
 	if (vp->v_type != VREG)
@@ -528,7 +585,7 @@ tarfs_reclaim(struct vop_reclaim_args *ap)
 	vfs_hash_remove(vp);
 
 	TARFS_NODE_LOCK(tnp);
-	tnp->vnode = NULLVP;
+	tnp->vnode = NULL;
 	vp->v_data = NULL;
 	TARFS_NODE_UNLOCK(tnp);
 
@@ -614,6 +671,8 @@ tarfs_vptofh(struct vop_vptofh_args *ap)
 {
 	struct tarfs_fid *tfp;
 	struct tarfs_node *tnp;
+	_Static_assert(sizeof(struct tarfs_fid) <= sizeof(struct fid),
+	    "struct tarfs_fid cannot be larger than struct fid");
 
 	tfp = (struct tarfs_fid *)ap->a_fhp;
 	tnp = VP_TO_TARFS_NODE(ap->a_vp);
@@ -629,6 +688,7 @@ struct vop_vector tarfs_vnodeops = {
 	.vop_default =		&default_vnodeops,
 
 	.vop_access =		tarfs_access,
+	.vop_bmap =		tarfs_bmap,
 	.vop_cachedlookup =	tarfs_lookup,
 	.vop_close =		tarfs_close,
 	.vop_getattr =		tarfs_getattr,

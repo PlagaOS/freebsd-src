@@ -167,12 +167,6 @@ ti_clkctrl_attach(device_t dev)
 
 	/* Check if this is a clkctrl with special registers like gpio */
 	switch (ti_chip()) {
-#ifdef SOC_OMAP4
-	case CHIP_OMAP_4:
-		/* FIXME: Todo */
-		break;
-
-#endif /* SOC_OMAP4 */
 #ifdef SOC_TI_AM335X
 	/* Checkout TRM 8.1.12.1.29 - 8.1.12.31 and 8.1.12.2.3
 	 * and the DTS.
@@ -241,7 +235,8 @@ cleanup:
 	if (err)
 		return (err);
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 }
 
 static int
@@ -289,9 +284,9 @@ create_clkctrl(struct ti_clkctrl_softc *sc, cell_t *reg, uint32_t index, uint32_
 
 	/*
 	 * Check out XX_CLKCTRL-INDEX(offset)-macro dance in
-	 * sys/gnu/dts/dts/include/dt-bindings/clock/am3.h
-	 * sys/gnu/dts/dts/include/dt-bindings/clock/am4.h
-	 * sys/gnu/dts/dts/include/dt-bindings/clock/dra7.h
+	 * sys/contrib/device-tree/include/dt-bindings/clock/am3.h
+	 * sys/contrib/device-tree/include/dt-bindings/clock/am4.h
+	 * sys/contrib/device-tree/include/dt-bindings/clock/dra7.h
 	 * reg[0] are in practice the same as the offset described in the dts.
 	 */
 	/* special_gdbclk_reg are 0 or 1 */

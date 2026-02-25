@@ -65,7 +65,7 @@ local MSG_FAILSYN_BADVAR = "Malformed variable expression at position '%d'"
 -- env_var entries in the pattern table.  This is perhaps a good target for a
 -- little refactoring.
 local MODULEEXPR = '([%w%d-_.]+)'
-local QVALEXPR = '"(.*)"'
+local QVALEXPR = '"([^"]*)"'
 local QVALREPL = QVALEXPR:gsub('%%', '%%%%')
 local WORDEXPR = "([-%w%d][-%w%d_.]*)"
 local WORDREPL = WORDEXPR:gsub('%%', '%%%%')
@@ -407,7 +407,12 @@ local function loadModule(mod, silent)
 			end
 
 			if cli_execute_unparsed(str) ~= 0 then
-				print(loader.command_error())
+				-- XXX Temporary shim: don't break the boot if
+				-- loader hadn't been recompiled with this
+				-- function exposed.
+				if loader.command_error then
+					print(loader.command_error())
+				end
 				if not silent then
 					print("failed!")
 				end

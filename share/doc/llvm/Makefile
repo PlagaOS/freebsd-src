@@ -1,5 +1,6 @@
-
 SUBDIR=		clang
+
+PACKAGE=	clang
 
 SRCDIR=		${SRCTOP}/contrib/llvm-project/llvm
 

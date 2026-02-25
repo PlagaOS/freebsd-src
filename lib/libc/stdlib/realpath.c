@@ -28,20 +28,16 @@
  * SUCH DAMAGE.
  */
 
-#include "namespace.h"
 #include <sys/param.h>
 #include <sys/stat.h>
 
 #include <errno.h>
+#include <fcntl.h>
+#include <libsys.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include "un-namespace.h"
-#include "libc_private.h"
-
-extern int __realpathat(int fd, const char *path, char *buf, size_t size,
-    int flags);
+#include <ssp/ssp.h>
 
 /*
  * Find the real name of path, by removing all ".", ".." and symlink
@@ -53,7 +49,7 @@ realpath1(const char *path, char *resolved)
 {
 	struct stat sb;
 	char *p, *q;
-	size_t left_len, resolved_len, next_token_len;
+	size_t left_len, prev_len, resolved_len, next_token_len;
 	unsigned symlinks;
 	ssize_t slen;
 	char left[PATH_MAX], next_token[PATH_MAX], symlink[PATH_MAX];
@@ -102,6 +98,7 @@ realpath1(const char *path, char *resolved)
 			left_len = 0;
 		}
 
+		prev_len = resolved_len;
 		if (resolved[resolved_len - 1] != '/') {
 			if (resolved_len + 1 >= PATH_MAX) {
 				errno = ENAMETOOLONG;
@@ -137,21 +134,31 @@ realpath1(const char *path, char *resolved)
 			errno = ENAMETOOLONG;
 			return (NULL);
 		}
-		if (lstat(resolved, &sb) != 0)
+		if (lstat(resolved, &sb) != 0) {
+			/*
+			 * EACCES means the parent directory is not
+			 * readable, while ENOTDIR means the parent
+			 * directory is not a directory.  Rewind the path
+			 * to correctly indicate where the error lies.
+			 */
+			if (errno == EACCES || errno == ENOTDIR)
+				resolved[prev_len] = '\0';
 			return (NULL);
+		}
 		if (S_ISLNK(sb.st_mode)) {
 			if (symlinks++ > MAXSYMLINKS) {
 				errno = ELOOP;
 				return (NULL);
 			}
 			slen = readlink(resolved, symlink, sizeof(symlink));
-			if (slen <= 0 || slen >= (ssize_t)sizeof(symlink)) {
-				if (slen < 0)
-					; /* keep errno from readlink(2) call */
-				else if (slen == 0)
-					errno = ENOENT;
-				else
-					errno = ENAMETOOLONG;
+			if (slen < 0)
+				return (NULL);
+			if (slen == 0) {
+				errno = ENOENT;
+				return (NULL);
+			}
+			if ((size_t)slen >= sizeof(symlink)) {
+				errno = ENAMETOOLONG;
 				return (NULL);
 			}
 			symlink[slen] = '\0';
@@ -172,7 +179,7 @@ realpath1(const char *path, char *resolved)
 			 */
 			if (p != NULL) {
 				if (symlink[slen - 1] != '/') {
-					if (slen + 1 >= (ssize_t)sizeof(symlink)) {
+					if ((size_t)slen + 1 >= sizeof(symlink)) {
 						errno = ENAMETOOLONG;
 						return (NULL);
 					}
@@ -203,7 +210,7 @@ realpath1(const char *path, char *resolved)
 }
 
 char *
-realpath(const char * __restrict path, char * __restrict resolved)
+__ssp_real(realpath)(const char * __restrict path, char * __restrict resolved)
 {
 	char *m, *res;
 
@@ -222,9 +229,8 @@ realpath(const char * __restrict path, char * __restrict resolved)
 		if (resolved == NULL)
 			return (NULL);
 	}
-	if (__getosreldate() >= 1300080) {
-		if (__realpathat(AT_FDCWD, path, resolved, PATH_MAX, 0) == 0)
-			return (resolved);
+	if (__sys___realpathat(AT_FDCWD, path, resolved, PATH_MAX, 0) == 0) {
+		return (resolved);
 	}
 	res = realpath1(path, resolved);
 	if (res == NULL)

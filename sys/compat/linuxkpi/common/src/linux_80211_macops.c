@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2021-2022 The FreeBSD Foundation
+ * Copyright (c) 2021-2026 The FreeBSD Foundation
  *
  * This software was developed by Björn Zeeb under sponsorship from
  * the FreeBSD Foundation.
@@ -40,9 +40,9 @@
 #ifdef LINUXKPI_DEBUG_80211
 #define	LKPI_80211_TRACE_MO(fmt, ...)					\
     if (linuxkpi_debug_80211 & D80211_TRACE_MO)				\
-	printf("LKPI_80211_TRACE_MO %s:%d: %d %d %u_" fmt "\n",		\
+	printf("LKPI_80211_TRACE_MO %s:%d: %d %d %lu: " fmt "\n",	\
 	    __func__, __LINE__, curcpu, curthread->td_tid,		\
-	    (unsigned int)ticks, __VA_ARGS__)
+	    jiffies, ##__VA_ARGS__)
 #else
 #define	LKPI_80211_TRACE_MO(...)	do { } while(0)
 #endif
@@ -52,6 +52,8 @@ lkpi_80211_mo_start(struct ieee80211_hw *hw)
 {
 	struct lkpi_hw *lhw;
 	int error;
+
+	lockdep_assert_wiphy(hw->wiphy);
 
 	lhw = HW_TO_LHW(hw);
 	if (lhw->ops->start == NULL) {
@@ -74,7 +76,7 @@ out:
 }
 
 void
-lkpi_80211_mo_stop(struct ieee80211_hw *hw)
+lkpi_80211_mo_stop(struct ieee80211_hw *hw, bool suspend)
 {
 	struct lkpi_hw *lhw;
 
@@ -82,8 +84,8 @@ lkpi_80211_mo_stop(struct ieee80211_hw *hw)
 	if (lhw->ops->stop == NULL)
 		return;
 
-	LKPI_80211_TRACE_MO("hw %p", hw);
-	lhw->ops->stop(hw);
+	LKPI_80211_TRACE_MO("hw %p suspend %d", hw, suspend);
+	lhw->ops->stop(hw, suspend);
 	lhw->sc_flags &= ~LKPI_MAC80211_DRV_STARTED;
 }
 
@@ -100,7 +102,8 @@ lkpi_80211_mo_get_antenna(struct ieee80211_hw *hw, u32 *txs, u32 *rxs)
 	}
 
 	LKPI_80211_TRACE_MO("hw %p", hw);
-	error = lhw->ops->get_antenna(hw, txs, rxs);
+	LKPI_80211_TRACE_MO("TODO link/radio_idx");
+	error = lhw->ops->get_antenna(hw, 0, txs, rxs);
 
 out:
 	return (error);
@@ -119,7 +122,8 @@ lkpi_80211_mo_set_frag_threshold(struct ieee80211_hw *hw, uint32_t frag_th)
 	}
 
 	LKPI_80211_TRACE_MO("hw %p frag_th %u", hw, frag_th);
-	error = lhw->ops->set_frag_threshold(hw, frag_th);
+	LKPI_80211_TRACE_MO("TODO link/radio_idx");
+	error = lhw->ops->set_frag_threshold(hw, 0, frag_th);
 
 out:
 	return (error);
@@ -138,7 +142,8 @@ lkpi_80211_mo_set_rts_threshold(struct ieee80211_hw *hw, uint32_t rts_th)
 	}
 
 	LKPI_80211_TRACE_MO("hw %p rts_th %u", hw, rts_th);
-	error = lhw->ops->set_rts_threshold(hw, rts_th);
+	LKPI_80211_TRACE_MO("TODO link/radio_idx");
+	error = lhw->ops->set_rts_threshold(hw, 0, rts_th);
 
 out:
 	return (error);
@@ -305,9 +310,6 @@ lkpi_80211_mo_configure_filter(struct ieee80211_hw *hw, unsigned int changed_fla
 	if (lhw->ops->configure_filter == NULL)
 		return;
 
-	if (mc_ptr == 0)
-		return;
-
 	LKPI_80211_TRACE_MO("hw %p changed_flags %#x total_flags %p mc_ptr %ju", hw, changed_flags, total_flags, (uintmax_t)mc_ptr);
 	lhw->ops->configure_filter(hw, changed_flags, total_flags, mc_ptr);
 }
@@ -434,7 +436,8 @@ lkpi_80211_mo_config(struct ieee80211_hw *hw, uint32_t changed)
 	}
 
 	LKPI_80211_TRACE_MO("hw %p changed %u", hw, changed);
-	error = lhw->ops->config(hw, changed);
+	LKPI_80211_TRACE_MO("TODO link/radio_idx");
+	error = lhw->ops->config(hw, 0, changed);
 
 out:
 	return (error);
@@ -458,7 +461,7 @@ lkpi_80211_mo_assign_vif_chanctx(struct ieee80211_hw *hw, struct ieee80211_vif *
 	    hw, vif, conf, chanctx_conf);
 	error = lhw->ops->assign_vif_chanctx(hw, vif, conf, chanctx_conf);
 	if (error == 0)
-		vif->chanctx_conf = chanctx_conf;
+		vif->bss_conf.chanctx_conf = chanctx_conf;
 
 out:
 	return (error);
@@ -466,21 +469,23 @@ out:
 
 void
 lkpi_80211_mo_unassign_vif_chanctx(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-    struct ieee80211_bss_conf *conf, struct ieee80211_chanctx_conf **chanctx_conf)
+    struct ieee80211_bss_conf *conf, struct ieee80211_chanctx_conf *chanctx_conf)
 {
 	struct lkpi_hw *lhw;
+
+	might_sleep();
+	lockdep_assert_wiphy(hw->wiphy);
 
 	lhw = HW_TO_LHW(hw);
 	if (lhw->ops->unassign_vif_chanctx == NULL)
 		return;
 
-	if (*chanctx_conf == NULL)
+	if (chanctx_conf == NULL)
 		return;
 
 	LKPI_80211_TRACE_MO("hw %p vif %p bss_conf %p chanctx_conf %p",
-	    hw, vif, conf, *chanctx_conf);
-	lhw->ops->unassign_vif_chanctx(hw, vif, conf, *chanctx_conf);
-	*chanctx_conf = NULL;
+	    hw, vif, conf, chanctx_conf);
+	lhw->ops->unassign_vif_chanctx(hw, vif, conf, chanctx_conf);
 }
 
 
@@ -549,6 +554,9 @@ lkpi_80211_mo_bss_info_changed(struct ieee80211_hw *hw, struct ieee80211_vif *vi
 	lhw = HW_TO_LHW(hw);
 	if (lhw->ops->link_info_changed == NULL &&
 	    lhw->ops->bss_info_changed == NULL)
+		return;
+
+	if (changed == 0)
 		return;
 
 	LKPI_80211_TRACE_MO("hw %p vif %p conf %p changed %#jx", hw, vif, conf, (uintmax_t)changed);
@@ -636,11 +644,17 @@ lkpi_80211_mo_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *txctrl,
 }
 
 void
-lkpi_80211_mo_wake_tx_queue(struct ieee80211_hw *hw, struct ieee80211_txq *txq)
+lkpi_80211_mo_wake_tx_queue(struct ieee80211_hw *hw, struct ieee80211_txq *txq,
+    bool schedule)
 {
 	struct lkpi_hw *lhw;
 
 	lhw = HW_TO_LHW(hw);
+
+	/* Do the schedule before the check for wake_tx_queue supported! */
+	if (schedule)
+		ieee80211_schedule_txq(hw, txq);
+
 	if (lhw->ops->wake_tx_queue == NULL)
 		return;
 
@@ -683,6 +697,8 @@ lkpi_80211_mo_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 	struct lkpi_hw *lhw;
 	int error;
 
+	lockdep_assert_wiphy(hw->wiphy);
+
 	lhw = HW_TO_LHW(hw);
 	if (lhw->ops->set_key == NULL) {
 		error = EOPNOTSUPP;
@@ -713,6 +729,36 @@ lkpi_80211_mo_ampdu_action(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	    hw, vif, params, params->sta, params->action, params->buf_size,
 	    params->timeout, params->ssn, params->tid, params->amsdu);
 	error = lhw->ops->ampdu_action(hw, vif, params);
+
+out:
+	return (error);
+}
+
+int
+lkpi_80211_mo_sta_statistics(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+    struct ieee80211_sta *sta, struct station_info *sinfo)
+{
+	struct lkpi_hw *lhw;
+	struct lkpi_sta *lsta;
+	int error;
+
+	lhw = HW_TO_LHW(hw);
+	if (lhw->ops->sta_statistics == NULL) {
+		error = EOPNOTSUPP;
+		goto out;
+	}
+
+	lsta = STA_TO_LSTA(sta);
+	if (!lsta->added_to_drv) {
+		error = EEXIST;
+		goto out;
+	}
+
+	lockdep_assert_wiphy(hw->wiphy);
+
+	LKPI_80211_TRACE_MO("hw %p vif %p sta %p sinfo %p", hw, vif, sta, sinfo);
+	lhw->ops->sta_statistics(hw, vif, sta, sinfo);
+	error = 0;
 
 out:
 	return (error);

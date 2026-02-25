@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -62,7 +63,6 @@
 #include <sys/vdev_impl.h>
 #include <sys/fs/zfs.h>
 
-#include <thread_pool.h>
 #include <libzutil.h>
 #include <libnvpair.h>
 #include <libzfs.h>

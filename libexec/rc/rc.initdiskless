@@ -174,7 +174,10 @@ log() {
 chkerr() {
     lastitem () ( n=$(($# - 1)) ; shift $n ; echo $1 )
     mountpoint="$(lastitem $2)"
-    [ -r $mountpoint/remount_optional ] && ( echo "$2 failed: ignoring due to remount_optional" ; return )
+    if [ -r $mountpoint/remount_optional ]; then
+        echo "$2 failed: ignoring due to remount_optional"
+        return
+    fi
     case $1 in
     0)
 	;;
@@ -204,7 +207,7 @@ handle_remount() { # $1 = mount point
 }
 
 # Create a generic memory disk.
-# The 'auto' parameter will attempt to use tmpfs(5), falls back to md(4).
+# The 'auto' parameter will attempt to use tmpfs(4), falls back to md(4).
 # $1 is size in 512-byte sectors, $2 is the mount point.
 mount_md() {
     if [ ${o_verbose} -gt 0 ] ; then

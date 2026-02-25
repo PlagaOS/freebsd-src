@@ -30,9 +30,13 @@
 
 #include <sys/param.h>
 #ifdef _KERNEL
+#include "opt_kdtrace.h"
+
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/memdesc.h>
+#include <sys/queue.h>
+#include <sys/sdt.h>
 #include <sys/sysctl.h>
 #else /* _KERNEL */
 #include <stdlib.h>
@@ -55,6 +59,7 @@
 
 FEATURE(scbus, "SCSI devices support");
 
+SDT_PROVIDER_DEFINE(cam);
 #endif
 
 static int	camstatusentrycomp(const void *key, const void *member);
@@ -380,6 +385,20 @@ cam_error_string(struct cam_device *device, union ccb *ccb, char *str,
 				break;
 			}
 			break;
+		case XPT_NVME_IO:
+		case XPT_NVME_ADMIN:
+			switch (proto_flags & CAM_EPF_LEVEL_MASK) {
+			case CAM_EPF_NONE:
+				break;
+			case CAM_EPF_ALL:
+			case CAM_EPF_NORMAL:
+			case CAM_EPF_MINIMAL:
+				proto_flags |= CAM_ENF_PRINT_STATUS;
+				/* FALLTHROUGH */
+			default:
+				break;
+			}
+			break;
 		default:
 			break;
 	}
@@ -494,6 +513,20 @@ cam_error_string(struct cam_device *device, union ccb *ccb, char *str,
 						   ccb->smpio.smp_response[2]);
 			}
 			/* There is no SMP equivalent to SCSI sense. */
+			break;
+		case XPT_NVME_IO:
+		case XPT_NVME_ADMIN:
+			if ((ccb->ccb_h.status & CAM_STATUS_MASK) !=
+			     CAM_NVME_STATUS_ERROR)
+				break;
+
+			if (proto_flags & CAM_ESF_PRINT_STATUS) {
+				sbuf_cat(&sb, path_str);
+				sbuf_cat(&sb, "NVMe status: ");
+				nvme_status_sbuf(&ccb->nvmeio, &sb);
+				sbuf_putc(&sb, '\n');
+			}
+
 			break;
 		default:
 			break;

@@ -46,8 +46,8 @@ ifn_start()
 	ifscript_up ${ifn} && cfg=0
 	ifconfig_up ${ifn} && cfg=0
 	if ! noafif $ifn; then
-		afexists inet && ipv4_up ${ifn} && cfg=0
 		afexists inet6 && ipv6_up ${ifn} && cfg=0
+		afexists inet && ipv4_up ${ifn} && cfg=0
 	fi
 	childif_create ${ifn} && cfg=0
 
@@ -67,8 +67,8 @@ ifn_stop()
 	[ -z "$ifn" ] && err 1 "ifn_stop called without an interface"
 
 	if ! noafif $ifn; then
-		afexists inet6 && ipv6_down ${ifn} && cfg=0
 		afexists inet && ipv4_down ${ifn} && cfg=0
+		afexists inet6 && ipv6_down ${ifn} && cfg=0
 	fi
 	ifconfig_down ${ifn} && cfg=0
 	ifscript_down ${ifn} && cfg=0
@@ -651,6 +651,26 @@ ifexists()
 {
 	[ -z "$1" ] && return 1
 	${IFCONFIG_CMD} -n $1 > /dev/null 2>&1
+}
+
+# ifisup if
+#	Returns 0 if the interface exists and UP,
+#	returns 1 if the interface exists and not UP,
+#	returns 2 otherwise.
+ifisup()
+{
+	local _if
+
+	[ -z "$1" ] && return 2
+	_if="$1"
+
+	set -- $(${IFCONFIG_CMD} -n ${_if} 2>/dev/null)
+	case "$1$2" in
+		${_if}:*'<UP'[,\>]*)	return 0 ;;
+		${_if}:*)	 	return 1 ;;
+	esac
+
+	return 2
 }
 
 # ipv4_up if

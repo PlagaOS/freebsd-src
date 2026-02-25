@@ -150,7 +150,7 @@ static void
 ipmi_smbios_probe(struct ipmi_get_info *info)
 {
 #ifdef ARCH_MAY_USE_EFI
-	struct uuid efi_smbios;
+	efi_guid_t efi_smbios = EFI_TABLE_SMBIOS;
 	void *addr_efi;
 #endif
 	struct smbios_eps *header;
@@ -161,15 +161,16 @@ ipmi_smbios_probe(struct ipmi_get_info *info)
 	bzero(info, sizeof(struct ipmi_get_info));
 
 #ifdef ARCH_MAY_USE_EFI
-	efi_smbios = (struct uuid)EFI_TABLE_SMBIOS;
 	if (!efi_get_table(&efi_smbios, &addr_efi))
 		addr = (vm_paddr_t)addr_efi;
 #endif
 
+#if defined(__amd64__) || defined(__i386__)
 	if (addr == 0)
 		/* Find the SMBIOS table header. */
 		addr = bios_sigsearch(SMBIOS_START, SMBIOS_SIG, SMBIOS_LEN,
 			SMBIOS_STEP, SMBIOS_OFF);
+#endif
 	if (addr == 0)
 		return;
 
@@ -190,8 +191,8 @@ ipmi_smbios_probe(struct ipmi_get_info *info)
 	/* Now map the actual table and walk it looking for an IPMI entry. */
 	table = pmap_mapbios(header->structure_table_address,
 	    header->structure_table_length);
-	smbios_walk_table(table, header->number_structures, smbios_ipmi_info,
-	    info);
+	smbios_walk_table(table, header->number_structures,
+	    header->structure_table_length, smbios_ipmi_info, info);
 
 	/* Unmap everything. */
 	pmap_unmapbios(table, header->structure_table_length);

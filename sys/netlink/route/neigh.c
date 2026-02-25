@@ -37,7 +37,6 @@
 
 #include <net/if.h>
 #include <net/if_var.h>
-#include <net/if_private.h>
 #include <net/if_llatbl.h>
 #include <netlink/netlink.h>
 #include <netlink/netlink_ctl.h>
@@ -431,7 +430,7 @@ rtnl_handle_newneigh(struct nlmsghdr *hdr, struct nlpcb *nlp, struct nl_pstate *
 		lle->la_expire = attrs.ndaf_next_ts - time_second + time_uptime;
 
 	/* llentry created, try to insert or update */
-	IF_AFDATA_WLOCK(attrs.nda_ifp);
+	LLTABLE_LOCK(llt);
 	LLE_WLOCK(lle);
 	struct llentry *lle_tmp = lla_lookup(llt, LLE_EXCLUSIVE, attrs.nda_dst);
 	if (lle_tmp != NULL) {
@@ -454,7 +453,7 @@ rtnl_handle_newneigh(struct nlmsghdr *hdr, struct nlpcb *nlp, struct nl_pstate *
 		else
 			error = ENOENT;
 	}
-	IF_AFDATA_WUNLOCK(attrs.nda_ifp);
+	LLTABLE_UNLOCK(llt);
 
 	if (error != 0) {
 		/* throw away the newly allocated llentry */
@@ -552,6 +551,7 @@ static const struct rtnl_cmd_handler cmd_handlers[] = {
 static void
 rtnl_lle_event(void *arg __unused, struct llentry *lle, int evt)
 {
+	struct nl_writer nw;
 	if_t ifp;
 	int family;
 
@@ -565,8 +565,8 @@ rtnl_lle_event(void *arg __unused, struct llentry *lle, int evt)
 
 	int nlmsgs_type = evt == LLENTRY_RESOLVED ? NL_RTM_NEWNEIGH : NL_RTM_DELNEIGH;
 
-	struct nl_writer nw = {};
-	if (!nlmsg_get_group_writer(&nw, NLMSG_SMALL, NETLINK_ROUTE, RTNLGRP_NEIGH)) {
+	if (!nl_writer_group(&nw, NLMSG_SMALL, NETLINK_ROUTE, RTNLGRP_NEIGH, 0,
+	    false)) {
 		NL_LOG(LOG_DEBUG, "error allocating group writer");
 		return;
 	}
@@ -588,7 +588,7 @@ void
 rtnl_neighs_init(void)
 {
 	NL_VERIFY_PARSERS(all_parsers);
-	rtnl_register_messages(cmd_handlers, NL_ARRAY_LEN(cmd_handlers));
+	rtnl_register_messages(cmd_handlers, nitems(cmd_handlers));
 	lle_event_p = EVENTHANDLER_REGISTER(lle_event, rtnl_lle_event, NULL,
 	    EVENTHANDLER_PRI_ANY);
 }

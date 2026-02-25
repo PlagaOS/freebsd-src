@@ -33,7 +33,7 @@
 #
 
 .if !target(__<bsd.subdir.mk>__)
-__<bsd.subdir.mk>__:
+__<bsd.subdir.mk>__:	.NOTMAIN
 
 .if ${MK_AUTO_OBJ} == "no"
 _obj=	obj
@@ -76,13 +76,14 @@ obj: .PHONY
 .endif
 
 .if !defined(NEED_SUBDIR)
-# .MAKE.DEPENDFILE==/dev/null is set by bsd.dep.mk to avoid reading
-# Makefile.depend
-.if ${.MAKE.LEVEL} == 0 && ${MK_DIRDEPS_BUILD} == "yes" && !empty(SUBDIR) && \
-    ${.MAKE.DEPENDFILE} != "/dev/null"
-.include <meta.subdir.mk>
+.if ${MK_DIRDEPS_BUILD} == "yes"
 # ignore this
 _SUBDIR:
+# .MAKE.DEPENDFILE==/dev/null is set by bsd.dep.mk to avoid reading
+# Makefile.depend
+.if ${.MAKE.LEVEL} == 0 && !empty(SUBDIR) && ${.MAKE.DEPENDFILE} != "/dev/null"
+.include <meta.subdir.mk>
+.endif
 .endif
 .endif
 
@@ -125,8 +126,8 @@ SUBDIR:=${SUBDIR:u}
 .endif
 
 .if defined(SUBDIR.)
-.error ${.CURDIR}: Found variable SUBDIR. with value "${SUBDIR.}". This was \
-        probably caused by using SUBDIR.$${MK_FOO} without including \
+.error ${.CURDIR}: Found variable 'SUBDIR.' with value "${SUBDIR.}". This was\
+        probably caused by using SUBDIR.$${MK_FOO} without including\
         <src.opts.mk> or by using an invalid $${MK_FOO} option.
 .endif
 

@@ -1,5 +1,62 @@
 # News
 
+## 7.1.0
+
+This is an ***UNTESTED*** release. If you would like testing, see the
+[maintenance terms][23].
+
+This fixes a few bugs:
+
+* Improper response to double `SIGINT` with editline.
+* Not letting `libedit` handle terminal size changes.
+* A `dc` crash from improperly handling an error.
+* A duplicate check for reference arrays.
+* Build failures with GCC 15.
+
+It also has a performance increase in the `band()` function and others in the
+math library.
+
+## 7.0.3
+
+This is a production release that fixes build warnings on the musl libc.
+
+Other users do ***NOT*** need to upgrade.
+
+## 7.0.2
+
+This is a production release that fixes `Ctrl+d` on FreeBSD and Linux when using
+`editline`.
+
+This bug was caused by the macOS fix in `7.0.0`. Unfortunately, this means that
+macOS does not respond properly to `Ctrl+d`.
+
+## 7.0.1
+
+This is a production release that fixes a warning using GCC on FreeBSD.
+
+Other users do ***NOT*** need to upgrade.
+
+## 7.0.0
+
+This is a production release to fix three bugs.
+
+The first bug is that `bc`/`dc` will exit on macOS when the terminal is resized.
+
+The second bug is that an array, which should only be a function parameter, was
+accepted as part of larger expressions.
+
+The third bug is that value stack for `dc` was cleared on any error. However,
+this is not how other `dc` behave. To bring `dc` more in line with other
+implementations, this behavior was changed. This change is why this version is a
+new major version.
+
+## 6.7.6
+
+This is a production release to fix one bug.
+
+The bug was that `bc` attempted to jump out when flushing `stdout` on exit, but
+there is no jump buf at that point.
+
 ## 6.7.5
 
 This is a production release to fix one small bug.
@@ -1553,3 +1610,4 @@ not thoroughly tested.
 [20]: https://github.com/apjanke/ronn-ng
 [21]: https://pandoc.org/
 [22]: ./scripts/locale_uninstall.sh
+[23]: ./MAINTENANCE-TERMS.md

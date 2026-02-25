@@ -59,11 +59,11 @@
 #include <sys/rman.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 
 #include <machine/bus.h>
 #include <machine/resource.h>
-#include <machine/stdarg.h>
 
 #include <net/ethernet.h>
 #include <net/bpf.h>
@@ -911,8 +911,8 @@ cpsw_attach(device_t dev)
 			return (ENXIO);
 		}
 	}
-	bus_generic_probe(dev);
-	bus_generic_attach(dev);
+	bus_identify_children(dev);
+	bus_attach_children(dev);
 
 	return (0);
 }
@@ -923,13 +923,11 @@ cpsw_detach(device_t dev)
 	struct cpsw_softc *sc;
 	int error, i;
 
-	bus_generic_detach(dev);
- 	sc = device_get_softc(dev);
+	error = bus_generic_detach(dev);
+	if (error != 0)
+		return (error);
 
-	for (i = 0; i < CPSW_PORTS; i++) {
-		if (sc->port[i].dev)
-			device_delete_child(dev, sc->port[i].dev);
-	}
+	sc = device_get_softc(dev);
 
 	if (device_is_attached(dev)) {
 		callout_stop(&sc->watchdog.callout);
@@ -962,12 +960,7 @@ cpsw_detach(device_t dev)
 	mtx_destroy(&sc->rx.lock);
 	mtx_destroy(&sc->tx.lock);
 
-	/* Detach the switch device, if present. */
-	error = bus_generic_detach(dev);
-	if (error != 0)
-		return (error);
-        
-	return (device_delete_children(dev));
+	return (0);
 }
 
 static phandle_t
@@ -1025,11 +1018,6 @@ cpswp_attach(device_t dev)
 
 	/* Allocate network interface */
 	ifp = sc->ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		cpswp_detach(dev);
-		return (ENXIO);
-	}
-
 	if_initname(ifp, device_get_name(sc->dev), sc->unit);
 	if_setsoftc(ifp, sc);
 	if_setflags(ifp, IFF_SIMPLEX | IFF_MULTICAST | IFF_BROADCAST);
@@ -1097,6 +1085,11 @@ static int
 cpswp_detach(device_t dev)
 {
 	struct cpswp_softc *sc;
+	int error;
+
+	error = bus_generic_detach(dev);
+	if (error != 0)
+		return (error);
 
 	sc = device_get_softc(dev);
 	CPSW_DEBUGF(sc->swsc, (""));
@@ -1107,8 +1100,6 @@ cpswp_detach(device_t dev)
 		CPSW_PORT_UNLOCK(sc);
 		callout_drain(&sc->mii_callout);
 	}
-
-	bus_generic_detach(dev);
 
 	if_free(sc->ifp);
 	mtx_destroy(&sc->lock);
@@ -1655,7 +1646,7 @@ cpsw_rx_dequeue(struct cpsw_softc *sc)
 
 		port = (bd.flags & CPDMA_BD_PORT_MASK) - 1;
 		KASSERT(port >= 0 && port <= 1,
-		    ("patcket received with invalid port: %d", port));
+		    ("packet received with invalid port: %d", port));
 		psc = device_get_softc(sc->port[port].dev);
 
 		/* Set up mbuf */

@@ -14,7 +14,6 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_wlan.h"
 
 #include <sys/param.h>
@@ -885,6 +884,8 @@ urtw_attach(device_t dev)
 
 	/* XXX TODO: setup regdomain if URTW_EPROM_CHANPLAN_BY_HW bit is set.*/
 
+	ic->ic_flags_ext |= IEEE80211_FEXT_SEQNO_OFFLOAD;
+
 	urtw_getradiocaps(ic, IEEE80211_CHAN_MAX, &ic->ic_nchans,
 	    ic->ic_channels);
 
@@ -1700,6 +1701,10 @@ urtw_tx_start(struct urtw_softc *sc, struct ieee80211_node *ni, struct mbuf *m0,
 	ismcast = IEEE80211_IS_MULTICAST(wh->i_addr1);
 	type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
 
+
+	/* Assign sequence number */
+	ieee80211_output_seqno_assign(ni, -1, m0);
+
 	/*
 	 * Software crypto.
 	 */
@@ -1724,8 +1729,7 @@ urtw_tx_start(struct urtw_softc *sc, struct ieee80211_node *ni, struct mbuf *m0,
 		ieee80211_radiotap_tx(vap, m0);
 	}
 
-	if (type == IEEE80211_FC0_TYPE_MGT ||
-	    type == IEEE80211_FC0_TYPE_CTL ||
+	if (IEEE80211_IS_MGMT(wh) || IEEE80211_IS_CTL(wh) ||
 	    (m0->m_flags & M_EAPOL) != 0) {
 		rate = tp->mgmtrate;
 	} else {
@@ -1803,9 +1807,7 @@ urtw_tx_start(struct urtw_softc *sc, struct ieee80211_node *ni, struct mbuf *m0,
 		}
 		tx->flag = htole32(flags);
 		tx->txdur = txdur;
-		if (type == IEEE80211_FC0_TYPE_MGT &&
-		    (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
-		    IEEE80211_FC0_SUBTYPE_PROBE_RESP)
+		if (IEEE80211_IS_MGMT_PROBE_RESP(wh))
 			tx->retry = 1;
 		else
 			tx->retry = URTW_TX_MAXRETRY;

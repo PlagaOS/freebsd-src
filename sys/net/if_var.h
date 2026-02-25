@@ -131,6 +131,25 @@ typedef void (*if_qflush_fn_t)(if_t);
 typedef int (*if_transmit_fn_t)(if_t, struct mbuf *);
 typedef	uint64_t (*if_get_counter_t)(if_t, ift_counter);
 typedef	void (*if_reassign_fn_t)(if_t, struct vnet *, char *);
+typedef int (*if_spdadd_fn_t)(if_t ifp, void *sp, void *inp, void **priv);
+typedef int (*if_spddel_fn_t)(if_t ifp, void *sp, void *priv);
+typedef int (*if_sa_newkey_fn_t)(if_t ifp, void *sav, u_int drv_spi,
+    void **privp);
+typedef int (*if_sa_deinstall_fn_t)(if_t ifp, u_int drv_spi, void *priv);
+struct seclifetime;
+#define	IF_SA_CNT_UPD	0x80000000
+enum IF_SA_CNT_WHICH {
+	IF_SA_CNT_IFP_HW_VAL = 1,
+	IF_SA_CNT_TOTAL_SW_VAL,
+	IF_SA_CNT_TOTAL_HW_VAL,
+	IF_SA_CNT_IFP_HW_UPD = IF_SA_CNT_IFP_HW_VAL | IF_SA_CNT_UPD,
+	IF_SA_CNT_TOTAL_SW_UPD = IF_SA_CNT_TOTAL_SW_VAL | IF_SA_CNT_UPD,
+	IF_SA_CNT_TOTAL_HW_UPD = IF_SA_CNT_TOTAL_HW_VAL | IF_SA_CNT_UPD,
+};
+typedef int (*if_sa_cnt_fn_t)(if_t ifp, void *sa,
+    uint32_t drv_spi, void *priv, struct seclifetime *lt);
+typedef int (*if_ipsec_hwassist_fn_t)(if_t ifp, void *sav,
+    u_int drv_spi,void *priv);
 
 struct ifnet_hw_tsomax {
 	u_int	tsomaxbytes;	/* TSO total burst length limit in bytes */
@@ -278,12 +297,14 @@ typedef int (if_snd_tag_modify_t)(struct m_snd_tag *, union if_snd_tag_modify_pa
 typedef int (if_snd_tag_query_t)(struct m_snd_tag *, union if_snd_tag_query_params *);
 typedef void (if_snd_tag_free_t)(struct m_snd_tag *);
 typedef struct m_snd_tag *(if_next_send_tag_t)(struct m_snd_tag *);
+typedef int (if_snd_tag_status_str_t)(struct m_snd_tag *, char *buf, size_t *sz);
 
 struct if_snd_tag_sw {
 	if_snd_tag_modify_t *snd_tag_modify;
 	if_snd_tag_query_t *snd_tag_query;
 	if_snd_tag_free_t *snd_tag_free;
 	if_next_send_tag_t *next_snd_tag;
+	if_snd_tag_status_str_t *snd_tag_status_str;
 	u_int	type;			/* One of IF_SND_TAG_TYPE_*. */
 };
 
@@ -337,12 +358,28 @@ typedef void (*ifaddr_event_ext_handler_t)(void *, if_t, struct ifaddr *, int);
 EVENTHANDLER_DECLARE(ifaddr_event_ext, ifaddr_event_ext_handler_t);
 #define	IFADDR_EVENT_ADD	0
 #define	IFADDR_EVENT_DEL	1
-/* new interface arrival event */
-typedef void (*ifnet_arrival_event_handler_t)(void *, if_t);
-EVENTHANDLER_DECLARE(ifnet_arrival_event, ifnet_arrival_event_handler_t);
-/* interface departure event */
-typedef void (*ifnet_departure_event_handler_t)(void *, if_t);
-EVENTHANDLER_DECLARE(ifnet_departure_event, ifnet_departure_event_handler_t);
+
+/*
+ * Interface arrival & departure events.
+ * The ifnet_arrival_event is executed before the interface is yet globally
+ * visible.  Protocols shall use this event to attach themselves.  Protocols
+ * shall not expect other protocols to be fully attached.
+ * The ifnet_attached_event is executed after the interface is attached to all
+ * protocols, is globally visible and fully functional.
+ * The ifnet_departure_event is complementary to ifnet_arrival_event.  The
+ * interface is no longer globally visible, protocols may detach.
+ * XXXGL: immediate memory reclamation may not be safe in ifnet_departure_event.
+ * The ifnet_rename_event is executed after an interface is renamed.  The
+ * handlers would see the new name of the interface, and are also passed with
+ * old name in the argument.
+ */
+typedef void (*ifnet_event_handler_t)(void *, if_t);
+EVENTHANDLER_DECLARE(ifnet_arrival_event, ifnet_event_handler_t);
+EVENTHANDLER_DECLARE(ifnet_attached_event, ifnet_event_handler_t);
+EVENTHANDLER_DECLARE(ifnet_departure_event, ifnet_event_handler_t);
+typedef void (*ifnet_rename_event_handler_t)(void *, if_t, const char *);
+EVENTHANDLER_DECLARE(ifnet_rename_event, ifnet_rename_event_handler_t);
+
 /* Interface link state change event */
 typedef void (*ifnet_link_event_handler_t)(void *, if_t, int);
 EVENTHANDLER_DECLARE(ifnet_link_event, ifnet_link_event_handler_t);
@@ -362,18 +399,18 @@ struct ifg_group {
 	char				 ifg_group[IFNAMSIZ];
 	u_int				 ifg_refcnt;
 	void				*ifg_pf_kif;
-	CK_STAILQ_HEAD(, ifg_member)	 ifg_members; /* (CK_) */
-	CK_STAILQ_ENTRY(ifg_group)		 ifg_next; /* (CK_) */
+	CK_STAILQ_HEAD(, ifg_member)	 ifg_members;
+	CK_STAILQ_ENTRY(ifg_group)	 ifg_next;
 };
 
 struct ifg_member {
-	CK_STAILQ_ENTRY(ifg_member)	 ifgm_next; /* (CK_) */
+	CK_STAILQ_ENTRY(ifg_member)	 ifgm_next;
 	if_t				 ifgm_ifp;
 };
 
 struct ifg_list {
 	struct ifg_group	*ifgl_group;
-	CK_STAILQ_ENTRY(ifg_list)	 ifgl_next; /* (CK_) */
+	CK_STAILQ_ENTRY(ifg_list)	 ifgl_next;
 };
 
 #ifdef _SYS_EVENTHANDLER_H_
@@ -599,8 +636,8 @@ const uint8_t *if_getbroadcastaddr(const if_t ifp);
 void if_setbroadcastaddr(if_t ifp, const uint8_t *);
 int if_setmtu(if_t ifp, int mtu);
 int if_getmtu(const if_t ifp);
-int if_getmtu_family(const if_t ifp, int family);
 void if_notifymtu(if_t ifp);
+void if_setppromisc(const if_t ifp, bool ppromisc);
 int if_setflagbits(if_t ifp, int set, int clear);
 int if_setflags(if_t ifp, int flags);
 int if_getflags(const if_t ifp);
@@ -624,7 +661,7 @@ void if_setrcvif(struct mbuf *m, if_t ifp);
 void if_setvtag(struct mbuf *m, u_int16_t tag);
 u_int16_t if_getvtag(struct mbuf *m);
 int if_vlantrunkinuse(if_t ifp);
-caddr_t if_getlladdr(const if_t ifp);
+char *if_getlladdr(const if_t ifp);
 struct vnet *if_getvnet(const if_t ifp);
 void *if_gethandle(u_char);
 void if_vlancap(if_t ifp);
@@ -641,7 +678,8 @@ void *if_getl2com(if_t ifp);
 struct ifvlantrunk *if_getvlantrunk(if_t ifp);
 bool if_altq_is_enabled(if_t ifp);
 
-void *if_getafdata(if_t ifp, int);
+struct in_ifinfo *if_getinet(if_t ifp);
+struct in6_ifextra *if_getinet6(if_t ifp);
 
 int if_snd_tag_alloc(if_t ifp, union if_snd_tag_alloc_params *params,
     struct m_snd_tag **mstp);
@@ -656,7 +694,6 @@ u_int if_lladdr_count(if_t);
 u_int if_llmaddr_count(if_t);
 bool if_maddr_empty(if_t);
 
-int if_getamcount(const if_t ifp);
 struct ifaddr * if_getifaddr(const if_t ifp);
 typedef u_int if_addr_cb_t(void *, struct ifaddr *, u_int);
 u_int if_foreach_addr_type(if_t ifp, int type, if_addr_cb_t cb, void *cb_arg);
@@ -700,6 +737,20 @@ void if_setdebugnet_methods(if_t, struct debugnet_methods *);
 void if_setreassignfn(if_t ifp, if_reassign_fn_t);
 void if_setratelimitqueryfn(if_t ifp, if_ratelimit_query_t);
 
+/*
+ * NB: The interface is not yet stable, drivers implementing IPSEC
+ * offload need to be prepared to adapt to changes.
+ */
+struct if_ipsec_accel_methods {
+	if_spdadd_fn_t		if_spdadd;
+	if_spddel_fn_t		if_spddel;
+	if_sa_newkey_fn_t	if_sa_newkey;
+	if_sa_deinstall_fn_t	if_sa_deinstall;
+	if_sa_cnt_fn_t		if_sa_cnt;
+	if_ipsec_hwassist_fn_t	if_hwassist;
+};
+void if_setipsec_accel_methods(if_t ifp, const struct if_ipsec_accel_methods *);
+
 /* TSO */
 void if_hw_tsomax_common(if_t ifp, struct ifnet_hw_tsomax *);
 int if_hw_tsomax_update(if_t ifp, struct ifnet_hw_tsomax *);
@@ -721,7 +772,6 @@ int    ether_poll_deregister(if_t ifp);
 
 #endif /* _KERNEL */
 
-#include <net/if_private.h>	/* XXX: temporary until drivers converted. */
 #include <net/ifq.h>	/* XXXAO: temporary unconditional include */
 
 #endif /* !_NET_IF_VAR_H_ */

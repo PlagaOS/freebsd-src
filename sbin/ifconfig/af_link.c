@@ -134,7 +134,7 @@ link_status(if_ctx *ctx, const struct ifaddrs *ifa)
 	    sdl->sdl_alen != ETHER_ADDR_LEN)
 		return;
 
-	strncpy(ifr.ifr_name, ifa->ifa_name, sizeof(ifr.ifr_name));
+	strlcpy(ifr.ifr_name, ifa->ifa_name, sizeof(ifr.ifr_name));
 	memcpy(&ifr.ifr_addr, ifa->ifa_addr, sizeof(ifa->ifa_addr->sa_len));
 	ifr.ifr_addr.sa_family = AF_LOCAL;
 	if ((sock_hw = socket(AF_LOCAL, SOCK_DGRAM, 0)) < 0) {
@@ -210,7 +210,8 @@ link_getaddr(const char *addr, int which)
 		temp[0] = ':';
 		strcpy(temp + 1, addr);
 		sdl.sdl_len = sizeof(sdl);
-		link_addr(temp, &sdl);
+		if (link_addr(temp, &sdl) == -1)
+			errx(1, "malformed link-level address");
 		free(temp);
 	}
 	if (sdl.sdl_alen > sizeof(sa->sa_data))

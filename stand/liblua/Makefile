@@ -1,4 +1,3 @@
-
 .include <bsd.init.mk>
 
 .PATH:		${LUASRC}
@@ -25,7 +24,7 @@ SRCS+=	lauxlib.c lbaselib.c lstrlib.c loadlib.c
 SRCS+=	lerrno.c lpager.c lstd.c lutils.c
 SRCS+=	gfx_utils.c
 
-.PATH:	${FLUASRC}/modules
+.PATH:	${FLUASRC}/lfs
 SRCS+=	lfs.c
 .PATH:	${FLUALIB}/libhash
 SRCS+=	lhash.c

@@ -26,7 +26,6 @@
  */
 
 #include "archive_platform.h"
-__FBSDID("$FreeBSD$");
 
 #if !defined(_WIN32) || defined(__CYGWIN__)
 
@@ -413,12 +412,14 @@ static ssize_t	_archive_write_disk_data_block(struct archive *, const void *,
 static int
 la_mktemp(struct archive_write_disk *a)
 {
+	struct archive_string *tmp = &a->_tmpname_data;
 	int oerrno, fd;
 	mode_t mode;
 
-	archive_string_empty(&a->_tmpname_data);
-	archive_string_sprintf(&a->_tmpname_data, "%s.XXXXXX", a->name);
-	a->tmpname = a->_tmpname_data.s;
+	archive_strcpy(tmp, a->name);
+	archive_string_dirname(tmp);
+	archive_strcat(tmp, "/tar.XXXXXXXX");
+	a->tmpname = tmp->s;
 
 	fd = __archive_mkstemp(a->tmpname);
 	if (fd == -1)
@@ -479,9 +480,11 @@ la_verify_filetype(mode_t mode, __LA_MODE_T filetype) {
 	case AE_IFLNK:
 		ret = (S_ISLNK(mode));
 		break;
+#ifdef S_ISSOCK
 	case AE_IFSOCK:
 		ret = (S_ISSOCK(mode));
 		break;
+#endif
 	case AE_IFCHR:
 		ret = (S_ISCHR(mode));
 		break;
@@ -1992,7 +1995,7 @@ archive_write_disk_new(void)
 {
 	struct archive_write_disk *a;
 
-	a = (struct archive_write_disk *)calloc(1, sizeof(*a));
+	a = calloc(1, sizeof(*a));
 	if (a == NULL)
 		return (NULL);
 	a->archive.magic = ARCHIVE_WRITE_DISK_MAGIC;
@@ -2203,7 +2206,7 @@ restore_entry(struct archive_write_disk *a)
 				(void)clear_nochange_fflags(a);
 
 			if ((a->flags & ARCHIVE_EXTRACT_SAFE_WRITES) &&
-			    S_ISREG(a->st.st_mode)) {
+			    S_ISREG(a->mode)) {
 				/* Use a temporary file to extract */
 				if ((a->fd = la_mktemp(a)) == -1) {
 					archive_set_error(&a->archive, errno,
@@ -2759,7 +2762,7 @@ new_fixup(struct archive_write_disk *a, const char *pathname)
 {
 	struct fixup_entry *fe;
 
-	fe = (struct fixup_entry *)calloc(1, sizeof(struct fixup_entry));
+	fe = calloc(1, sizeof(struct fixup_entry));
 	if (fe == NULL) {
 		archive_set_error(&a->archive, ENOMEM,
 		    "Can't allocate memory for a fixup");
@@ -3606,7 +3609,7 @@ set_time_tru64(int fd, int mode, const char *name,
 	tstamp.atime.tv_sec = atime;
 	tstamp.mtime.tv_sec = mtime;
 	tstamp.ctime.tv_sec = ctime;
-#if defined (__hpux) && defined (__ia64)
+#if defined (__hpux) && ( defined (__ia64) || defined (__hppa) )
 	tstamp.atime.tv_nsec = atime_nsec;
 	tstamp.mtime.tv_nsec = mtime_nsec;
 	tstamp.ctime.tv_nsec = ctime_nsec;
@@ -3789,7 +3792,7 @@ set_mode(struct archive_write_disk *a, int mode)
 		 * permissions on symlinks, so a failure here has no
 		 * impact.
 		 */
-		if (lchmod(a->name, mode) != 0) {
+		if (lchmod(a->name, (mode_t)mode) != 0) {
 			switch (errno) {
 			case ENOTSUP:
 			case ENOSYS:
@@ -3804,7 +3807,8 @@ set_mode(struct archive_write_disk *a, int mode)
 				break;
 			default:
 				archive_set_error(&a->archive, errno,
-				    "Can't set permissions to 0%o", (int)mode);
+				    "Can't set permissions to 0%o",
+				    (unsigned int)mode);
 				r = ARCHIVE_WARN;
 			}
 		}
@@ -3818,16 +3822,16 @@ set_mode(struct archive_write_disk *a, int mode)
 		 */
 #ifdef HAVE_FCHMOD
 		if (a->fd >= 0)
-			r2 = fchmod(a->fd, mode);
+			r2 = fchmod(a->fd, (mode_t)mode);
 		else
 #endif
 		/* If this platform lacks fchmod(), then
 		 * we'll just use chmod(). */
-		r2 = chmod(a->name, mode);
+		r2 = chmod(a->name, (mode_t)mode);
 
 		if (r2 != 0) {
 			archive_set_error(&a->archive, errno,
-			    "Can't set permissions to 0%o", (int)mode);
+			    "Can't set permissions to 0%o", (unsigned int)mode);
 			r = ARCHIVE_WARN;
 		}
 	}
@@ -3928,10 +3932,14 @@ clear_nochange_fflags(struct archive_write_disk *a)
 #ifdef UF_APPEND
 	    | UF_APPEND
 #endif
-#ifdef EXT2_APPEND_FL
+#if defined(FS_APPEND_FL)
+	    | FS_APPEND_FL
+#elif defined(EXT2_APPEND_FL)
 	    | EXT2_APPEND_FL
 #endif
-#ifdef EXT2_IMMUTABLE_FL
+#if defined(FS_IMMUTABLE_FL)
+	    | FS_IMMUTABLE_FL
+#elif defined(EXT2_IMMUTABLE_FL)
 	    | EXT2_IMMUTABLE_FL
 #endif
 	;
@@ -4197,7 +4205,7 @@ copy_xattrs(struct archive_write_disk *a, int tmpfd, int dffd)
 	}
 	for (xattr_i = 0; xattr_i < xattr_size;
 	    xattr_i += strlen(xattr_names + xattr_i) + 1) {
-		char *xattr_val_saved;
+		char *p;
 		ssize_t s;
 		int f;
 
@@ -4208,15 +4216,14 @@ copy_xattrs(struct archive_write_disk *a, int tmpfd, int dffd)
 			ret = ARCHIVE_WARN;
 			goto exit_xattr;
 		}
-		xattr_val_saved = xattr_val;
-		xattr_val = realloc(xattr_val, s);
-		if (xattr_val == NULL) {
+		p = realloc(xattr_val, s);
+		if (p == NULL) {
 			archive_set_error(&a->archive, ENOMEM,
 			    "Failed to get metadata(xattr)");
 			ret = ARCHIVE_WARN;
-			free(xattr_val_saved);
 			goto exit_xattr;
 		}
+		xattr_val = p;
 		s = fgetxattr(tmpfd, xattr_names + xattr_i, xattr_val, s, 0, 0);
 		if (s == -1) {
 			archive_set_error(&a->archive, errno,
@@ -4282,8 +4289,10 @@ create_tempdatafork(struct archive_write_disk *a, const char *pathname)
 	int tmpfd;
 
 	archive_string_init(&tmpdatafork);
-	archive_strcpy(&tmpdatafork, "tar.md.XXXXXX");
-	tmpfd = mkstemp(tmpdatafork.s);
+	archive_strcpy(&tmpdatafork, pathname);
+	archive_string_dirname(&tmpdatafork);
+	archive_strcat(&tmpdatafork, "/tar.XXXXXXXX");
+	tmpfd = __archive_mkstemp(tmpdatafork.s);
 	if (tmpfd < 0) {
 		archive_set_error(&a->archive, errno,
 		    "Failed to mkstemp");
@@ -4363,8 +4372,9 @@ set_mac_metadata(struct archive_write_disk *a, const char *pathname,
 	 * copyfile() can read it back in again. */
 	archive_string_init(&tmp);
 	archive_strcpy(&tmp, pathname);
-	archive_strcat(&tmp, ".XXXXXX");
-	fd = mkstemp(tmp.s);
+	archive_string_dirname(&tmp);
+	archive_strcat(&tmp, "/tar.XXXXXXXX");
+	fd = __archive_mkstemp(tmp.s);
 
 	if (fd < 0) {
 		archive_set_error(&a->archive, errno,
@@ -4428,7 +4438,8 @@ fixup_appledouble(struct archive_write_disk *a, const char *pathname)
 #else
 		la_stat(datafork.s, &st) == -1 ||
 #endif
-	    (st.st_mode & AE_IFMT) != AE_IFREG)
+	    (((st.st_mode & AE_IFMT) != AE_IFREG) &&
+		((st.st_mode & AE_IFMT) != AE_IFDIR)))
 		goto skip_appledouble;
 
 	/*

@@ -195,7 +195,7 @@ scc_bfe_attach(device_t dev, u_int ipc)
 			m->m_mode = 1U << mode;
 			if ((cl->cl_modes & m->m_mode) == 0 || ch->ch_sysdev)
 				continue;
-			m->m_dev = device_add_child(dev, NULL, -1);
+			m->m_dev = device_add_child(dev, NULL, DEVICE_UNIT_ANY);
 			device_set_ivars(m->m_dev, (void *)m);
 			error = device_probe_child(dev, m->m_dev);
 			if (!error) {
@@ -406,7 +406,7 @@ scc_bfe_probe(device_t dev, u_int regshft, u_int rclk, u_int rid)
 }
 
 struct resource *
-scc_bus_alloc_resource(device_t dev, device_t child, int type, int *rid,
+scc_bus_alloc_resource(device_t dev, device_t child, int type, int rid __unused,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct resource_list_entry *rle;
@@ -425,7 +425,6 @@ scc_bus_alloc_resource(device_t dev, device_t child, int type, int *rid,
 	rle = resource_list_find(&ch->ch_rlist, type, 0);
 	if (rle == NULL)
 		return (NULL);
-	*rid = 0;
 	return (rle->res);
 }
 

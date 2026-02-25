@@ -2,10 +2,11 @@
 #define PAD64_REQUIRED
 #endif
 /*
- * System call argument to DTrace register array converstion.
+ * System call argument to DTrace register array conversion.
+ *
+ * This file is part of the DTrace syscall provider.
  *
  * DO NOT EDIT-- this file is automatically @generated.
- * This file is part of the DTrace syscall provider.
  */
 
 static void
@@ -19,9 +20,9 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 		*n_args = 0;
 		break;
 	}
-	/* exit */
+	/* _exit */
 	case 1: {
-		struct exit_args *p = params;
+		struct _exit_args *p = params;
 		iarg[a++] = p->rval; /* int */
 		*n_args = 1;
 		break;
@@ -454,22 +455,6 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 		uarg[a++] = p->len; /* size_t */
 		uarg[a++] = (intptr_t)p->vec; /* char * */
 		*n_args = 3;
-		break;
-	}
-	/* getgroups */
-	case 79: {
-		struct getgroups_args *p = params;
-		iarg[a++] = p->gidsetsize; /* int */
-		uarg[a++] = (intptr_t)p->gidset; /* gid_t * */
-		*n_args = 2;
-		break;
-	}
-	/* setgroups */
-	case 80: {
-		struct setgroups_args *p = params;
-		iarg[a++] = p->gidsetsize; /* int */
-		uarg[a++] = (intptr_t)p->gidset; /* const gid_t * */
-		*n_args = 2;
 		break;
 	}
 	/* getpgrp */
@@ -931,7 +916,7 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 	/* freebsd32___sysctl */
 	case 202: {
 		struct freebsd32___sysctl_args *p = params;
-		uarg[a++] = (intptr_t)p->name; /* int * */
+		uarg[a++] = (intptr_t)p->name; /* const int * */
 		uarg[a++] = p->namelen; /* u_int */
 		uarg[a++] = (intptr_t)p->old; /* void * */
 		uarg[a++] = (intptr_t)p->oldlenp; /* uint32_t * */
@@ -2631,13 +2616,6 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 		*n_args = 1;
 		break;
 	}
-	/* gssd_syscall */
-	case 505: {
-		struct gssd_syscall_args *p = params;
-		uarg[a++] = (intptr_t)p->path; /* const char * */
-		*n_args = 1;
-		break;
-	}
 	/* freebsd32_jail_get */
 	case 506: {
 		struct freebsd32_jail_get_args *p = params;
@@ -3263,9 +3241,8 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 	/* rpctls_syscall */
 	case 576: {
 		struct rpctls_syscall_args *p = params;
-		iarg[a++] = p->op; /* int */
-		uarg[a++] = (intptr_t)p->path; /* const char * */
-		*n_args = 2;
+		uarg[a++] = p->socookie; /* uint64_t */
+		*n_args = 1;
 		break;
 	}
 	/* __specialfd */
@@ -3368,6 +3345,108 @@ systrace_args(int sysnum, void *params, uint64_t *uarg, int *n_args)
 		*n_args = 5;
 		break;
 	}
+	/* getrlimitusage */
+	case 589: {
+		struct getrlimitusage_args *p = params;
+		uarg[a++] = p->which; /* u_int */
+		iarg[a++] = p->flags; /* int */
+		uarg[a++] = (intptr_t)p->res; /* rlim_t * */
+		*n_args = 3;
+		break;
+	}
+	/* fchroot */
+	case 590: {
+		struct fchroot_args *p = params;
+		iarg[a++] = p->fd; /* int */
+		*n_args = 1;
+		break;
+	}
+	/* freebsd32_setcred */
+	case 591: {
+		struct freebsd32_setcred_args *p = params;
+		uarg[a++] = p->flags; /* u_int */
+		uarg[a++] = (intptr_t)p->wcred; /* const struct setcred32 * */
+		uarg[a++] = p->size; /* size_t */
+		*n_args = 3;
+		break;
+	}
+	/* exterrctl */
+	case 592: {
+		struct exterrctl_args *p = params;
+		uarg[a++] = p->op; /* u_int */
+		uarg[a++] = p->flags; /* u_int */
+		uarg[a++] = (intptr_t)p->ptr; /* void * */
+		*n_args = 3;
+		break;
+	}
+	/* inotify_add_watch_at */
+	case 593: {
+		struct inotify_add_watch_at_args *p = params;
+		iarg[a++] = p->fd; /* int */
+		iarg[a++] = p->dfd; /* int */
+		uarg[a++] = (intptr_t)p->path; /* const char * */
+		uarg[a++] = p->mask; /* uint32_t */
+		*n_args = 4;
+		break;
+	}
+	/* inotify_rm_watch */
+	case 594: {
+		struct inotify_rm_watch_args *p = params;
+		iarg[a++] = p->fd; /* int */
+		iarg[a++] = p->wd; /* int */
+		*n_args = 2;
+		break;
+	}
+	/* getgroups */
+	case 595: {
+		struct getgroups_args *p = params;
+		iarg[a++] = p->gidsetsize; /* int */
+		uarg[a++] = (intptr_t)p->gidset; /* gid_t * */
+		*n_args = 2;
+		break;
+	}
+	/* setgroups */
+	case 596: {
+		struct setgroups_args *p = params;
+		iarg[a++] = p->gidsetsize; /* int */
+		uarg[a++] = (intptr_t)p->gidset; /* const gid_t * */
+		*n_args = 2;
+		break;
+	}
+	/* jail_attach_jd */
+	case 597: {
+		struct jail_attach_jd_args *p = params;
+		iarg[a++] = p->fd; /* int */
+		*n_args = 1;
+		break;
+	}
+	/* jail_remove_jd */
+	case 598: {
+		struct jail_remove_jd_args *p = params;
+		iarg[a++] = p->fd; /* int */
+		*n_args = 1;
+		break;
+	}
+	/* pdrfork */
+	case 600: {
+		struct pdrfork_args *p = params;
+		uarg[a++] = (intptr_t)p->fdp; /* int * */
+		iarg[a++] = p->pdflags; /* int */
+		iarg[a++] = p->rfflags; /* int */
+		*n_args = 3;
+		break;
+	}
+	/* freebsd32_pdwait */
+	case 601: {
+		struct freebsd32_pdwait_args *p = params;
+		iarg[a++] = p->fd; /* int */
+		uarg[a++] = (intptr_t)p->status; /* int * */
+		iarg[a++] = p->options; /* int */
+		uarg[a++] = (intptr_t)p->wrusage; /* struct __wrusage32 * */
+		uarg[a++] = (intptr_t)p->info; /* struct __siginfo32 * */
+		*n_args = 5;
+		break;
+	}
 	default:
 		*n_args = 0;
 		break;
@@ -3381,7 +3460,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 	/* syscall */
 	case 0:
 		break;
-	/* exit */
+	/* _exit */
 	case 1:
 		switch (ndx) {
 		case 0:
@@ -4062,32 +4141,6 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		case 2:
 			p = "userland char *";
-			break;
-		default:
-			break;
-		};
-		break;
-	/* getgroups */
-	case 79:
-		switch (ndx) {
-		case 0:
-			p = "int";
-			break;
-		case 1:
-			p = "userland gid_t *";
-			break;
-		default:
-			break;
-		};
-		break;
-	/* setgroups */
-	case 80:
-		switch (ndx) {
-		case 0:
-			p = "int";
-			break;
-		case 1:
-			p = "userland const gid_t *";
 			break;
 		default:
 			break;
@@ -4856,7 +4909,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 	case 202:
 		switch (ndx) {
 		case 0:
-			p = "userland int *";
+			p = "userland const int *";
 			break;
 		case 1:
 			p = "u_int";
@@ -7755,16 +7808,6 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
-	/* gssd_syscall */
-	case 505:
-		switch (ndx) {
-		case 0:
-			p = "userland const char *";
-			break;
-		default:
-			break;
-		};
-		break;
 	/* freebsd32_jail_get */
 	case 506:
 		switch (ndx) {
@@ -8924,10 +8967,7 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 	case 576:
 		switch (ndx) {
 		case 0:
-			p = "int";
-			break;
-		case 1:
-			p = "userland const char *";
+			p = "uint64_t";
 			break;
 		default:
 			break;
@@ -9100,6 +9140,180 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
+	/* getrlimitusage */
+	case 589:
+		switch (ndx) {
+		case 0:
+			p = "u_int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		case 2:
+			p = "userland rlim_t *";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* fchroot */
+	case 590:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* freebsd32_setcred */
+	case 591:
+		switch (ndx) {
+		case 0:
+			p = "u_int";
+			break;
+		case 1:
+			p = "userland const struct setcred32 *";
+			break;
+		case 2:
+			p = "size_t";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* exterrctl */
+	case 592:
+		switch (ndx) {
+		case 0:
+			p = "u_int";
+			break;
+		case 1:
+			p = "u_int";
+			break;
+		case 2:
+			p = "userland void *";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* inotify_add_watch_at */
+	case 593:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		case 2:
+			p = "userland const char *";
+			break;
+		case 3:
+			p = "uint32_t";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* inotify_rm_watch */
+	case 594:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* getgroups */
+	case 595:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "userland gid_t *";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* setgroups */
+	case 596:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "userland const gid_t *";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* jail_attach_jd */
+	case 597:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* jail_remove_jd */
+	case 598:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* pdrfork */
+	case 600:
+		switch (ndx) {
+		case 0:
+			p = "userland int *";
+			break;
+		case 1:
+			p = "int";
+			break;
+		case 2:
+			p = "int";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* freebsd32_pdwait */
+	case 601:
+		switch (ndx) {
+		case 0:
+			p = "int";
+			break;
+		case 1:
+			p = "userland int *";
+			break;
+		case 2:
+			p = "int";
+			break;
+		case 3:
+			p = "userland struct __wrusage32 *";
+			break;
+		case 4:
+			p = "userland struct __siginfo32 *";
+			break;
+		default:
+			break;
+		};
+		break;
 	default:
 		break;
 	};
@@ -9113,7 +9327,7 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 	switch (sysnum) {
 	/* syscall */
 	case 0:
-	/* exit */
+	/* _exit */
 	case 1:
 		if (ndx == 0 || ndx == 1)
 			p = "void";
@@ -9366,16 +9580,6 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;
-	/* getgroups */
-	case 79:
-		if (ndx == 0 || ndx == 1)
-			p = "int";
-		break;
-	/* setgroups */
-	case 80:
-		if (ndx == 0 || ndx == 1)
-			p = "int";
-		break;
 	/* getpgrp */
 	case 81:
 	/* setpgid */
@@ -9473,12 +9677,12 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 	/* freebsd32_readv */
 	case 120:
 		if (ndx == 0 || ndx == 1)
-			p = "int";
+			p = "ssize_t";
 		break;
 	/* freebsd32_writev */
 	case 121:
 		if (ndx == 0 || ndx == 1)
-			p = "int";
+			p = "ssize_t";
 		break;
 	/* freebsd32_settimeofday */
 	case 122:
@@ -10594,11 +10798,6 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;
-	/* gssd_syscall */
-	case 505:
-		if (ndx == 0 || ndx == 1)
-			p = "int";
-		break;
 	/* freebsd32_jail_get */
 	case 506:
 		if (ndx == 0 || ndx == 1)
@@ -10980,6 +11179,66 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* kcmp */
 	case 588:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* getrlimitusage */
+	case 589:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* fchroot */
+	case 590:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* freebsd32_setcred */
+	case 591:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* exterrctl */
+	case 592:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* inotify_add_watch_at */
+	case 593:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* inotify_rm_watch */
+	case 594:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* getgroups */
+	case 595:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* setgroups */
+	case 596:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* jail_attach_jd */
+	case 597:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* jail_remove_jd */
+	case 598:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* pdrfork */
+	case 600:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* freebsd32_pdwait */
+	case 601:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;

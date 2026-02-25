@@ -1,6 +1,3 @@
-
-PACKAGE=	kerberos-lib
-
 LIB=	sl
 INTERNALLIB=
 SRCS=	sl.c

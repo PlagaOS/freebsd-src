@@ -114,8 +114,8 @@ iommu_bus_dma_is_dev_disabled(int domain, int bus, int slot, int func)
  * domain, and must collectively be assigned to use either IOMMU or
  * bounce mapping.
  */
-device_t
-iommu_get_requester(device_t dev, uint16_t *rid)
+int
+iommu_get_requester(device_t dev, device_t *requesterp, uint16_t *rid)
 {
 	devclass_t pci_class;
 	device_t l, pci, pcib, pcip, pcibp, requester;
@@ -126,6 +126,13 @@ iommu_get_requester(device_t dev, uint16_t *rid)
 	pci_class = devclass_find("pci");
 	l = requester = dev;
 
+	pci = device_get_parent(dev);
+	if (pci == NULL || device_get_devclass(pci) != pci_class) {
+		*rid = 0;	/* XXXKIB: Could be ACPI HID */
+		*requesterp = NULL;
+		return (ENOTTY);
+	}
+
 	*rid = pci_get_rid(dev);
 
 	/*
@@ -135,16 +142,39 @@ iommu_get_requester(device_t dev, uint16_t *rid)
 	 */
 	for (;;) {
 		pci = device_get_parent(l);
-		KASSERT(pci != NULL, ("iommu_get_requester(%s): NULL parent "
-		    "for %s", device_get_name(dev), device_get_name(l)));
-		KASSERT(device_get_devclass(pci) == pci_class,
-		    ("iommu_get_requester(%s): non-pci parent %s for %s",
-		    device_get_name(dev), device_get_name(pci),
-		    device_get_name(l)));
+		if (pci == NULL) {
+			if (bootverbose) {
+				printf(
+			"iommu_get_requester(%s): NULL parent for %s\n",
+				    device_get_name(dev), device_get_name(l));
+			}
+			*rid = 0;
+			*requesterp = NULL;
+			return (ENXIO);
+		}
+		if (device_get_devclass(pci) != pci_class) {
+			if (bootverbose) {
+				printf(
+			"iommu_get_requester(%s): non-pci parent %s for %s\n",
+				    device_get_name(dev), device_get_name(pci),
+				    device_get_name(l));
+			}
+			*rid = 0;
+			*requesterp = NULL;
+			return (ENXIO);
+		}
 
 		pcib = device_get_parent(pci);
-		KASSERT(pcib != NULL, ("iommu_get_requester(%s): NULL bridge "
-		    "for %s", device_get_name(dev), device_get_name(pci)));
+		if (pcib == NULL) {
+			if (bootverbose) {
+				printf(
+			"iommu_get_requester(%s): NULL bridge for %s\n",
+				    device_get_name(dev), device_get_name(pci));
+			}
+			*rid = 0;
+			*requesterp = NULL;
+			return (ENXIO);
+		}
 
 		/*
 		 * The parent of our "bridge" isn't another PCI bus,
@@ -223,7 +253,8 @@ iommu_get_requester(device_t dev, uint16_t *rid)
 			}
 		}
 	}
-	return (requester);
+	*requesterp = requester;
+	return (0);
 }
 
 struct iommu_ctx *
@@ -231,10 +262,13 @@ iommu_instantiate_ctx(struct iommu_unit *unit, device_t dev, bool rmrr)
 {
 	device_t requester;
 	struct iommu_ctx *ctx;
+	int error;
 	bool disabled;
 	uint16_t rid;
 
-	requester = iommu_get_requester(dev, &rid);
+	error = iommu_get_requester(dev, &requester, &rid);
+	if (error != 0)
+		return (NULL);
 
 	/*
 	 * If the user requested the IOMMU disabled for the device, we
@@ -261,7 +295,6 @@ iommu_instantiate_ctx(struct iommu_unit *unit, device_t dev, bool rmrr)
 		} else {
 			iommu_free_ctx_locked(unit, ctx);
 		}
-		ctx = NULL;
 	}
 	return (ctx);
 }
@@ -269,6 +302,7 @@ iommu_instantiate_ctx(struct iommu_unit *unit, device_t dev, bool rmrr)
 struct iommu_ctx *
 iommu_get_dev_ctx(device_t dev)
 {
+	struct iommu_ctx *ctx;
 	struct iommu_unit *unit;
 
 	unit = iommu_find(dev, bootverbose);
@@ -278,12 +312,11 @@ iommu_get_dev_ctx(device_t dev)
 	if (!unit->dma_enabled)
 		return (NULL);
 
-#if defined(__amd64__) || defined(__i386__)
-	dmar_quirks_pre_use(unit);
-	dmar_instantiate_rmrr_ctxs(unit);
-#endif
-
-	return (iommu_instantiate_ctx(unit, dev, false));
+	iommu_unit_pre_instantiate_ctx(unit);
+	ctx = iommu_instantiate_ctx(unit, dev, false);
+	if (ctx != NULL && (ctx->flags & IOMMU_CTX_DISABLED) != 0)
+		ctx = NULL;
+	return (ctx);
 }
 
 bus_dma_tag_t
@@ -395,6 +428,8 @@ static int
 iommu_bus_dma_tag_destroy(bus_dma_tag_t dmat1)
 {
 	struct bus_dma_tag_iommu *dmat;
+	struct iommu_unit *iommu;
+	struct iommu_ctx *ctx;
 	int error;
 
 	error = 0;
@@ -405,8 +440,12 @@ iommu_bus_dma_tag_destroy(bus_dma_tag_t dmat1)
 			error = EBUSY;
 			goto out;
 		}
-		if (dmat == dmat->ctx->tag)
-			iommu_free_ctx(dmat->ctx);
+		ctx = dmat->ctx;
+		if (dmat == ctx->tag) {
+			iommu = ctx->domain->iommu;
+			IOMMU_LOCK(iommu);
+			iommu_free_ctx_locked(iommu, dmat->ctx);
+		}
 		free(dmat->segments, M_IOMMU_DMAMAP);
 		free(dmat, M_DEVBUF);
 	}
@@ -963,10 +1002,14 @@ iommu_init_busdma(struct iommu_unit *unit)
 {
 	int error;
 
-	unit->dma_enabled = 1;
+	unit->dma_enabled = 0;
 	error = TUNABLE_INT_FETCH("hw.iommu.dma", &unit->dma_enabled);
 	if (error == 0) /* compatibility */
 		TUNABLE_INT_FETCH("hw.dmar.dma", &unit->dma_enabled);
+	SYSCTL_ADD_INT(&unit->sysctl_ctx,
+	    SYSCTL_CHILDREN(device_get_sysctl_tree(unit->dev)),
+	    OID_AUTO, "dma", CTLFLAG_RD, &unit->dma_enabled, 0,
+	    "DMA ops enabled");
 	TAILQ_INIT(&unit->delayed_maps);
 	TASK_INIT(&unit->dmamap_load_task, 0, iommu_bus_task_dmamap, unit);
 	unit->delayed_taskqueue = taskqueue_create("iommu", M_WAITOK,

@@ -58,6 +58,8 @@
 #include <sys/systm.h>
 #include <sys/unistd.h>
 
+#include <vm/vm_param.h>
+
 SYSCTL_ROOT_NODE(0, sysctl, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Sysctl internal magic");
 SYSCTL_ROOT_NODE(CTL_KERN, kern, CTLFLAG_RW | CTLFLAG_CAPRD | CTLFLAG_MPSAFE, 0,
@@ -92,20 +94,20 @@ SYSCTL_ROOT_NODE(OID_AUTO, regression, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Regression test MIB");
 #endif
 
-SYSCTL_STRING(_kern, OID_AUTO, ident, CTLFLAG_RD,
-    kern_ident, 0, "Kernel identifier");
+SYSCTL_CONST_STRING(_kern, OID_AUTO, ident, CTLFLAG_RD,
+    kern_ident, "Kernel identifier");
 
 SYSCTL_INT(_kern, KERN_OSREV, osrevision, CTLFLAG_RD | CTLFLAG_CAPRD,
     SYSCTL_NULL_INT_PTR, BSD, "Operating system revision");
 
-SYSCTL_STRING(_kern, KERN_VERSION, version, CTLFLAG_RD,
-    version, 0, "Kernel version");
+SYSCTL_CONST_STRING(_kern, KERN_VERSION, version, CTLFLAG_RD,
+    version, "Kernel version");
 
-SYSCTL_STRING(_kern, OID_AUTO, compiler_version, CTLFLAG_RD,
-    compiler_version, 0, "Version of compiler used to compile kernel");
+SYSCTL_CONST_STRING(_kern, OID_AUTO, compiler_version, CTLFLAG_RD,
+    compiler_version, "Version of compiler used to compile kernel");
 
-SYSCTL_STRING(_kern, KERN_OSTYPE, ostype, CTLFLAG_RD | CTLFLAG_CAPRD,
-    ostype, 0, "Operating system type");
+SYSCTL_CONST_STRING(_kern, KERN_OSTYPE, ostype, CTLFLAG_RD | CTLFLAG_CAPRD,
+    ostype, "Operating system type");
 
 SYSCTL_INT(_kern, KERN_MAXPROC, maxproc, CTLFLAG_RDTUN | CTLFLAG_NOFETCH,
     &maxproc, 0, "Maximum number of processes");
@@ -180,10 +182,14 @@ sysctl_kern_arnd(SYSCTL_HANDLER_ARGS)
 {
 	char buf[256];
 	size_t len;
+	int error;
 
 	len = MIN(req->oldlen, sizeof(buf));
 	read_random(buf, len);
-	return (SYSCTL_OUT(req, buf, len));
+
+	error = SYSCTL_OUT(req, buf, len);
+	explicit_bzero(buf, len);
+	return (error);
 }
 
 SYSCTL_PROC(_kern, KERN_ARND, arandom,
@@ -242,7 +248,11 @@ SYSCTL_PROC(_hw, HW_USERMEM, usermem,
 SYSCTL_LONG(_hw, OID_AUTO, availpages, CTLFLAG_RD, &physmem, 0,
     "Amount of physical memory (in pages)");
 
-u_long pagesizes[MAXPAGESIZES] = { PAGE_SIZE };
+#if VM_NRESERVLEVEL > 0
+_Static_assert(MAXPAGESIZES > VM_NRESERVLEVEL, "MAXPAGESIZES is too small");
+#endif
+
+u_long __read_mostly pagesizes[MAXPAGESIZES] = { PAGE_SIZE };
 
 static int
 sysctl_hw_pagesizes(SYSCTL_HANDLER_ARGS)
@@ -454,10 +464,10 @@ SYSCTL_PROC(_kern, KERN_SECURELVL, securelevel,
 
 #ifdef INCLUDE_CONFIG_FILE
 /* Actual kernel configuration options. */
-extern char kernconfstring[];
+extern const char kernconfstring[];
 
-SYSCTL_STRING(_kern, OID_AUTO, conftxt, CTLFLAG_RD,
-    kernconfstring, 0, "Kernel configuration file");
+SYSCTL_CONST_STRING(_kern, OID_AUTO, conftxt, CTLFLAG_RD,
+    kernconfstring, "Kernel configuration file");
 #endif
 
 static int
@@ -564,12 +574,11 @@ sysctl_osreldate(SYSCTL_HANDLER_ARGS)
 }
 
 /*
- * NOTICE: The *userland* release date is available in
- * /usr/include/osreldate.h
+ * NOTICE: The *userland* version is available in /usr/include/osreldate.h
  */
 SYSCTL_PROC(_kern, KERN_OSRELDATE, osreldate,
     CTLTYPE_INT | CTLFLAG_CAPRD | CTLFLAG_RD | CTLFLAG_MPSAFE,
-    NULL, 0, sysctl_osreldate, "I", "Kernel release date");
+    NULL, 0, sysctl_osreldate, "I", "Kernel version");
 
 /*
  * The build-id is copied from the ELF section .note.gnu.build-id.  The linker
@@ -720,11 +729,9 @@ SYSCTL_STRING(_user, USER_LOCALBASE, localbase, CTLFLAG_RWTUN,
     localbase, sizeof(localbase), "Prefix used to install and locate add-on packages");
 
 #include <sys/vnode.h>
-SYSCTL_INT(_debug_sizeof, OID_AUTO, vnode, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct vnode), "sizeof(struct vnode)");
+SYSCTL_SIZEOF_STRUCT(vnode);
 
-SYSCTL_INT(_debug_sizeof, OID_AUTO, proc, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct proc), "sizeof(struct proc)");
+SYSCTL_SIZEOF_STRUCT(proc);
 
 static int
 sysctl_kern_pid_max(SYSCTL_HANDLER_ARGS)
@@ -760,19 +767,15 @@ SYSCTL_INT(_kern, OID_AUTO, pid_max_limit, CTLFLAG_RD,
 
 #include <sys/bio.h>
 #include <sys/buf.h>
-SYSCTL_INT(_debug_sizeof, OID_AUTO, bio, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct bio), "sizeof(struct bio)");
-SYSCTL_INT(_debug_sizeof, OID_AUTO, buf, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct buf), "sizeof(struct buf)");
+SYSCTL_SIZEOF_STRUCT(bio);
+SYSCTL_SIZEOF_STRUCT(buf);
 
 #include <sys/user.h>
-SYSCTL_INT(_debug_sizeof, OID_AUTO, kinfo_proc, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct kinfo_proc), "sizeof(struct kinfo_proc)");
+SYSCTL_SIZEOF_STRUCT(kinfo_proc);
 
 /* Used by kernel debuggers. */
 const int pcb_size = sizeof(struct pcb);
-SYSCTL_INT(_debug_sizeof, OID_AUTO, pcb, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct pcb), "sizeof(struct pcb)");
+SYSCTL_SIZEOF_STRUCT(pcb);
 
 /* XXX compatibility, remove for 6.0 */
 #include <sys/imgact.h>

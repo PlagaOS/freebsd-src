@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -259,7 +260,7 @@ mmp_thread_stop(spa_t *spa)
 	zfs_dbgmsg("MMP thread stopped pool '%s' gethrtime %llu",
 	    spa_name(spa), gethrtime());
 
-	ASSERT(mmp->mmp_thread == NULL);
+	ASSERT0P(mmp->mmp_thread);
 	mmp->mmp_thread_exiting = 0;
 }
 
@@ -445,7 +446,7 @@ mmp_write_uberblock(spa_t *spa)
 	uint64_t offset;
 
 	hrtime_t lock_acquire_time = gethrtime();
-	spa_config_enter_mmp(spa, SCL_STATE, mmp_tag, RW_READER);
+	spa_config_enter_priority(spa, SCL_STATE, mmp_tag, RW_READER);
 	lock_acquire_time = gethrtime() - lock_acquire_time;
 	if (lock_acquire_time > (MSEC2NSEC(MMP_MIN_INTERVAL) / 10))
 		zfs_dbgmsg("MMP SCL_STATE acquisition pool '%s' took %llu ns "
@@ -664,12 +665,13 @@ mmp_thread(void *arg)
 		    (gethrtime() - mmp->mmp_last_write) > mmp_fail_ns) {
 			zfs_dbgmsg("MMP suspending pool '%s': gethrtime %llu "
 			    "mmp_last_write %llu mmp_interval %llu "
-			    "mmp_fail_intervals %llu mmp_fail_ns %llu",
+			    "mmp_fail_intervals %llu mmp_fail_ns %llu txg %llu",
 			    spa_name(spa), (u_longlong_t)gethrtime(),
 			    (u_longlong_t)mmp->mmp_last_write,
 			    (u_longlong_t)mmp_interval,
 			    (u_longlong_t)mmp_fail_intervals,
-			    (u_longlong_t)mmp_fail_ns);
+			    (u_longlong_t)mmp_fail_ns,
+			    (u_longlong_t)spa->spa_uberblock.ub_txg);
 			cmn_err(CE_WARN, "MMP writes to pool '%s' have not "
 			    "succeeded in over %llu ms; suspending pool. "
 			    "Hrtime %llu",
@@ -727,19 +729,17 @@ mmp_signal_all_threads(void)
 {
 	spa_t *spa = NULL;
 
-	mutex_enter(&spa_namespace_lock);
+	spa_namespace_enter(FTAG);
 	while ((spa = spa_next(spa))) {
 		if (spa->spa_state == POOL_STATE_ACTIVE)
 			mmp_signal_thread(spa);
 	}
-	mutex_exit(&spa_namespace_lock);
+	spa_namespace_exit(FTAG);
 }
 
-/* BEGIN CSTYLED */
 ZFS_MODULE_PARAM_CALL(zfs_multihost, zfs_multihost_, interval,
 	param_set_multihost_interval, spl_param_get_u64, ZMOD_RW,
 	"Milliseconds between mmp writes to each leaf");
-/* END CSTYLED */
 
 ZFS_MODULE_PARAM(zfs_multihost, zfs_multihost_, fail_intervals, UINT, ZMOD_RW,
 	"Max allowed period without a successful mmp write");

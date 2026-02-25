@@ -64,6 +64,12 @@ properties:
       - const: rmii_internal
       - const: mac_cg
 
+  interrupts:
+    maxItems: 1
+
+  interrupt-names:
+    const: macirq
+
   power-domains:
     maxItems: 1
 
@@ -129,7 +135,7 @@ properties:
     type: boolean
     description:
       If present, indicates that MAC supports WOL(Wake-On-LAN), and MAC WOL will be enabled.
-      Otherwise, PHY WOL is perferred.
+      Otherwise, PHY WOL is preferred.
 
 required:
   - compatible

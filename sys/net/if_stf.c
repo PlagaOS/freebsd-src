@@ -92,6 +92,7 @@
 #include <sys/proc.h>
 #include <sys/queue.h>
 #include <sys/sdt.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <machine/cpu.h>
 
@@ -122,8 +123,6 @@
 #include <netinet/ip_ecn.h>
 
 #include <netinet/ip_encap.h>
-
-#include <machine/stdarg.h>
 
 #include <net/bpf.h>
 
@@ -264,11 +263,6 @@ stf_clone_create(struct if_clone *ifc, char *name, size_t len,
 
 	sc = malloc(sizeof(struct stf_softc), M_STF, M_WAITOK | M_ZERO);
 	ifp = STF2IFP(sc) = if_alloc(IFT_STF);
-	if (ifp == NULL) {
-		free(sc, M_STF);
-		ifc_free_unit(ifc, unit);
-		return (ENOSPC);
-	}
 	ifp->if_softc = sc;
 	sc->sc_fibnum = curthread->td_proc->p_fibnum;
 

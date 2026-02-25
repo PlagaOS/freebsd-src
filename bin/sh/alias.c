@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -204,6 +206,11 @@ aliascmd(int argc __unused, char **argv __unused)
 		return (0);
 	}
 	while ((n = *argptr++) != NULL) {
+		if (n[0] == '\0') {
+			warning("'': not found");
+			ret = 1;
+			continue;
+		}
 		if ((v = strchr(n+1, '=')) == NULL) /* n+1: funny ksh stuff */
 			if ((ap = lookupalias(n, 0)) == NULL) {
 				warning("%s: not found", n);

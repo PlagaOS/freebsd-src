@@ -7,8 +7,8 @@
 #ifndef _FREEBSD32_SYSPROTO_H_
 #define	_FREEBSD32_SYSPROTO_H_
 
+#include <sys/types.h>
 #include <sys/signal.h>
-#include <sys/acl.h>
 #include <sys/cpuset.h>
 #include <sys/domainset.h>
 #include <sys/_ffcounter.h>
@@ -157,7 +157,7 @@ struct freebsd32_ntp_adjtime_args {
 	char tp_l_[PADL_(struct timex32 *)]; struct timex32 * tp; char tp_r_[PADR_(struct timex32 *)];
 };
 struct freebsd32___sysctl_args {
-	char name_l_[PADL_(int *)]; int * name; char name_r_[PADR_(int *)];
+	char name_l_[PADL_(const int *)]; const int * name; char name_r_[PADR_(const int *)];
 	char namelen_l_[PADL_(u_int)]; u_int namelen; char namelen_r_[PADR_(u_int)];
 	char old_l_[PADL_(void *)]; void * old; char old_r_[PADR_(void *)];
 	char oldlenp_l_[PADL_(uint32_t *)]; uint32_t * oldlenp; char oldlenp_r_[PADR_(uint32_t *)];
@@ -694,6 +694,18 @@ struct freebsd32_timerfd_settime_args {
 	char new_value_l_[PADL_(const struct itimerspec32 *)]; const struct itimerspec32 * new_value; char new_value_r_[PADR_(const struct itimerspec32 *)];
 	char old_value_l_[PADL_(struct itimerspec32 *)]; struct itimerspec32 * old_value; char old_value_r_[PADR_(struct itimerspec32 *)];
 };
+struct freebsd32_setcred_args {
+	char flags_l_[PADL_(u_int)]; u_int flags; char flags_r_[PADR_(u_int)];
+	char wcred_l_[PADL_(const struct setcred32 *)]; const struct setcred32 * wcred; char wcred_r_[PADR_(const struct setcred32 *)];
+	char size_l_[PADL_(size_t)]; size_t size; char size_r_[PADR_(size_t)];
+};
+struct freebsd32_pdwait_args {
+	char fd_l_[PADL_(int)]; int fd; char fd_r_[PADR_(int)];
+	char status_l_[PADL_(int *)]; int * status; char status_r_[PADR_(int *)];
+	char options_l_[PADL_(int)]; int options; char options_r_[PADR_(int)];
+	char wrusage_l_[PADL_(struct __wrusage32 *)]; struct __wrusage32 * wrusage; char wrusage_r_[PADR_(struct __wrusage32 *)];
+	char info_l_[PADL_(struct __siginfo32 *)]; struct __siginfo32 * info; char info_r_[PADR_(struct __siginfo32 *)];
+};
 int	freebsd32_wait4(struct thread *, struct freebsd32_wait4_args *);
 int	freebsd32_ptrace(struct thread *, struct freebsd32_ptrace_args *);
 int	freebsd32_recvmsg(struct thread *, struct freebsd32_recvmsg_args *);
@@ -811,6 +823,8 @@ int	freebsd32_aio_writev(struct thread *, struct freebsd32_aio_writev_args *);
 int	freebsd32_aio_readv(struct thread *, struct freebsd32_aio_readv_args *);
 int	freebsd32_timerfd_gettime(struct thread *, struct freebsd32_timerfd_gettime_args *);
 int	freebsd32_timerfd_settime(struct thread *, struct freebsd32_timerfd_settime_args *);
+int	freebsd32_setcred(struct thread *, struct freebsd32_setcred_args *);
+int	freebsd32_pdwait(struct thread *, struct freebsd32_pdwait_args *);
 
 #ifdef COMPAT_43
 
@@ -1312,6 +1326,8 @@ int	freebsd11_freebsd32_fstatat(struct thread *, struct freebsd11_freebsd32_fsta
 #define	FREEBSD32_SYS_AUE_freebsd32_aio_readv	AUE_AIO_READV
 #define	FREEBSD32_SYS_AUE_freebsd32_timerfd_gettime	AUE_TIMERFD
 #define	FREEBSD32_SYS_AUE_freebsd32_timerfd_settime	AUE_TIMERFD
+#define	FREEBSD32_SYS_AUE_freebsd32_setcred	AUE_SETCRED
+#define	FREEBSD32_SYS_AUE_freebsd32_pdwait	AUE_PDWAIT
 
 #undef PAD_
 #undef PADL_

@@ -1,4 +1,3 @@
-
 PACKAGE=	kerberos
 
 PROG=	hpropd
@@ -8,7 +7,7 @@ CFLAGS+=-I${KRB5DIR}/lib/roken -I${KRB5DIR}/lib/krb5 -I${KRB5DIR}/lib/asn1 \
 LIBADD=	hdb krb5 roken vers
 DPADD=	${LDAPDPADD}
 LDADD=	${LDAPLDADD}
-LDFLAGS=${LDAPLDFLAGS}
+LDFLAGS+=${LDAPLDFLAGS}
 
 .include <bsd.prog.mk>
 

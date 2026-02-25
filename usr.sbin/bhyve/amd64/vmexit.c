@@ -107,8 +107,11 @@ vmexit_rdmsr(struct vmctx *ctx __unused, struct vcpu *vcpu,
 	val = 0;
 	error = emulate_rdmsr(vcpu, vme->u.msr.code, &val);
 	if (error != 0) {
-		EPRINTLN("rdmsr to register %#x on vcpu %d",
-		    vme->u.msr.code, vcpu_id(vcpu));
+		if (get_config_bool("x86.strictmsr") ||
+		    get_config_bool("x86.verbosemsr")) {
+			EPRINTLN("rdmsr to register %#x on vcpu %d",
+			    vme->u.msr.code, vcpu_id(vcpu));
+		}
 		if (get_config_bool("x86.strictmsr")) {
 			vm_inject_gp(vcpu);
 			return (VMEXIT_CONTINUE);
@@ -137,8 +140,11 @@ vmexit_wrmsr(struct vmctx *ctx __unused, struct vcpu *vcpu,
 
 	error = emulate_wrmsr(vcpu, vme->u.msr.code, vme->u.msr.wval);
 	if (error != 0) {
-		EPRINTLN("wrmsr to register %#x(%#lx) on vcpu %d",
-		    vme->u.msr.code, vme->u.msr.wval, vcpu_id(vcpu));
+		if (get_config_bool("x86.strictmsr") ||
+		    get_config_bool("x86.verbosemsr")) {
+			EPRINTLN("wrmsr to register %#x(%#lx) on vcpu %d",
+			    vme->u.msr.code, vme->u.msr.wval, vcpu_id(vcpu));
+		}
 		if (get_config_bool("x86.strictmsr")) {
 			vm_inject_gp(vcpu);
 			return (VMEXIT_CONTINUE);
@@ -403,15 +409,17 @@ vmexit_suspend(struct vmctx *ctx, struct vcpu *vcpu, struct vm_run *vmrun)
 
 	switch (how) {
 	case VM_SUSPEND_RESET:
-		exit(0);
+		exit(BHYVE_EXIT_RESET);
 	case VM_SUSPEND_POWEROFF:
 		if (get_config_bool_default("destroy_on_poweroff", false))
 			vm_destroy(ctx);
-		exit(1);
+		exit(BHYVE_EXIT_POWEROFF);
 	case VM_SUSPEND_HALT:
-		exit(2);
+		exit(BHYVE_EXIT_HALT);
 	case VM_SUSPEND_TRIPLEFAULT:
-		exit(3);
+		exit(BHYVE_EXIT_TRIPLEFAULT);
+	case VM_SUSPEND_DESTROY:
+		exit(BHYVE_EXIT_ERROR);
 	default:
 		EPRINTLN("vmexit_suspend: invalid reason %d", how);
 		exit(100);

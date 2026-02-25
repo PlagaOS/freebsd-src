@@ -378,6 +378,18 @@ bsd_set_key(void *priv, struct wpa_driver_set_key_params *params)
 	case WPA_ALG_CCMP:
 		wk.ik_type = IEEE80211_CIPHER_AES_CCM;
 		break;
+	case WPA_ALG_CCMP_256:
+		wk.ik_type = IEEE80211_CIPHER_AES_CCM_256;
+		break;
+	case WPA_ALG_GCMP:
+		wk.ik_type = IEEE80211_CIPHER_AES_GCM_128;
+		break;
+	case WPA_ALG_GCMP_256:
+		wk.ik_type = IEEE80211_CIPHER_AES_GCM_256;
+		break;
+	case WPA_ALG_BIP_CMAC_128:
+		wk.ik_type = IEEE80211_CIPHER_BIP_CMAC_128;
+		break;
 	default:
 		wpa_printf(MSG_ERROR, "%s: unknown alg=%d", __func__, alg);
 		return -1;
@@ -442,12 +454,26 @@ bsd_configure_wpa(void *priv, struct wpa_bss_params *params)
 {
 #ifndef IEEE80211_IOC_APPIE
 	static const char *ciphernames[] =
-		{ "WEP", "TKIP", "AES-OCB", "AES-CCM", "CKIP", "NONE" };
+		{ "WEP", "TKIP", "AES-OCB", "AES-CCM", "CKIP", "NONE",
+		  "AES-CCM-256", "BIP-CMAC-128", "BIP-CMAC-256", "BIP-GMAC-128",
+		  "BIP-GMAC-256", "AES-GCM-128", "AES-GCM-256" };
 	int v;
 
 	switch (params->wpa_group) {
 	case WPA_CIPHER_CCMP:
 		v = IEEE80211_CIPHER_AES_CCM;
+		break;
+	case WPA_CIPHER_CCMP_256:
+		v = IEEE80211_CIPHER_AES_CCM_256;
+		break;
+	case WPA_CIPHER_GCMP:
+		v = IEEE80211_CIPHER_AES_GCM_128;
+		break;
+	case WPA_CIPHER_GCMP_256:
+		v = IEEE80211_CIPHER_AES_GCM_256;
+		break;
+	case WPA_CIPHER_BIP_CMAC_128:
+		v = IEEE80211_CIPHER_BIP_CMAC_128;
 		break;
 	case WPA_CIPHER_TKIP:
 		v = IEEE80211_CIPHER_TKIP;
@@ -485,8 +511,16 @@ bsd_configure_wpa(void *priv, struct wpa_bss_params *params)
 	}
 
 	v = 0;
+	if (params->wpa_pairwise & WPA_CIPHER_BIP_CMAC_128)
+		v |= 1<<IEEE80211_CIPHER_BIP_CMAC_128;
+	if (params->wpa_pairwise & WPA_CIPHER_GCMP)
+		v |= 1<<IEEE80211_CIPHER_AES_GCM_128;
+	if (params->wpa_pairwise & WPA_CIPHER_GCMP_256)
+		v |= 1<<IEEE80211_CIPHER_AES_GCM_256;
 	if (params->wpa_pairwise & WPA_CIPHER_CCMP)
 		v |= 1<<IEEE80211_CIPHER_AES_CCM;
+	if (params->wpa_pairwise & WPA_CIPHER_CCMP_256)
+		v |= 1<<IEEE80211_CIPHER_AES_CCM_256;
 	if (params->wpa_pairwise & WPA_CIPHER_TKIP)
 		v |= 1<<IEEE80211_CIPHER_TKIP;
 	if (params->wpa_pairwise & WPA_CIPHER_NONE)
@@ -582,12 +616,12 @@ bsd_new_sta(void *priv, void *ctx, u8 addr[IEEE80211_ADDR_LEN])
 		ielen += 2;
 
 no_ie:
-	drv_event_assoc(ctx, addr, iebuf, ielen, 0);
+	drv_event_assoc(ctx, addr, iebuf, ielen, NULL, 0, NULL, -1, 0);
 }
 
 static int
 bsd_send_eapol(void *priv, const u8 *addr, const u8 *data, size_t data_len,
-	       int encrypt, const u8 *own_addr, u32 flags)
+	       int encrypt, const u8 *own_addr, u32 flags, int link_id)
 {
 	struct bsd_driver_data *drv = priv;
 
@@ -615,6 +649,7 @@ bsd_set_freq(void *priv, struct hostapd_freq_params *freq)
 		mode = IFM_IEEE80211_11B;
 	} else {
 		mode =
+			freq->vht_enabled ? IFM_IEEE80211_VHT5G :
 			freq->ht_enabled ? IFM_IEEE80211_11NA :
 			IFM_IEEE80211_11A;
 	}
@@ -915,7 +950,7 @@ bsd_wireless_event_receive(int sock, void *ctx, void *sock_ctx)
 #undef WPA_OUI_TYPE
 
 static int bsd_sta_deauth(void *priv, const u8 *own_addr, const u8 *addr,
-			  u16 reason_code);
+			  u16 reason_code, int link_id);
 
 static const char *
 ether_sprintf(const u8 *addr)
@@ -939,7 +974,7 @@ bsd_set_privacy(void *priv, int enabled)
 
 static int
 bsd_get_seqnum(const char *ifname, void *priv, const u8 *addr, int idx,
-	       u8 *seq)
+	       int link_id, u8 *seq)
 {
 	struct ieee80211req_key wk;
 
@@ -979,12 +1014,13 @@ bsd_get_seqnum(const char *ifname, void *priv, const u8 *addr, int idx,
 
 
 static int
-bsd_flush(void *priv)
+bsd_flush(void *priv, int link_id)
 {
 	u8 allsta[IEEE80211_ADDR_LEN];
 
 	memset(allsta, 0xff, IEEE80211_ADDR_LEN);
-	return bsd_sta_deauth(priv, NULL, allsta, IEEE80211_REASON_AUTH_LEAVE);
+	return bsd_sta_deauth(priv, NULL, allsta, IEEE80211_REASON_AUTH_LEAVE,
+			      -1);
 }
 
 
@@ -1007,7 +1043,8 @@ bsd_read_sta_driver_data(void *priv, struct hostap_sta_driver_data *data,
 }
 
 static int
-bsd_sta_deauth(void *priv, const u8 *own_addr, const u8 *addr, u16 reason_code)
+bsd_sta_deauth(void *priv, const u8 *own_addr, const u8 *addr, u16 reason_code,
+	       int link_id)
 {
 	return bsd_send_mlme_param(priv, IEEE80211_MLME_DEAUTH, reason_code,
 				   addr);
@@ -1557,17 +1594,6 @@ static int wpa_driver_bsd_capa(struct bsd_driver_data *drv)
 	if (devcaps.dc_drivercaps & IEEE80211_C_WPA2)
 		drv->capa.key_mgmt = WPA_DRIVER_CAPA_KEY_MGMT_WPA2 |
 			WPA_DRIVER_CAPA_KEY_MGMT_WPA2_PSK;
-#ifdef __FreeBSD__
-	drv->capa.enc |= WPA_DRIVER_CAPA_ENC_WEP40 |
-	    WPA_DRIVER_CAPA_ENC_WEP104 |
-	    WPA_DRIVER_CAPA_ENC_TKIP |
-	    WPA_DRIVER_CAPA_ENC_CCMP;
-#else
-	/*
-	 * XXX
-	 * FreeBSD exports hardware cryptocaps.  These have no meaning for wpa
-	 * since net80211 performs software crypto.
-	 */
 
 	if (devcaps.dc_cryptocaps & IEEE80211_CRYPTO_WEP)
 		drv->capa.enc |= WPA_DRIVER_CAPA_ENC_WEP40 |
@@ -1576,7 +1602,14 @@ static int wpa_driver_bsd_capa(struct bsd_driver_data *drv)
 		drv->capa.enc |= WPA_DRIVER_CAPA_ENC_TKIP;
 	if (devcaps.dc_cryptocaps & IEEE80211_CRYPTO_AES_CCM)
 		drv->capa.enc |= WPA_DRIVER_CAPA_ENC_CCMP;
-#endif
+	if (devcaps.dc_cryptocaps & IEEE80211_CRYPTO_AES_CCM_256)
+		drv->capa.enc |= WPA_DRIVER_CAPA_ENC_CCMP_256;
+	if (devcaps.dc_cryptocaps & IEEE80211_CRYPTO_AES_GCM_128)
+		drv->capa.enc |= WPA_DRIVER_CAPA_ENC_GCMP;
+	if (devcaps.dc_cryptocaps & IEEE80211_CRYPTO_AES_GCM_256)
+		drv->capa.enc |= WPA_DRIVER_CAPA_ENC_GCMP_256;
+	if (devcaps.dc_cryptocaps & IEEE80211_CRYPTO_BIP_CMAC_128)
+		drv->capa.enc |= WPA_DRIVER_CAPA_ENC_BIP;
 
 	if (devcaps.dc_drivercaps & IEEE80211_C_HOSTAP)
 		drv->capa.flags |= WPA_DRIVER_FLAGS_AP;
@@ -1765,9 +1798,9 @@ bsd_global_init(void *ctx)
 	global->ctx = ctx;
 	dl_list_init(&global->ifaces);
 
-	global->sock = socket(PF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	global->sock = socket(PF_LOCAL, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 	if (global->sock < 0) {
-		wpa_printf(MSG_ERROR, "socket[PF_INET,SOCK_DGRAM]: %s",
+		wpa_printf(MSG_ERROR, "socket[PF_LOCAL,SOCK_DGRAM]: %s",
 			   strerror(errno));
 		goto fail1;
 	}

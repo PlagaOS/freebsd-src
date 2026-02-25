@@ -1,5 +1,5 @@
 DESCRIPTION
-  These script were written with the primary intention of being portable and
+  These scripts were written with the primary intention of being portable and
   usable on as many systems as possible.
 
   This is, in practice, usually not possible. But the intention is there.
@@ -7,11 +7,7 @@ DESCRIPTION
 
   They have been tested successfully on:
 
-    * Debian GNU/Linux Wheezy
-    * Debian GNU/Linux Jessie
-    * Ubuntu Trusty
-    * CentOS 6.0
-    * CentOS 6.6
+    * Debian GNU/Linux Bookworm
     * Gentoo
 
 SUPPORT

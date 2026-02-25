@@ -54,6 +54,7 @@
 #include <sys/socket.h>
 #include <sys/errno.h>
 #include <sys/hhook.h>
+#include <sys/stdarg.h>
 #include <sys/syslog.h>
 
 #include <net/if.h>
@@ -90,6 +91,7 @@
 #include <netipsec/esp.h>
 #include <netipsec/esp_var.h>
 #include <netipsec/ipcomp_var.h>
+#include <netipsec/ipsec_offload.h>
 
 #include <netipsec/key.h>
 #include <netipsec/keydb.h>
@@ -98,7 +100,6 @@
 #include <netipsec/xform.h>
 
 #include <machine/in_cksum.h>
-#include <machine/stdarg.h>
 
 #define	IPSEC_ISTAT(proto, name)	do {	\
 	if ((proto) == IPPROTO_ESP)		\
@@ -237,6 +238,11 @@ ipsec_common_input(struct mbuf *m, int skip, int protoff, int af, int sproto)
 int
 ipsec4_input(struct mbuf *m, int offset, int proto)
 {
+	int error;
+
+	error = ipsec_accel_input(m, offset, proto);
+	if (error != ENXIO)
+		return (error);
 
 	switch (proto) {
 	case IPPROTO_AH:
@@ -333,7 +339,7 @@ ipsec4_ctlinput(ipsec_ctlinput_param_t param)
  */
 int
 ipsec4_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
-    int protoff)
+    int protoff, struct rm_priotracker *sahtree_tracker)
 {
 	IPSEC_DEBUG_DECLARE(char buf[IPSEC_ADDRSTRLEN]);
 	struct epoch_tracker et;
@@ -486,7 +492,9 @@ ipsec4_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 
 	/* Handle virtual tunneling interfaces */
 	if (saidx->mode == IPSEC_MODE_TUNNEL)
-		error = ipsec_if_input(m, sav, af);
+		error = ipsec_if_input(m, sav, af, sahtree_tracker);
+	else
+		ipsec_sahtree_runlock(sahtree_tracker);
 	if (error == 0) {
 		error = netisr_queue_src(isr_prot, (uintptr_t)sav->spi, m);
 		if (error) {
@@ -501,6 +509,7 @@ ipsec4_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 bad:
 	NET_EPOCH_EXIT(et);
 bad_noepoch:
+	ipsec_sahtree_runlock(sahtree_tracker);
 	key_freesav(&sav);
 	if (m != NULL)
 		m_freem(m);
@@ -536,7 +545,12 @@ ipsec6_lasthdr(int proto)
 int
 ipsec6_input(struct mbuf *m, int offset, int proto)
 {
+	int error;
 
+	error = ipsec_accel_input(m, offset, proto);
+	if (error != ENXIO)
+		return (error);
+		
 	switch (proto) {
 	case IPPROTO_AH:
 	case IPPROTO_ESP:
@@ -579,7 +593,7 @@ extern ipproto_input_t	*ip6_protox[];
  */
 int
 ipsec6_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
-    int protoff)
+    int protoff, struct rm_priotracker *sahtree_tracker)
 {
 	IPSEC_DEBUG_DECLARE(char buf[IPSEC_ADDRSTRLEN]);
 	struct epoch_tracker et;
@@ -723,7 +737,9 @@ ipsec6_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 		}
 		/* Handle virtual tunneling interfaces */
 		if (saidx->mode == IPSEC_MODE_TUNNEL)
-			error = ipsec_if_input(m, sav, af);
+			error = ipsec_if_input(m, sav, af, sahtree_tracker);
+		else
+			ipsec_sahtree_runlock(sahtree_tracker);
 		if (error == 0) {
 			error = netisr_queue_src(isr_prot,
 			    (uintptr_t)sav->spi, m);
@@ -737,6 +753,9 @@ ipsec6_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 		key_freesav(&sav);
 		return (error);
 	}
+
+	ipsec_sahtree_runlock(sahtree_tracker);
+
 	/*
 	 * See the end of ip6_input for this logic.
 	 * IPPROTO_IPV[46] case will be processed just like other ones
@@ -776,6 +795,7 @@ ipsec6_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 	return (0);
 bad:
 	NET_EPOCH_EXIT(et);
+	ipsec_sahtree_runlock(sahtree_tracker);
 	key_freesav(&sav);
 	if (m)
 		m_freem(m);

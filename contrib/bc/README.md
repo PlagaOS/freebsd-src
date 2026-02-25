@@ -1,9 +1,7 @@
 # `bc`
 
-***WARNING: New user registration for <https://git.gavinhoward.com/> is disabled
-because of spam. If you need to report a bug with `bc`, email gavin at this site
-minus the `git.` part for an account, and I will create one for you. Or you can
-report an issue at [GitHub][29].***
+***WARNING: This project has moved back to GitHub temporarily; self-hosted Git
+forges are not working for me, so I am trying to replace them.***
 
 ***WARNING: This project has moved to [https://git.gavinhoward.com/][20] for
 [these reasons][21], though GitHub will remain a mirror.***
@@ -48,7 +46,7 @@ POSIX-compatible systems that are known to work:
 * FreeBSD
 * OpenBSD
 * NetBSD
-* Mac OSX
+* macOS
 * Solaris* (as long as the Solaris version supports POSIX 2008)
 * AIX
 * HP-UX* (except for history)
@@ -282,6 +280,12 @@ The easiest way to run this script is with `make karatsuba`.
 If desired, maintainers can also skip running this script because there is a
 sane default for the Karatsuba number.
 
+##### `timeconst.bc`
+
+The test suite will print a warning in normal usage. The warning is about a
+missing `timeconst.bc`. This file [comes from][37] the [Linux kernel][38], which
+has an incompatible license. The warning can be ignored.
+
 ## Status
 
 This `bc` is robust.
@@ -347,6 +351,8 @@ that is because it is more robust. See the [benchmarks][19].
 Below is a non-comprehensive list of extensions that this `bc` and `dc` have
 that all others do not.
 
+* **The `!` operator has higher precedence than the `!` operator in other `bc`
+  implementations.**
 * An extended math library. (See [here][30] for more information.)
 * A command-line prompt.
 * Turning on and off digit clamping. (Digit clamping is about how to treat
@@ -427,9 +433,11 @@ Other projects based on this bc are:
 * [FreeBSD `bc`][23]. While the `bc` in FreeBSD is kept up-to-date, it is better
   to [report bugs there][24], as well as [submit patches][25], and the
   maintainers of the package will contact me if necessary.
-* [Mac OSX `bc`][35]. Any bugs in that `bc` should be reported to me, but do
+* [macOS `bc`][35]. Any bugs in that `bc` should be reported to me, but do
   expect bugs because the version is old.
 * [Android Open Source `bc`][32]. Any bugs in that `bc` can be reported here.
+* [A Fedora package][36]. If this package does not have any patches, you can
+  report bugs to me.
 
 This is a non-comprehensive list of Linux distros that use this `bc` as the
 system `bc`:
@@ -467,12 +475,16 @@ Files:
 	.gitignore           The git ignore file (maintainer use only).
 	.gitattributes       The git attributes file (maintainer use only).
 	bcl.pc.in            A template pkg-config file for bcl.
+	build.gaml           The GAML file with options for building under Rig.
+	build.pkg.rig        The Rig build package file.
+	build.rig            The Rig build script.
 	configure            A symlink to configure.sh to make packaging easier.
 	configure.sh         The configure script.
 	LICENSE.md           A Markdown form of the BSD 2-clause License.
 	Makefile.in          The Makefile template.
 	NEWS.md              The changelog.
 	NOTICE.md            List of contributors and copyright owners.
+	VERSION.txt          A file containing the version.
 
 Folders:
 
@@ -514,3 +526,6 @@ Folders:
 [33]: https://github.com/gentoo/gentoo/blob/master/app-alternatives/bc/bc-0.ebuild#L8
 [34]: https://www.linuxfromscratch.org/lfs/view/stable/chapter08/bc.html
 [35]: https://github.com/apple-oss-distributions/bc/tree/main/bc
+[36]: https://copr.fedorainfracloud.org/coprs/tkbcopr/bc-gh/
+[37]: https://github.com/torvalds/linux/blob/master/kernel/time/timeconst.bc
+[38]: https://github.com/torvalds/linux

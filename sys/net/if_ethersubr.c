@@ -92,24 +92,18 @@
 
 #include <crypto/sha1.h>
 
-#ifdef CTASSERT
-CTASSERT(sizeof (struct ether_header) == ETHER_ADDR_LEN * 2 + 2);
-CTASSERT(sizeof (struct ether_addr) == ETHER_ADDR_LEN);
-#endif
-
 VNET_DEFINE(pfil_head_t, link_pfil_head);	/* Packet filter hooks */
 
 /* netgraph node hooks for ng_ether(4) */
 void	(*ng_ether_input_p)(struct ifnet *ifp, struct mbuf **mp);
 void	(*ng_ether_input_orphan_p)(struct ifnet *ifp, struct mbuf *m);
 int	(*ng_ether_output_p)(struct ifnet *ifp, struct mbuf **mp);
-void	(*ng_ether_attach_p)(struct ifnet *ifp);
-void	(*ng_ether_detach_p)(struct ifnet *ifp);
-
-void	(*vlan_input_p)(struct ifnet *, struct mbuf *);
 
 /* if_bridge(4) support */
 void	(*bridge_dn_p)(struct mbuf *, struct ifnet *);
+bool	(*bridge_same_p)(const void *, const void *);
+void	*(*bridge_get_softc_p)(struct ifnet *);
+bool	(*bridge_member_ifaddrs_p)(void);
 
 /* if_lagg(4) support */
 struct mbuf *(*lagg_input_ethernet_p)(struct ifnet *, struct mbuf *); 
@@ -485,7 +479,7 @@ ether_output_frame(struct ifnet *ifp, struct mbuf *m)
 #if defined(INET6) && defined(INET)
 	/* draft-ietf-6man-ipv6only-flag */
 	/* Catch ETHERTYPE_IP, and ETHERTYPE_[REV]ARP if we are v6-only. */
-	if ((ND_IFINFO(ifp)->flags & ND6_IFF_IPV6_ONLY_MASK) != 0) {
+	if ((ifp->if_inet6->nd_flags & ND6_IFF_IPV6_ONLY_MASK) != 0) {
 		struct ether_header *eh;
 
 		eh = mtod(m, struct ether_header *);
@@ -534,10 +528,10 @@ ether_input_internal(struct ifnet *ifp, struct mbuf *m)
 		return;
 	}
 #endif
-	if (m->m_len < ETHER_HDR_LEN) {
-		/* XXX maybe should pullup? */
+	if (__predict_false(m->m_len < ETHER_HDR_LEN)) {
+		/* Drivers should pullup and ensure the mbuf is valid */
 		if_printf(ifp, "discard frame w/o leading ethernet "
-				"header (len %u pkt len %u)\n",
+				"header (len %d pkt len %d)\n",
 				m->m_len, m->m_pkthdr.len);
 		if_inc_counter(ifp, IFCOUNTER_IERRORS, 1);
 		m_freem(m);
@@ -551,7 +545,7 @@ ether_input_internal(struct ifnet *ifp, struct mbuf *m)
 #if defined(INET6) && defined(INET)
 	/* draft-ietf-6man-ipv6only-flag */
 	/* Catch ETHERTYPE_IP, and ETHERTYPE_[REV]ARP if we are v6-only. */
-	if ((ND_IFINFO(ifp)->flags & ND6_IFF_IPV6_ONLY_MASK) != 0) {
+	if ((ifp->if_inet6->nd_flags & ND6_IFF_IPV6_ONLY_MASK) != 0) {
 		switch (etype) {
 		case ETHERTYPE_IP:
 		case ETHERTYPE_ARP:
@@ -587,16 +581,6 @@ ether_input_internal(struct ifnet *ifp, struct mbuf *m)
 	 * Give bpf a chance at the packet.
 	 */
 	ETHER_BPF_MTAP(ifp, m);
-
-	/*
-	 * If the CRC is still on the packet, trim it off. We do this once
-	 * and once only in case we are re-entered. Nothing else on the
-	 * Ethernet receive path expects to see the FCS.
-	 */
-	if (m->m_flags & M_HASFCS) {
-		m_adj(m, -ETHER_CRC_LEN);
-		m->m_flags &= ~M_HASFCS;
-	}
 
 	if (!(ifp->if_capenable & IFCAP_HWSTATS))
 		if_inc_counter(ifp, IFCOUNTER_IBYTES, m->m_pkthdr.len);
@@ -709,7 +693,7 @@ ether_input_internal(struct ifnet *ifp, struct mbuf *m)
 		 * seen by upper protocol layers.
 		 */
 		if (!ETHER_IS_MULTICAST(eh->ether_dhost) &&
-		    bcmp(IF_LLADDR(ifp), eh->ether_dhost, ETHER_ADDR_LEN) != 0)
+		    memcmp(IF_LLADDR(ifp), eh->ether_dhost, ETHER_ADDR_LEN) != 0)
 			m->m_flags |= M_PROMISC;
 	}
 
@@ -769,7 +753,7 @@ ether_init(__unused void *arg)
 SYSINIT(ether, SI_SUB_INIT_IF, SI_ORDER_ANY, ether_init, NULL);
 
 static void
-vnet_ether_init(__unused void *arg)
+vnet_ether_init(const __unused void *arg)
 {
 	struct pfil_head_args args;
 
@@ -788,7 +772,7 @@ VNET_SYSINIT(vnet_ether_init, SI_SUB_PROTO_IF, SI_ORDER_ANY,
 
 #ifdef VIMAGE
 static void
-vnet_ether_pfil_destroy(__unused void *arg)
+vnet_ether_pfil_destroy(const __unused void *arg)
 {
 
 	pfil_head_unregister(V_link_pfil_head);
@@ -994,16 +978,14 @@ ether_ifattach(struct ifnet *ifp, const u_int8_t *lla)
 	struct sockaddr_dl *sdl;
 
 	ifp->if_addrlen = ETHER_ADDR_LEN;
-	ifp->if_hdrlen = ETHER_HDR_LEN;
+	ifp->if_hdrlen = (ifp->if_capabilities & IFCAP_VLAN_MTU) != 0 ?
+	    ETHER_HDR_LEN + ETHER_VLAN_ENCAP_LEN : ETHER_HDR_LEN;
 	ifp->if_mtu = ETHERMTU;
 	if_attach(ifp);
 	ifp->if_output = ether_output;
 	ifp->if_input = ether_input;
 	ifp->if_resolvemulti = ether_resolvemulti;
 	ifp->if_requestencap = ether_requestencap;
-#ifdef VIMAGE
-	ifp->if_reassign = ether_reassign;
-#endif
 	if (ifp->if_baudrate == 0)
 		ifp->if_baudrate = IF_Mbps(10);		/* just a default */
 	ifp->if_broadcastaddr = etherbroadcastaddr;
@@ -1019,8 +1001,6 @@ ether_ifattach(struct ifnet *ifp, const u_int8_t *lla)
 		bcopy(lla, ifp->if_hw_addr, ifp->if_addrlen);
 
 	bpfattach(ifp, DLT_EN10MB, ETHER_HDR_LEN);
-	if (ng_ether_attach_p != NULL)
-		(*ng_ether_attach_p)(ifp);
 
 	/* Announce Ethernet MAC address if non-zero. */
 	for (i = 0; i < ifp->if_addrlen; i++)
@@ -1048,34 +1028,9 @@ ether_ifdetach(struct ifnet *ifp)
 	sdl = (struct sockaddr_dl *)(ifp->if_addr->ifa_addr);
 	uuid_ether_del(LLADDR(sdl));
 
-	if (ifp->if_l2com != NULL) {
-		KASSERT(ng_ether_detach_p != NULL,
-		    ("ng_ether_detach_p is NULL"));
-		(*ng_ether_detach_p)(ifp);
-	}
-
 	bpfdetach(ifp);
 	if_detach(ifp);
 }
-
-#ifdef VIMAGE
-void
-ether_reassign(struct ifnet *ifp, struct vnet *new_vnet, char *unused __unused)
-{
-
-	if (ifp->if_l2com != NULL) {
-		KASSERT(ng_ether_detach_p != NULL,
-		    ("ng_ether_detach_p is NULL"));
-		(*ng_ether_detach_p)(ifp);
-	}
-
-	if (ng_ether_attach_p != NULL) {
-		CURVNET_SET_QUIET(new_vnet);
-		(*ng_ether_attach_p)(ifp);
-		CURVNET_RESTORE();
-	}
-}
-#endif
 
 SYSCTL_DECL(_net_link);
 SYSCTL_NODE(_net_link, IFT_ETHER, ether, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
@@ -1494,7 +1449,7 @@ ether_gen_addr_byname(const char *nameunit, struct ether_addr *hwaddr)
 	char uuid[HOSTUUIDLEN + 1];
 	uint64_t addr;
 	int i, sz;
-	char digest[SHA1_RESULTLEN];
+	unsigned char digest[SHA1_RESULTLEN];
 	char jailname[MAXHOSTNAMELEN];
 
 	getcredhostuuid(curthread->td_ucred, uuid, sizeof(uuid));
@@ -1518,9 +1473,7 @@ ether_gen_addr_byname(const char *nameunit, struct ether_addr *hwaddr)
 	SHA1Final(digest, &ctx);
 	free(buf, M_TEMP);
 
-	addr = ((digest[0] << 16) | (digest[1] << 8) | digest[2]) &
-	    OUI_FREEBSD_GENERATED_MASK;
-	addr = OUI_FREEBSD(addr);
+	addr = (digest[0] << 8) | digest[1] | OUI_FREEBSD_GENERATED_LOW;
 	for (i = 0; i < ETHER_ADDR_LEN; ++i) {
 		hwaddr->octet[i] = addr >> ((ETHER_ADDR_LEN - i - 1) * 8) &
 		    0xFF;

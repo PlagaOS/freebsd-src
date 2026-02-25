@@ -25,7 +25,9 @@
 # in NOTES.
 #
 
+#NO_UNIVERSE
+
 include GENERIC
-include "../../conf/std.nodebug"
+include "std.nodebug"
 
 ident   GENERIC-NODEBUG

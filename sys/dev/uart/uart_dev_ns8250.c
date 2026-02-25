@@ -77,6 +77,11 @@ static int broken_txfifo = 0;
 SYSCTL_INT(_hw, OID_AUTO, broken_txfifo, CTLFLAG_RWTUN,
 	&broken_txfifo, 0, "UART FIFO has QEMU emulation bug");
 
+static int uart_noise_threshold = 0;
+SYSCTL_INT(_hw, OID_AUTO, uart_noise_threshold, CTLFLAG_RWTUN,
+	&uart_noise_threshold, 0,
+	"Number of UART RX interrupts where TX is not ready, before data is discarded");
+
 /*
  * To use early printf on x86, add the following to your kernel config:
  *
@@ -84,9 +89,7 @@ SYSCTL_INT(_hw, OID_AUTO, broken_txfifo, CTLFLAG_RWTUN,
  * options EARLY_PRINTF=ns8250
 */
 #if CHECK_EARLY_PRINTF(ns8250)
-#if !(defined(__amd64__) || defined(__i386__))
-#error ns8250 early putc is x86 specific as it uses inb/outb
-#endif
+#if (defined(__amd64__) || defined(__i386__))
 static void
 uart_ns8250_early_putc(int c)
 {
@@ -98,7 +101,45 @@ uart_ns8250_early_putc(int c)
 		continue;
 	outb(tx, c);
 }
+#elif (defined(__arm__) || defined(__aarch64__))
+#ifndef UART_NS8250_EARLY_REG_IO_WIDTH
+#error Option 'UART_NS8250_EARLY_REG_IO_WIDTH' is missing.
+#endif
+#ifndef UART_NS8250_EARLY_REG_SHIFT
+#error Option 'UART_NS8250_EARLY_REG_SHIFT' is missing.
+#endif
+
+#if UART_NS8250_EARLY_REG_IO_WIDTH == 1
+#define T uint8_t
+#elif UART_NS8250_EARLY_REG_IO_WIDTH == 2
+#define T uint16_t
+#elif UART_NS8250_EARLY_REG_IO_WIDTH == 4
+#define T uint32_t
+
+#else
+#error Invalid/unsupported UART_NS8250_EARLY_REG_IO_WIDTH value
+#endif
+
+#include <machine/machdep.h>
+
+static void
+uart_ns8250_early_putc(int c)
+{
+	volatile T *stat;
+	volatile T *tx;
+
+	stat = (T *)(socdev_va + (REG_LSR << UART_NS8250_EARLY_REG_SHIFT));
+	tx = (T *)(socdev_va + (REG_DATA << UART_NS8250_EARLY_REG_SHIFT));
+
+	while ((*stat & LSR_THRE) == 0)
+		continue;
+	*tx =  c & 0xff;
+}
+#else
+#error ns8250 early putc is not implemented for current architecture
+#endif
 early_putc_t *early_putc = uart_ns8250_early_putc;
+#undef DTYPE
 #endif /* EARLY_PRINTF */
 
 /*
@@ -126,11 +167,11 @@ ns8250_clrint(struct uart_bas *bas)
 	}
 }
 
-static int
-ns8250_delay(struct uart_bas *bas)
+static uint32_t
+ns8250_get_divisor(struct uart_bas *bas)
 {
-	int divisor;
-	u_char lcr;
+	uint32_t divisor;
+	uint8_t lcr;
 
 	lcr = uart_getreg(bas, REG_LCR);
 	uart_setreg(bas, REG_LCR, lcr | LCR_DLAB);
@@ -139,6 +180,16 @@ ns8250_delay(struct uart_bas *bas)
 	uart_barrier(bas);
 	uart_setreg(bas, REG_LCR, lcr);
 	uart_barrier(bas);
+
+	return (divisor);
+}
+
+static int
+ns8250_delay(struct uart_bas *bas)
+{
+	int divisor;
+
+	divisor = ns8250_get_divisor(bas);
 
 	/* 1/10th the time to transmit 1 character (estimate). */
 	if (divisor <= 134)
@@ -187,7 +238,7 @@ ns8250_drain(struct uart_bas *bas, int what)
 		while ((uart_getreg(bas, REG_LSR) & LSR_TEMT) == 0 && --limit)
 			DELAY(delay);
 		if (limit == 0) {
-			/* printf("ns8250: transmitter appears stuck... "); */
+			/* printf("uart: ns8250: transmitter appears stuck... "); */
 			return (EIO);
 		}
 	}
@@ -215,7 +266,7 @@ ns8250_drain(struct uart_bas *bas, int what)
 			DELAY(delay << 2);
 		}
 		if (limit == 0) {
-			/* printf("ns8250: receiver appears broken... "); */
+			/* printf("uart: ns8250: receiver appears broken... "); */
 			return (EIO);
 		}
 	}
@@ -250,12 +301,12 @@ ns8250_flush(struct uart_bas *bas, int what)
 	 * https://github.com/rust-vmm/vm-superio/issues/83
 	 */
 	lsr = uart_getreg(bas, REG_LSR);
-	if (((lsr & LSR_TEMT) == 0) && (what & UART_FLUSH_TRANSMITTER))
+	if (((lsr & LSR_THRE) == 0) && (what & UART_FLUSH_TRANSMITTER))
 		drain |= UART_DRAIN_TRANSMITTER;
 	if ((lsr & LSR_RXRDY) && (what & UART_FLUSH_RECEIVER))
 		drain |= UART_DRAIN_RECEIVER;
 	if (drain != 0) {
-		printf("ns8250: UART FCR is broken\n");
+		printf("uart: ns8250: UART FCR is broken (%#x)\n", drain);
 		ns8250_drain(bas, drain);
 	}
 }
@@ -284,8 +335,8 @@ ns8250_param(struct uart_bas *bas, int baudrate, int databits, int stopbits,
 		lcr |= LCR_STOPB;
 	lcr |= parity << 3;
 
-	/* Set baudrate. */
-	if (baudrate > 0) {
+	/* Set baudrate if we know a rclk and both are not 0. */
+	if (baudrate > 0 && bas->rclk > 0) {
 		divisor = ns8250_divisor(bas->rclk, baudrate);
 		if (divisor == 0)
 			return (EINVAL);
@@ -349,10 +400,6 @@ ns8250_init(struct uart_bas *bas, int baudrate, int databits, int stopbits,
 {
 	u_char ier;
 
-	if (bas->rclk == 0)
-		bas->rclk = DEFAULT_RCLK;
-	ns8250_param(bas, baudrate, databits, stopbits, parity);
-
 	/* Disable all interrupt sources. */
 	/*
 	 * We use 0xe0 instead of 0xf0 as the mask because the XScale PXA
@@ -362,6 +409,30 @@ ns8250_init(struct uart_bas *bas, int baudrate, int databits, int stopbits,
 	ier = uart_getreg(bas, REG_IER) & 0xe0;
 	uart_setreg(bas, REG_IER, ier);
 	uart_barrier(bas);
+
+	/*
+	 * Loader tells us to infer the rclk when it sets xo to 0 in
+	 * hw.uart.console. We know the baudrate was set by the firmware, so
+	 * calculate rclk from baudrate and the divisor register.  If 'div' is
+	 * actually 0, the resulting 0 value will have us fall back to other
+	 * rclk methods.
+	 */
+	if (bas->rclk_guess && bas->rclk == 0 && baudrate != 0) {
+		uint32_t div;
+
+		div = ns8250_get_divisor(bas);
+		bas->rclk = baudrate * div * 16;
+	}
+
+	/*
+	 * Pick a default because we just don't know. This likely needs future
+	 * refinement, but that's hard outside of consoles to know what to use.
+	 * But defer as long as possible if there's no defined baud rate.
+	 */
+	if (bas->rclk == 0 && baudrate != 0)
+		bas->rclk = DEFAULT_RCLK;
+
+	ns8250_param(bas, baudrate, databits, stopbits, parity);
 
 	/* Disable the FIFO (if present). */
 	uart_setreg(bas, REG_FCR, 0);
@@ -457,22 +528,32 @@ UART_CLASS(uart_ns8250_class);
  * XXX -- refactor out ACPI and FDT ifdefs
  */
 #ifdef DEV_ACPI
+static struct acpi_spcr_compat_data acpi_spcr_compat_data[] = {
+	{ &uart_ns8250_class, ACPI_DBG2_16550_COMPATIBLE },
+	{ &uart_ns8250_class, ACPI_DBG2_16550_SUBSET },
+	{ &uart_ns8250_class, ACPI_DBG2_16550_WITH_GAS },
+	{ NULL, 0 },
+};
+UART_ACPI_SPCR_CLASS(acpi_spcr_compat_data);
+
 static struct acpi_uart_compat_data acpi_compat_data[] = {
-	{"AMD0020",	&uart_ns8250_class, 0, 2, 0, 48000000, UART_F_BUSY_DETECT, "AMD / Synopsys Designware UART"},
-	{"AMDI0020", &uart_ns8250_class, 0, 2, 0, 48000000, UART_F_BUSY_DETECT, "AMD / Synopsys Designware UART"},
-	{"MRVL0001", &uart_ns8250_class, ACPI_DBG2_16550_SUBSET, 2, 0, 200000000, UART_F_BUSY_DETECT, "Marvell / Synopsys Designware UART"},
-	{"SCX0006",  &uart_ns8250_class, 0, 2, 0, 62500000, UART_F_BUSY_DETECT, "SynQuacer / Synopsys Designware UART"},
-	{"HISI0031", &uart_ns8250_class, 0, 2, 0, 200000000, UART_F_BUSY_DETECT, "HiSilicon / Synopsys Designware UART"},
-	{"NXP0018", &uart_ns8250_class, 0, 0, 0, 350000000, UART_F_BUSY_DETECT, "NXP / Synopsys Designware UART"},
-	{"PNP0500", &uart_ns8250_class, 0, 0, 0, 0, 0, "Standard PC COM port"},
-	{"PNP0501", &uart_ns8250_class, 0, 0, 0, 0, 0, "16550A-compatible COM port"},
-	{"PNP0502", &uart_ns8250_class, 0, 0, 0, 0, 0, "Multiport serial device (non-intelligent 16550)"},
-	{"PNP0510", &uart_ns8250_class, 0, 0, 0, 0, 0, "Generic IRDA-compatible device"},
-	{"PNP0511", &uart_ns8250_class, 0, 0, 0, 0, 0, "Generic IRDA-compatible device"},
-	{"WACF004", &uart_ns8250_class, 0, 0, 0, 0, 0, "Wacom Tablet PC Screen"},
-	{"WACF00E", &uart_ns8250_class, 0, 0, 0, 0, 0, "Wacom Tablet PC Screen 00e"},
-	{"FUJ02E5", &uart_ns8250_class, 0, 0, 0, 0, 0, "Wacom Tablet at FuS Lifebook T"},
-	{NULL, 			NULL, 0, 0 , 0, 0, 0, NULL},
+	{"AMD0020",	&uart_ns8250_class, 2, 0, 48000000, UART_F_BUSY_DETECT, "AMD / Synopsys Designware UART"},
+	{"AMDI0020", &uart_ns8250_class, 2, 0, 48000000, UART_F_BUSY_DETECT, "AMD / Synopsys Designware UART"},
+	{"APMC0D08", &uart_ns8250_class, 2, 4, 0, 0, "APM compatible UART"},
+	{"MRVL0001", &uart_ns8250_class, 2, 0, 200000000, UART_F_BUSY_DETECT, "Marvell / Synopsys Designware UART"},
+	{"SCX0006",  &uart_ns8250_class, 2, 0, 62500000, UART_F_BUSY_DETECT, "SynQuacer / Synopsys Designware UART"},
+	{"HISI0031", &uart_ns8250_class, 2, 0, 200000000, UART_F_BUSY_DETECT, "HiSilicon / Synopsys Designware UART"},
+	{"INTC1006", &uart_ns8250_class, 2, 0, 25000000, 0, "Intel ARM64 UART"},
+	{"NXP0018", &uart_ns8250_class, 0, 0, 350000000, UART_F_BUSY_DETECT, "NXP / Synopsys Designware UART"},
+	{"PNP0500", &uart_ns8250_class, 0, 0, 0, 0, "Standard PC COM port"},
+	{"PNP0501", &uart_ns8250_class, 0, 0, 0, 0, "16550A-compatible COM port"},
+	{"PNP0502", &uart_ns8250_class, 0, 0, 0, 0, "Multiport serial device (non-intelligent 16550)"},
+	{"PNP0510", &uart_ns8250_class, 0, 0, 0, 0, "Generic IRDA-compatible device"},
+	{"PNP0511", &uart_ns8250_class, 0, 0, 0, 0, "Generic IRDA-compatible device"},
+	{"WACF004", &uart_ns8250_class, 0, 0, 0, 0, "Wacom Tablet PC Screen"},
+	{"WACF00E", &uart_ns8250_class, 0, 0, 0, 0, "Wacom Tablet PC Screen 00e"},
+	{"FUJ02E5", &uart_ns8250_class, 0, 0, 0, 0, "Wacom Tablet at FuS Lifebook T"},
+	{NULL, 			NULL, 0 , 0, 0, 0, NULL},
 };
 UART_ACPI_CLASS_AND_DEVICE(acpi_compat_data);
 #endif
@@ -725,14 +806,7 @@ ns8250_bus_ioctl(struct uart_softc *sc, int request, intptr_t data)
 		uart_barrier(bas);
 		break;
 	case UART_IOCTL_BAUD:
-		lcr = uart_getreg(bas, REG_LCR);
-		uart_setreg(bas, REG_LCR, lcr | LCR_DLAB);
-		uart_barrier(bas);
-		divisor = uart_getreg(bas, REG_DLL) |
-		    (uart_getreg(bas, REG_DLH) << 8);
-		uart_barrier(bas);
-		uart_setreg(bas, REG_LCR, lcr);
-		uart_barrier(bas);
+		divisor = ns8250_get_divisor(bas);
 		baudrate = (divisor > 0) ? bas->rclk / divisor / 16 : 0;
 		if (baudrate > 0)
 			*(int*)data = baudrate;
@@ -987,6 +1061,7 @@ int
 ns8250_bus_receive(struct uart_softc *sc)
 {
 	struct uart_bas *bas;
+	struct ns8250_softc *ns8250 = (struct ns8250_softc *)sc;
 	int xc;
 	uint8_t lsr;
 
@@ -998,6 +1073,17 @@ ns8250_bus_receive(struct uart_softc *sc)
 			sc->sc_rxbuf[sc->sc_rxput] = UART_STAT_OVERRUN;
 			break;
 		}
+		/* Filter out possible noise on the line.
+		 * Expect that the device should be able to transmit as well as
+		 * receive, so if we receive too many characters before transmit
+		 * is ready, it's probably noise.
+		 */
+		if ((lsr & (LSR_TXRDY | LSR_TEMT)) == 0 &&
+		    uart_noise_threshold > 0) {
+			if (++ns8250->noise_count >= uart_noise_threshold)
+				break;
+		} else
+			ns8250->noise_count = 0;
 		xc = uart_getreg(bas, REG_DATA);
 		if (lsr & LSR_FE)
 			xc |= UART_STAT_FRAMERR;

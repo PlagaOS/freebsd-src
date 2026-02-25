@@ -49,10 +49,9 @@
 #include <signal.h>
 #include <getopt.h>
 #include <limits.h>
+#include <mntopts.h>
 #include <osreldate.h>
 #include <paths.h>
-
-#include "mntopts.h"
 
 #ifndef FUSE4BSD_VERSION
 #define	FUSE4BSD_VERSION	"0.3.9-pre1"
@@ -85,6 +84,8 @@ static struct mntopt mopts[] = {
 	{ "automounted",	0, ALTF_AUTOMOUNTED, 1 },
 	#define ALTF_INTR 0x200
 	{ "intr",		0, ALTF_INTR, 1 },
+	#define ALTF_AUTOUNMOUNT 0x400
+	{ "auto_unmount",		0, ALTF_AUTOUNMOUNT, 1 },
 	/* Linux specific options, we silently ignore them */
 	{ "fd=",                 0, 0x00, 1 },
 	{ "rootmode=",           0, 0x00, 1 },

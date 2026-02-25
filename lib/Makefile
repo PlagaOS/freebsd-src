@@ -1,4 +1,3 @@
-
 .include <src.opts.mk>
 
 # The SUBDIR_BOOTSTRAP list is a small set of libraries which are used by many
@@ -16,6 +15,7 @@ SUBDIR_BOOTSTRAP= \
 	libc++ \
 	libc++experimental \
 	libcxxrt \
+	libder \
 	libdiff \
 	libelf \
 	libssp \
@@ -67,17 +67,18 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libiscsiutil \
 	libjail \
 	libkiconv \
+	libkldelf \
 	libkvm \
 	liblua \
 	liblzma \
 	libmemstat \
 	libmd \
-	libmixer \
 	libmt \
 	lib80211 \
 	libnetbsd \
 	libnetmap \
 	libnv \
+	libnvmf \
 	libopenbsd \
 	libpam \
 	libpathconv \
@@ -90,6 +91,7 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	librss \
 	librt \
 	librtld_db \
+	libsamplerate \
 	libsbuf \
 	libsmb \
 	libstdbuf \
@@ -103,10 +105,13 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libugidfw \
 	libulog \
 	libutil \
+	libutil++ \
+	libuvmem \
 	${_libvgl} \
 	libwrap \
 	libxo \
 	liby \
+	libyaml \
 	libz \
 	libzstd \
 	ncurses \
@@ -127,11 +132,14 @@ SUBDIR_DEPEND_libc++:= libcxxrt
 SUBDIR_DEPEND_libc= libsys libcompiler_rt libssp_nonshared
 SUBDIR_DEPEND_libcam= libsbuf
 SUBDIR_DEPEND_libcasper= libnv
+SUBDIR_DEPEND_libcrypt= libmd
 SUBDIR_DEPEND_libdevstat= libkvm
 SUBDIR_DEPEND_libdpv= libfigpar ncurses libutil
 SUBDIR_DEPEND_libedit= ncurses
 SUBDIR_DEPEND_libgeom= libexpat libsbuf
+.if ${MK_MITKRB5} == "no"
 SUBDIR_DEPEND_librpcsec_gss= libgssapi
+.endif
 SUBDIR_DEPEND_libmagic= libz
 SUBDIR_DEPEND_libmemstat= libkvm
 SUBDIR_DEPEND_libpam= libcrypt ${_libradius} librpcsvc libtacplus libutil ${_libypclnt} ${_libcom_err}
@@ -149,16 +157,13 @@ SUBDIR_DEPEND_liblzma= libthr
 SUBDIR_DEPEND_libpcap= ofed
 .endif
 SUBDIR_DEPEND_nss_tacplus= libtacplus
-
-.if !defined(COMPAT_LIBCOMPAT)
-SUBDIR+=	flua
-SUBDIR_DEPEND_flua=	libjail
-.endif
+SUBDIR_DEPEND_virtual_oss= libsamplerate
 
 # NB: keep these sorted by MK_* knobs
 
 SUBDIR.${MK_BEARSSL}+=	libbearssl libsecureboot
 SUBDIR.${MK_BLACKLIST}+=libblacklist
+SUBDIR.${MK_BLOCKLIST}+=libblocklist
 SUBDIR.${MK_BLUETOOTH}+=libbluetooth libsdp
 SUBDIR.${MK_BSNMP}+=	libbsnmp
 
@@ -175,20 +180,29 @@ SUBDIR.${MK_DIALOG}+=	libdpv libfigpar
 SUBDIR.${MK_FDT}+=	libfdt
 SUBDIR.${MK_FILE}+=	libmagic
 SUBDIR.${MK_GPIO}+=	libgpio
-SUBDIR.${MK_GSSAPI}+=	libgssapi librpcsec_gss
+.if ${MK_MITKRB5} == "no"
+SUBDIR.${MK_KERBEROS}+=	libgssapi
+.endif
+SUBDIR.${MK_KERBEROS}+=	librpcsec_gss
 SUBDIR.${MK_ICONV}+=	libiconv_modules
-SUBDIR.${MK_KERBEROS_SUPPORT}+=	libcom_err
+.if ${MK_MITKRB5} == "no"
+SUBDIR.${MK_KERBEROS}+=	libcom_err
+.endif
 SUBDIR.${MK_LDNS}+=	libldns
 SUBDIR.${MK_STATS}+=	libstats
 
 # The libraries under libclang_rt can only be built by clang.
-.if ${COMPILER_TYPE} == "clang"
+.if (${COMPILER_TYPE} == "clang" || make(clean) || make(cleandir)) && \
+    ${MK_CLANG} != "no"
 _libclang_rt=	libclang_rt
 .elif (${MK_ASAN} != "no" || ${MK_UBSAN} != "no") && make(all)
 .error Requested build with sanitizers but cannot build runtime libraries!
 .endif
 
+# This construct disables libefivar for 32-bit build.
+.if ${MACHINE_CPUARCH} != "i386"
 SUBDIR.${MK_EFI}+=	libefivar
+.endif
 SUBDIR.${MK_GOOGLETEST}+=	googletest
 SUBDIR.${MK_NETGRAPH}+=	libnetgraph
 SUBDIR.${MK_NIS}+=	libypclnt
@@ -203,6 +217,10 @@ SUBDIR.${MK_PMC}+=	libopencsd
 
 .if ${MACHINE_CPUARCH} == "amd64"
 SUBDIR.${MK_PMC}+=	libipt
+.endif
+
+.if ${MACHINE_CPUARCH} == "amd64" || ${MACHINE_CPUARCH} == "aarch64" || \
+    ${MACHINE_CPUARCH} == "riscv"
 SUBDIR.${MK_BHYVE}+=	libvmmapi
 .endif
 
@@ -218,6 +236,8 @@ SUBDIR.${MK_PMC}+=	libpmc libpmcstat
 SUBDIR.${MK_RADIUS_SUPPORT}+=	libradius
 SUBDIR.${MK_SENDMAIL}+=	libmilter libsm libsmdb libsmutil
 SUBDIR.${MK_TELNET}+=	libtelnet
+SUBDIR.${MK_SOUND}+=	libmixer
+SUBDIR.${MK_CUSE}.${MK_SOUND}+=	virtual_oss
 SUBDIR.${MK_TESTS_SUPPORT}+=	atf
 SUBDIR.${MK_TESTS_SUPPORT}+=	liblutok
 SUBDIR.${MK_TESTS}+=	tests

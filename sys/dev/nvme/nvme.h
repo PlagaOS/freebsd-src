@@ -29,20 +29,27 @@
 #ifndef __NVME_H__
 #define __NVME_H__
 
-#ifdef _KERNEL
-#include <sys/types.h>
-#endif
-
 #include <sys/param.h>
+#ifdef _KERNEL
+#include <sys/systm.h>
+#include <sys/disk.h>
+#else
+#include <stdbool.h>
+#endif
 #include <sys/endian.h>
+
+struct sbuf;
 
 #define	NVME_PASSTHROUGH_CMD		_IOWR('n', 0, struct nvme_pt_command)
 #define	NVME_RESET_CONTROLLER		_IO('n', 1)
 #define	NVME_GET_NSID			_IOR('n', 2, struct nvme_get_nsid)
 #define	NVME_GET_MAX_XFER_SIZE		_IOR('n', 3, uint64_t)
+#define	NVME_GET_CONTROLLER_DATA	_IOR('n', 4, struct nvme_controller_data)
 
 #define	NVME_IO_TEST			_IOWR('n', 100, struct nvme_io_test)
 #define	NVME_BIO_TEST			_IOWR('n', 101, struct nvme_io_test)
+
+/* NB: Fabrics-specific ioctls defined in nvmf.h start at 200. */
 
 /*
  * Macros to deal with NVME revisions, as defined VS register
@@ -211,6 +218,11 @@
 
 /* Command field definitions */
 
+enum nvme_fuse {
+	NVME_FUSE_NORMAL				= 0x0,
+	NVME_FUSE_FIRST					= 0x1,
+	NVME_FUSE_SECOND				= 0x2
+};
 #define NVME_CMD_FUSE_SHIFT				(0)
 #define NVME_CMD_FUSE_MASK				(0x3)
 
@@ -390,9 +402,24 @@ enum nvme_psdt {
 /* per namespace smart/health log page */
 #define NVME_CTRLR_DATA_LPA_NS_SMART_SHIFT		(0)
 #define NVME_CTRLR_DATA_LPA_NS_SMART_MASK		(0x1)
+/* Commands Supported and Effects log page */
+#define NVME_CTRLR_DATA_LPA_CMD_EFFECTS_SHIFT		(1)
+#define NVME_CTRLR_DATA_LPA_CMD_EFFECTS_MASK		(0x1)
 /* extended data for Get Log Page command */
 #define NVME_CTRLR_DATA_LPA_EXT_DATA_SHIFT		(2)
 #define NVME_CTRLR_DATA_LPA_EXT_DATA_MASK		(0x1)
+/* telemetry */
+#define NVME_CTRLR_DATA_LPA_TELEMETRY_SHIFT		(3)
+#define NVME_CTRLR_DATA_LPA_TELEMETRY_MASK		(0x1)
+/* persistent event */
+#define NVME_CTRLR_DATA_LPA_PERSISTENT_EVENT_SHIFT	(4)
+#define NVME_CTRLR_DATA_LPA_PERSISTENT_EVENT_MASK	(0x1)
+/* Supported log pages, etc */
+#define NVME_CTRLR_DATA_LPA_LOG_PAGES_PAGE_SHIFT	(5)
+#define NVME_CTRLR_DATA_LPA_LOG_PAGES_PAGE_MASK		(0x1)
+/* Data Area 4 for Telemetry */
+#define NVME_CTRLR_DATA_LPA_DA4_TELEMETRY_SHIFT		(6)
+#define NVME_CTRLR_DATA_LPA_DA4_TELEMETRY_MASK		(0x1)
 
 /** AVSCC - admin vendor specific command configuration */
 /* admin vendor specific commands use spec format */
@@ -626,8 +653,16 @@ enum nvme_critical_warning_state {
 	NVME_CRIT_WARN_ST_PERSISTENT_MEMORY_REGION	= 0x20,
 };
 #define NVME_CRIT_WARN_ST_RESERVED_MASK			(0xC0)
-#define	NVME_ASYNC_EVENT_NS_ATTRIBUTE			(0x100)
-#define	NVME_ASYNC_EVENT_FW_ACTIVATE			(0x200)
+#define	NVME_ASYNC_EVENT_NS_ATTRIBUTE			(1U << 8)
+#define	NVME_ASYNC_EVENT_FW_ACTIVATE			(1U << 9)
+#define	NVME_ASYNC_EVENT_TELEMETRY_LOG			(1U << 10)
+#define	NVME_ASYNC_EVENT_ASYM_NS_ACC			(1U << 11)
+#define	NVME_ASYNC_EVENT_PRED_LAT_DELTA			(1U << 12)
+#define	NVME_ASYNC_EVENT_LBA_STATUS			(1U << 13)
+#define	NVME_ASYNC_EVENT_ENDURANCE_DELTA		(1U << 14)
+#define	NVME_ASYNC_EVENT_NVM_SHUTDOWN			(1U << 15)
+#define	NVME_ASYNC_EVENT_ZONE_DELTA			(1U << 27)
+#define	NVME_ASYNC_EVENT_DISCOVERY_DELTA		(1U << 31)
 
 /* slot for current FW */
 #define NVME_FIRMWARE_PAGE_AFI_SLOT_SHIFT		(0)
@@ -810,7 +845,7 @@ struct nvme_command {
 	uint32_t cdw13;		/* command-specific */
 	uint32_t cdw14;		/* command-specific */
 	uint32_t cdw15;		/* command-specific */
-};
+} __aligned(8);
 
 _Static_assert(sizeof(struct nvme_command) == 16 * 4, "bad size for nvme_command");
 
@@ -1471,9 +1506,7 @@ struct nvme_namespace_data {
 	uint8_t			eui64[8];
 
 	/** lba format support */
-	uint32_t		lbaf[16];
-
-	uint8_t			reserved7[192];
+	uint32_t		lbaf[64];
 
 	uint8_t			vendor_specific[3712];
 } __packed __aligned(4);
@@ -1506,8 +1539,7 @@ enum nvme_log_page {
 	/* 0xC0-0xFF - vendor specific */
 
 	/*
-	 * The following are Intel Specific log pages, but they seem
-	 * to be widely implemented.
+	 * The following are Intel Specific log pages for older models.
 	 */
 	INTEL_LOG_READ_LAT_LOG		= 0xc1,
 	INTEL_LOG_WRITE_LAT_LOG		= 0xc2,
@@ -1516,7 +1548,7 @@ enum nvme_log_page {
 	INTEL_LOG_DRIVE_MKT_NAME	= 0xdd,
 
 	/*
-	 * HGST log page, with lots ofs sub pages.
+	 * HGST log page, with lots of sub pages.
 	 */
 	HGST_INFO_LOG			= 0xc1,
 };
@@ -1579,7 +1611,7 @@ struct nvme_health_information_page {
 	uint32_t		ttftmt2;
 
 	uint8_t			reserved2[280];
-} __packed __aligned(4);
+} __packed __aligned(8);
 
 _Static_assert(sizeof(struct nvme_health_information_page) == 512, "bad size for nvme_health_information_page");
 
@@ -1629,6 +1661,30 @@ struct nvme_device_self_test_page {
 
 _Static_assert(sizeof(struct nvme_device_self_test_page) == 564,
     "bad size for nvme_device_self_test_page");
+
+/*
+ * Header structure for both host initiated telemetry (page 7) and controller
+ * initiated telemetry (page 8).
+ */
+struct nvme_telemetry_log_page {
+	uint8_t			identifier;
+	uint8_t			rsvd[4];
+	uint8_t			oui[3];
+	uint16_t		da1_last;
+	uint16_t		da2_last;
+	uint16_t		da3_last;
+	uint8_t			rsvd2[2];
+	uint32_t		da4_last;
+	uint8_t			rsvd3[361];
+	uint8_t			hi_gen;
+	uint8_t			ci_avail;
+	uint8_t			ci_gen;
+	uint8_t			reason[128];
+	/* Blocks of telemetry data follow */
+} __packed __aligned(4);
+
+_Static_assert(sizeof(struct nvme_telemetry_log_page) == 512,
+    "bad size for nvme_telemetry_log");
 
 struct nvme_discovery_log_entry {
 	uint8_t			trtype;
@@ -1846,34 +1902,38 @@ struct nvme_hmb_desc {
 #define nvme_completion_is_error(cpl)					\
 	(NVME_STATUS_GET_SC((cpl)->status) != 0 || NVME_STATUS_GET_SCT((cpl)->status) != 0)
 
+void	nvme_cpl_sbuf(const struct nvme_completion *cpl, struct sbuf *sbuf);
+void	nvme_opcode_sbuf(bool admin, uint8_t opc, struct sbuf *sb);
+void	nvme_sc_sbuf(const struct nvme_completion *cpl, struct sbuf *sbuf);
 void	nvme_strvis(uint8_t *dst, const uint8_t *src, int dstlen, int srclen);
 
 #ifdef _KERNEL
-
 struct bio;
 struct thread;
 
 struct nvme_namespace;
 struct nvme_controller;
-struct nvme_consumer;
+struct nvme_passthru_cmd;
 
 typedef void (*nvme_cb_fn_t)(void *, const struct nvme_completion *);
 
-typedef void *(*nvme_cons_ns_fn_t)(struct nvme_namespace *, void *);
-typedef void *(*nvme_cons_ctrlr_fn_t)(struct nvme_controller *);
-typedef void (*nvme_cons_async_fn_t)(void *, const struct nvme_completion *,
-				     uint32_t, void *, uint32_t);
-typedef void (*nvme_cons_fail_fn_t)(void *);
-
 enum nvme_namespace_flags {
-	NVME_NS_DEALLOCATE_SUPPORTED	= 0x1,
-	NVME_NS_FLUSH_SUPPORTED		= 0x2,
+	NVME_NS_DEALLOCATE_SUPPORTED	= 0x01,
+	NVME_NS_FLUSH_SUPPORTED		= 0x02,
+	NVME_NS_ALIVE			= 0x04,
+	NVME_NS_DELTA			= 0x08,
+	NVME_NS_GONE			= 0x10,
 };
 
 int	nvme_ctrlr_passthrough_cmd(struct nvme_controller *ctrlr,
 				   struct nvme_pt_command *pt,
 				   uint32_t nsid, int is_user_buffer,
 				   int is_admin_cmd);
+
+int	nvme_ctrlr_linux_passthru_cmd(struct nvme_controller *ctrlr,
+				      struct nvme_passthru_cmd *npc,
+				      uint32_t nsid, bool is_user,
+				      bool is_admin);
 
 /* Admin functions */
 void	nvme_ctrlr_cmd_set_feature(struct nvme_controller *ctrlr,
@@ -1910,13 +1970,6 @@ int	nvme_ns_cmd_flush(struct nvme_namespace *ns, nvme_cb_fn_t cb_fn,
 int	nvme_ns_dump(struct nvme_namespace *ns, void *virt, off_t offset,
 		     size_t len);
 
-/* Registration functions */
-struct nvme_consumer *	nvme_register_consumer(nvme_cons_ns_fn_t    ns_fn,
-					       nvme_cons_ctrlr_fn_t ctrlr_fn,
-					       nvme_cons_async_fn_t async_fn,
-					       nvme_cons_fail_fn_t  fail_fn);
-void		nvme_unregister_consumer(struct nvme_consumer *consumer);
-
 /* Controller helper functions */
 device_t	nvme_ctrlr_get_device(struct nvme_controller *ctrlr);
 const struct nvme_controller_data *
@@ -1926,6 +1979,24 @@ nvme_ctrlr_has_dataset_mgmt(const struct nvme_controller_data *cd)
 {
 	/* Assumes cd was byte swapped by nvme_controller_data_swapbytes() */
 	return (NVMEV(NVME_CTRLR_DATA_ONCS_DSM, cd->oncs) != 0);
+}
+
+/*
+ * Copy the NVME device's serial number to the provided buffer, which must be
+ * at least DISK_IDENT_SIZE bytes large.
+ */
+static inline void
+nvme_cdata_get_disk_ident(const struct nvme_controller_data *cdata, uint8_t *sn)
+{
+	_Static_assert(NVME_SERIAL_NUMBER_LENGTH < DISK_IDENT_SIZE,
+		"NVME serial number too big for disk ident");
+
+	memcpy(sn, cdata->sn, NVME_SERIAL_NUMBER_LENGTH);
+	sn[NVME_SERIAL_NUMBER_LENGTH] = '\0';
+	for (int i = 0; sn[i] != '\0'; i++) {
+		if (sn[i] < 0x20 || sn[i] >= 0x80)
+			sn[i] = ' ';
+	}
 }
 
 /* Namespace helper functions */
@@ -2086,8 +2157,6 @@ static inline
 void	nvme_namespace_data_swapbytes(struct nvme_namespace_data *s __unused)
 {
 #if _BYTE_ORDER != _LITTLE_ENDIAN
-	int i;
-
 	s->nsze = le64toh(s->nsze);
 	s->ncap = le64toh(s->ncap);
 	s->nuse = le64toh(s->nuse);
@@ -2106,7 +2175,7 @@ void	nvme_namespace_data_swapbytes(struct nvme_namespace_data *s __unused)
 	s->anagrpid = le32toh(s->anagrpid);
 	s->nvmsetid = le16toh(s->nvmsetid);
 	s->endgid = le16toh(s->endgid);
-	for (i = 0; i < 16; i++)
+	for (unsigned int i = 0; i < nitems(s->lbaf); i++)
 		s->lbaf[i] = le32toh(s->lbaf[i]);
 #endif
 }
@@ -2223,23 +2292,6 @@ void	nvme_sanitize_status_page_swapbytes(
 	s->etfownd = le32toh(s->etfownd);
 	s->etfbewnd = le32toh(s->etfbewnd);
 	s->etfcewnd = le32toh(s->etfcewnd);
-#endif
-}
-
-static inline
-void	intel_log_temp_stats_swapbytes(struct intel_log_temp_stats *s __unused)
-{
-#if _BYTE_ORDER != _LITTLE_ENDIAN
-
-	s->current = le64toh(s->current);
-	s->overtemp_flag_last = le64toh(s->overtemp_flag_last);
-	s->overtemp_flag_life = le64toh(s->overtemp_flag_life);
-	s->max_temp = le64toh(s->max_temp);
-	s->min_temp = le64toh(s->min_temp);
-	/* omit _rsvd[] */
-	s->max_oper_temp = le64toh(s->max_oper_temp);
-	s->min_oper_temp = le64toh(s->min_oper_temp);
-	s->est_offset = le64toh(s->est_offset);
 #endif
 }
 

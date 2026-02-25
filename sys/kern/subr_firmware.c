@@ -281,7 +281,7 @@ try_binary_file(const char *imagename, uint32_t flags)
 	int oflags;
 	size_t resid;
 	int error;
-	bool warn = flags & FIRMWARE_GET_NOWARN;
+	bool warn = (flags & FIRMWARE_GET_NOWARN) == 0;
 
 	/*
 	 * XXX TODO: Loop over some path instead of a single element path.
@@ -419,9 +419,7 @@ firmware_get_flags(const char *imagename, uint32_t flags)
 		fwli.flags = flags;
 		TASK_INIT(&fwload_task, 0, loadimage, (void *)&fwli);
 		taskqueue_enqueue(firmware_tq, &fwload_task);
-		PHOLD(curproc);
 		msleep((void *)&fwli, &firmware_mtx, 0, "fwload", 0);
-		PRELE(curproc);
 	}
 	/*
 	 * After attempting to load the module, see if the image is registered.

@@ -238,6 +238,7 @@ syscons_configure_keyboard()
 		sc_init
 		echo -n ' allscreens_kbd'
 		for ttyv in /dev/ttyv*; do
+			[ "$ttyv" = '/dev/ttyv*' ] && break
 			kbdcontrol ${allscreens_kbdflags} < ${ttyv} > ${ttyv} 2>&1
 		done
 	fi
@@ -382,6 +383,7 @@ syscons_start()
 		sc_init
 		echo -n ' allscreens'
 		for ttyv in /dev/ttyv*; do
+			[ "$ttyv" = '/dev/ttyv*' ] && break
 			vidcontrol ${allscreens_flags} < ${ttyv} > ${ttyv} 2>&1
 		done
 	fi
@@ -396,5 +398,9 @@ syscons_start()
 }
 
 load_rc_config $name
+
+# doesn't make sense to run in a svcj: config setting
+syscons_svcj="NO"
+
 run_rc_command $*
 

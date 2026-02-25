@@ -99,7 +99,6 @@ struct c4iw_id_table {
 };
 
 struct c4iw_resource {
-	struct c4iw_id_table tpt_table;
 	struct c4iw_id_table qid_table;
 	struct c4iw_id_table pdid_table;
 };
@@ -116,7 +115,7 @@ struct c4iw_dev_ucontext {
 };
 
 enum c4iw_rdev_flags {
-	T4_FATAL_ERROR = (1<<0),
+	T4_IW_STOPPED = (1<<0),
 	T4_STATUS_PAGE_DISABLED = (1<<1),
 };
 
@@ -167,9 +166,9 @@ struct c4iw_rdev {
 	struct workqueue_struct *free_workq;
 };
 
-static inline int c4iw_fatal_error(struct c4iw_rdev *rdev)
+static inline int c4iw_stopped(struct c4iw_rdev *rdev)
 {
-	return rdev->flags & T4_FATAL_ERROR;
+	return rdev->flags & T4_IW_STOPPED;
 }
 
 static inline int c4iw_num_stags(struct c4iw_rdev *rdev)
@@ -214,7 +213,7 @@ c4iw_wait_for_reply(struct c4iw_rdev *rdev, struct c4iw_wr_wait *wr_waitp,
 	int timedout = 0;
 	struct timeval t1, t2;
 
-	if (c4iw_fatal_error(rdev)) {
+	if (c4iw_stopped(rdev)) {
 		wr_waitp->ret = -EIO;
 		goto out;
 	}
@@ -240,7 +239,7 @@ c4iw_wait_for_reply(struct c4iw_rdev *rdev, struct c4iw_wr_wait *wr_waitp,
 			    "seconds - tid %u qpid %u\n", func,
 			    device_get_nameunit(sc->dev), t2.tv_sec, t2.tv_usec,
 			    hwtid, qpid);
-			if (c4iw_fatal_error(rdev)) {
+			if (c4iw_stopped(rdev)) {
 				wr_waitp->ret = -EIO;
 				break;
 			}
@@ -904,11 +903,9 @@ int c4iw_ep_redirect(void *ctx, struct dst_entry *old, struct dst_entry *new,
 		     struct l2t_entry *l2t);
 u32 c4iw_get_resource(struct c4iw_id_table *id_table);
 void c4iw_put_resource(struct c4iw_id_table *id_table, u32 entry);
-int c4iw_init_resource(struct c4iw_rdev *rdev, u32 nr_tpt, u32 nr_pdid);
+int c4iw_init_resource(struct c4iw_rdev *rdev, u32 nr_pdid);
 int c4iw_init_ctrl_qp(struct c4iw_rdev *rdev);
-int c4iw_pblpool_create(struct c4iw_rdev *rdev);
 int c4iw_rqtpool_create(struct c4iw_rdev *rdev);
-void c4iw_pblpool_destroy(struct c4iw_rdev *rdev);
 void c4iw_rqtpool_destroy(struct c4iw_rdev *rdev);
 void c4iw_destroy_resource(struct c4iw_resource *rscp);
 int c4iw_destroy_ctrl_qp(struct c4iw_rdev *rdev);

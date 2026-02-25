@@ -219,6 +219,14 @@ msi_disable_intr(struct intsrc *isrc)
 	struct msi_intsrc *msi = (struct msi_intsrc *)isrc;
 
 	msi = msi->msi_first;
+
+	/*
+	 * Interrupt sources are always registered, but never unregistered.
+	 * Handle the case where MSIs have all been unregistered.
+	 */
+	if (msi == NULL)
+		return;
+
 	msi->msi_enabled--;
 	if (msi->msi_enabled == 0) {
 		for (u_int i = 0; i < msi->msi_count; i++)
@@ -480,6 +488,7 @@ again:
 	if (error != 0) {
 		for (i = 0; i < count; i++)
 			apic_free_vector(cpu, vector + i, irqs[i]);
+		mtx_unlock(&msi_lock);
 		free(mirqs, M_MSI);
 		return (error);
 	}
@@ -554,7 +563,9 @@ msi_release(int *irqs, int count)
 		KASSERT(msi->msi_first == first, ("message not in group"));
 		KASSERT(msi->msi_dev == first->msi_dev, ("owner mismatch"));
 #ifdef IOMMU
+		mtx_unlock(&msi_lock);
 		iommu_unmap_msi_intr(first->msi_dev, msi->msi_remap_cookie);
+		mtx_lock(&msi_lock);
 #endif
 		msi->msi_first = NULL;
 		msi->msi_dev = NULL;
@@ -720,6 +731,7 @@ again:
 	if (error != 0) {
 		msi->msi_dev = NULL;
 		apic_free_vector(cpu, vector, i);
+		mtx_unlock(&msi_lock);
 		return (error);
 	}
 	msi->msi_remap_cookie = cookie;

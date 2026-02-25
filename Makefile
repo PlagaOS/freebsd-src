@@ -22,7 +22,7 @@
 # kernel              - buildkernel + installkernel.
 # kernel-toolchain    - Builds the subset of world necessary to build a kernel
 # kernel-toolchains   - Build kernel-toolchain for all universe targets.
-# doxygen             - Build API documentation of the kernel, needs doxygen.
+# doxygen             - Build API documentation of the kernel, needs doxygen, TeX, and graphviz.
 # checkworld          - Run test suite on installed world.
 # check-old           - List obsolete directories/files/libraries.
 # check-old-dirs      - List obsolete directories.
@@ -96,14 +96,14 @@
 #
 # Once you have installed the necessary cross toolchain, simply pass
 # CROSS_TOOLCHAIN=${TARGET_ARCH}-gccN while building with the above steps,
-# e.g., `make buildworld CROSS_TOOLCHAIN=amd64-gcc6`.
+# e.g., `make buildworld CROSS_TOOLCHAIN=amd64-gcc13`.
 #
 # The ${TARGET_ARCH}-gccN packages are provided as flavors of the
 # devel/freebsd-gccN ports.
 #
 # See src/UPDATING `COMMON ITEMS' for more complete information.
 #
-# If TARGET=machine (e.g. powerpc, arm64, ...) is specified you can
+# If TARGET=machine (e.g. powerpc64, arm64, ...) is specified you can
 # cross build world for other machine types using the buildworld target,
 # and once the world is built you can cross build a kernel using the
 # buildkernel target.
@@ -175,7 +175,7 @@ TGTS=	all all-man buildenv buildenvvars buildetc buildkernel buildworld \
 	create-packages-world create-packages-kernel \
 	create-packages-kernel-repo create-packages-world-repo \
 	create-packages-source create-packages \
-	update-packages packages installconfig real-packages real-update-packages \
+	installconfig real-packages real-update-packages \
 	sign-packages package-pkg print-dir test-system-compiler test-system-linker \
 	test-includes
 
@@ -219,6 +219,8 @@ META_TGT_WHITELIST+=	build${libcompat}
 .ORDER: buildworld distribute
 .ORDER: buildworld distributeworld
 .ORDER: buildworld buildkernel
+.ORDER: buildworld packages
+.ORDER: buildworld update-packages
 .ORDER: distrib-dirs distribute
 .ORDER: distrib-dirs distributeworld
 .ORDER: distrib-dirs installworld
@@ -232,6 +234,8 @@ META_TGT_WHITELIST+=	build${libcompat}
 .ORDER: buildkernel installkernel.debug
 .ORDER: buildkernel reinstallkernel
 .ORDER: buildkernel reinstallkernel.debug
+.ORDER: buildkernel packages
+.ORDER: buildkernel update-packages
 .ORDER: kernel-toolchain buildkernel
 
 # Only sanitize PATH on FreeBSD.
@@ -258,17 +262,22 @@ WANT_MAKE_VERSION= 20160604
 # 20160220 - support .dinclude for FAST_DEPEND.
 WANT_MAKE_VERSION= 20160220
 .endif
+.if defined(MYMAKE)
+.error MYMAKE cannot be overridden, use as command name instead
+.endif
 MYMAKE=		${OBJROOT}make.${MACHINE}/bmake
 .if defined(ALWAYS_BOOTSTRAP_MAKE) || \
     (defined(WANT_MAKE_VERSION) && ${MAKE_VERSION} < ${WANT_MAKE_VERSION})
 NEED_MAKE_UPGRADE= t
 .endif
-.if exists(${MYMAKE})
+.if defined(NEED_MAKE_UPGRADE)
+. if exists(${MYMAKE})
 SUB_MAKE:= ${MYMAKE} -m ${.CURDIR}/share/mk
-.elif defined(NEED_MAKE_UPGRADE)
+. else
 # It may not exist yet but we may cause it to.
 SUB_MAKE= `test -x ${MYMAKE} && echo ${MYMAKE} || echo ${MAKE}` \
 	-m ${.CURDIR}/share/mk
+. endif
 .else
 SUB_MAKE= ${MAKE} -m ${.CURDIR}/share/mk
 .endif
@@ -359,15 +368,16 @@ _assert_target: .PHONY .MAKE
 .endfor
 
 #
-# Make sure we have an up-to-date make(1). Only world and buildworld
-# should do this as those are the initial targets used for upgrades.
-# The user can define ALWAYS_CHECK_MAKE to have this check performed
-# for all targets.
+# Make sure we have an up-to-date make(1). Only world, buildworld and
+# kernel-toolchain should do this as those are the initial targets used
+# for upgrades. The user can define ALWAYS_CHECK_MAKE to have this check
+# performed for all targets.
 #
 .if defined(ALWAYS_CHECK_MAKE)
 ${TGTS}: upgrade_checks
 .else
 buildworld: upgrade_checks
+kernel-toolchain: upgrade_checks
 .endif
 
 #
@@ -457,6 +467,9 @@ kernel: buildkernel installkernel .PHONY
 upgrade_checks: .PHONY
 .if defined(NEED_MAKE_UPGRADE)
 	@${_+_}(cd ${.CURDIR} && ${MAKE} bmake)
+.elif exists(${MYMAKE:H})
+	@echo "Removing stale bmake(1)"
+	rm -r ${MYMAKE:H}
 .endif
 
 #
@@ -508,6 +521,9 @@ kernels: .PHONY
 worlds: .PHONY
 	@cd ${.CURDIR}; ${SUB_MAKE} UNIVERSE_TARGET=buildworld universe
 
+packages update-packages: .PHONY
+	${_+_}@cd ${.CURDIR}; ${_MAKE} DISTDIR=/ ${.TARGET}
+
 #
 # universe
 #
@@ -521,11 +537,7 @@ worlds: .PHONY
 # Don't build rarely used, semi-supported architectures unless requested.
 #
 .if defined(EXTRA_TARGETS)
-# armv6's importance has waned enough to make building it the exception rather
-# than the rule.
-EXTRA_ARCHES_arm=	armv6
-# powerpcspe excluded from main list until clang fixed
-EXTRA_ARCHES_powerpc=	powerpcspe
+EXTRA_ARCHES_powerpc=	powerpc
 .endif
 TARGETS?= ${TARGET_MACHINE_LIST}
 _UNIVERSE_TARGETS=	${TARGETS}
@@ -534,14 +546,14 @@ TARGET_ARCHES_${target}= ${MACHINE_ARCH_LIST_${target}}
 .endfor
 
 .if defined(USE_GCC_TOOLCHAINS)
-TOOLCHAINS_amd64=	amd64-gcc12
-TOOLCHAINS_arm=		armv6-gcc12 armv7-gcc12
-TOOLCHAIN_armv7=	armv7-gcc12
-TOOLCHAINS_arm64=	aarch64-gcc12
-TOOLCHAINS_i386=	i386-gcc12
-TOOLCHAINS_powerpc=	powerpc-gcc12 powerpc64-gcc12
-TOOLCHAIN_powerpc64=	powerpc64-gcc12
-TOOLCHAINS_riscv=	riscv64-gcc12
+_DEFAULT_GCC_VERSION=	gcc15
+_GCC_VERSION=		${"${USE_GCC_TOOLCHAINS:Mgcc*}" != "":?${USE_GCC_TOOLCHAINS}:${_DEFAULT_GCC_VERSION}}
+TOOLCHAINS_amd64=	amd64-${_GCC_VERSION}
+TOOLCHAINS_arm=		armv7-${_GCC_VERSION}
+TOOLCHAINS_arm64=	aarch64-${_GCC_VERSION}
+TOOLCHAINS_i386=	i386-${_GCC_VERSION}
+TOOLCHAINS_powerpc=	powerpc64-${_GCC_VERSION}
+TOOLCHAINS_riscv=	riscv64-${_GCC_VERSION}
 .endif
 
 # If a target is using an external toolchain, set MAKE_PARAMS to enable use
@@ -792,7 +804,7 @@ universe_epilogue: .PHONY
 .MAKE.MODE= normal
 # Normally the things we run from here don't either.
 # Using -DWITH_META_MODE
-# we can buildworld with meta files created which are useful 
+# we can buildworld with meta files created which are useful
 # for debugging, but without any of the rest of a meta mode build.
 MK_DIRDEPS_BUILD= no
 MK_STAGING= no

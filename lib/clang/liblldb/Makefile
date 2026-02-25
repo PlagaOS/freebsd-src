@@ -1,8 +1,23 @@
-
-.include <bsd.init.mk>
+.include <src.opts.mk>
 .include "../lldb.pre.mk"
 
+.if ${MK_LLVM_LINK_STATIC_LIBRARIES} == "yes"
+# Build static library when explicitly requested.
 LIB=		lldb
+INTERNALLIB=
+.else
+PACKAGE=	lldb
+SHLIB_CXX=	lldb
+SHLIB_MAJOR=	19
+PRIVATELIB=
+.if ${MACHINE_CPUARCH} == "aarch64"
+# Only required for GCC
+LIBADD+=	compiler_rt
+.endif
+.endif
+
+SHARED_CXXFLAGS+=	-UPIC # To avoid compile errors
+
 SRCDIR=		lldb/source
 
 CFLAGS+=	-I${LLDB_SRCS}/include
@@ -17,6 +32,8 @@ CFLAGS+=	-I${SRCTOP}/contrib/lua/src
 CFLAGS+=	-I${SRCTOP}/lib/liblua
 
 SRCS+=		API/SBAddress.cpp
+SRCS+=		API/SBAddressRange.cpp
+SRCS+=		API/SBAddressRangeList.cpp
 SRCS+=		API/SBAttachInfo.cpp
 SRCS+=		API/SBBlock.cpp
 SRCS+=		API/SBBreakpoint.cpp
@@ -40,6 +57,7 @@ SRCS+=		API/SBExpressionOptions.cpp
 SRCS+=		API/SBFile.cpp
 SRCS+=		API/SBFileSpec.cpp
 SRCS+=		API/SBFileSpecList.cpp
+SRCS+=		API/SBFormat.cpp
 SRCS+=		API/SBFrame.cpp
 SRCS+=		API/SBFunction.cpp
 SRCS+=		API/SBHostOS.cpp
@@ -56,12 +74,15 @@ SRCS+=		API/SBModuleSpec.cpp
 SRCS+=		API/SBPlatform.cpp
 SRCS+=		API/SBProcess.cpp
 SRCS+=		API/SBProcessInfo.cpp
+SRCS+=		API/SBProcessInfoList.cpp
 SRCS+=		API/SBQueue.cpp
 SRCS+=		API/SBQueueItem.cpp
 SRCS+=		API/SBReproducer.cpp
+SRCS+=		API/SBSaveCoreOptions.cpp
 SRCS+=		API/SBScriptObject.cpp
 SRCS+=		API/SBSection.cpp
 SRCS+=		API/SBSourceManager.cpp
+SRCS+=		API/SBStatisticsOptions.cpp
 SRCS+=		API/SBStream.cpp
 SRCS+=		API/SBStringList.cpp
 SRCS+=		API/SBStructuredData.cpp
@@ -87,6 +108,7 @@ SRCS+=		API/SBValue.cpp
 SRCS+=		API/SBValueList.cpp
 SRCS+=		API/SBVariablesOptions.cpp
 SRCS+=		API/SBWatchpoint.cpp
+SRCS+=		API/SBWatchpointOptions.cpp
 SRCS+=		API/SystemInitializerFull.cpp
 SRCS+=		Breakpoint/Breakpoint.cpp
 SRCS+=		Breakpoint/BreakpointID.cpp
@@ -104,13 +126,15 @@ SRCS+=		Breakpoint/BreakpointResolverFileRegex.cpp
 SRCS+=		Breakpoint/BreakpointResolverName.cpp
 SRCS+=		Breakpoint/BreakpointResolverScripted.cpp
 SRCS+=		Breakpoint/BreakpointSite.cpp
-SRCS+=		Breakpoint/BreakpointSiteList.cpp
+SRCS+=		Breakpoint/StopPointSiteList.cpp
 SRCS+=		Breakpoint/Stoppoint.cpp
 SRCS+=		Breakpoint/StoppointCallbackContext.cpp
 SRCS+=		Breakpoint/StoppointSite.cpp
 SRCS+=		Breakpoint/Watchpoint.cpp
+SRCS+=		Breakpoint/WatchpointAlgorithms.cpp
 SRCS+=		Breakpoint/WatchpointList.cpp
 SRCS+=		Breakpoint/WatchpointOptions.cpp
+SRCS+=		Breakpoint/WatchpointResource.cpp
 SRCS+=		Commands/CommandCompletions.cpp
 SRCS+=		Commands/CommandObjectApropos.cpp
 SRCS+=		Commands/CommandObjectBreakpoint.cpp
@@ -134,7 +158,7 @@ SRCS+=		Commands/CommandObjectProcess.cpp
 SRCS+=		Commands/CommandObjectQuit.cpp
 SRCS+=		Commands/CommandObjectRegexCommand.cpp
 SRCS+=		Commands/CommandObjectRegister.cpp
-SRCS+=		Commands/CommandObjectScript.cpp
+SRCS+=		Commands/CommandObjectScripting.cpp
 SRCS+=		Commands/CommandObjectSession.cpp
 SRCS+=		Commands/CommandObjectSettings.cpp
 SRCS+=		Commands/CommandObjectSource.cpp
@@ -152,6 +176,7 @@ SRCS+=		Commands/CommandOptionsProcessAttach.cpp
 SRCS+=		Commands/CommandOptionsProcessLaunch.cpp
 SRCS+=		Core/Address.cpp
 SRCS+=		Core/AddressRange.cpp
+SRCS+=		Core/AddressRangeListImpl.cpp
 SRCS+=		Core/AddressResolver.cpp
 SRCS+=		Core/AddressResolverFileLine.cpp
 SRCS+=		Core/Communication.cpp
@@ -183,7 +208,6 @@ SRCS+=		Core/Section.cpp
 SRCS+=		Core/SourceLocationSpec.cpp
 SRCS+=		Core/SourceManager.cpp
 SRCS+=		Core/StreamAsynchronousIO.cpp
-SRCS+=		Core/StreamFile.cpp
 SRCS+=		Core/ThreadedCommunication.cpp
 SRCS+=		Core/UserSettingsController.cpp
 SRCS+=		Core/Value.cpp
@@ -200,6 +224,7 @@ SRCS+=		Core/ValueObjectMemory.cpp
 SRCS+=		Core/ValueObjectRegister.cpp
 SRCS+=		Core/ValueObjectSyntheticFilter.cpp
 SRCS+=		Core/ValueObjectUpdater.cpp
+SRCS+=		Core/ValueObjectVTable.cpp
 SRCS+=		Core/ValueObjectVariable.cpp
 SRCS+=		DataFormatters/CXXFunctionPointer.cpp
 SRCS+=		DataFormatters/DataVisualization.cpp
@@ -221,6 +246,7 @@ SRCS+=		Expression/DWARFExpression.cpp
 SRCS+=		Expression/DWARFExpressionList.cpp
 SRCS+=		Expression/DiagnosticManager.cpp
 SRCS+=		Expression/Expression.cpp
+SRCS+=		Expression/ExpressionParser.cpp
 SRCS+=		Expression/ExpressionTypeSystemHelper.cpp
 SRCS+=		Expression/ExpressionVariable.cpp
 SRCS+=		Expression/FunctionCaller.cpp
@@ -233,6 +259,7 @@ SRCS+=		Expression/ObjectFileJIT.cpp
 SRCS+=		Expression/REPL.cpp
 SRCS+=		Expression/UserExpression.cpp
 SRCS+=		Expression/UtilityFunction.cpp
+SRCS+=		Host/common/Alarm.cpp
 SRCS+=		Host/common/Editline.cpp
 SRCS+=		Host/common/File.cpp
 SRCS+=		Host/common/FileAction.cpp
@@ -258,6 +285,7 @@ SRCS+=		Host/common/ProcessRunLock.cpp
 SRCS+=		Host/common/PseudoTerminal.cpp
 SRCS+=		Host/common/Socket.cpp
 SRCS+=		Host/common/SocketAddress.cpp
+SRCS+=		Host/common/StreamFile.cpp
 SRCS+=		Host/common/TCPSocket.cpp
 SRCS+=		Host/common/Terminal.cpp
 SRCS+=		Host/common/ThreadLauncher.cpp
@@ -334,6 +362,7 @@ SRCS+=		Plugins/ABI/Mips/ABISysV_mips64.cpp
 SRCS+=		Plugins/ABI/PowerPC/ABIPowerPC.cpp
 SRCS+=		Plugins/ABI/PowerPC/ABISysV_ppc.cpp
 SRCS+=		Plugins/ABI/PowerPC/ABISysV_ppc64.cpp
+SRCS+=		Plugins/ABI/RISCV/ABISysV_riscv.cpp
 SRCS+=		Plugins/ABI/X86/ABISysV_i386.cpp
 SRCS+=		Plugins/ABI/X86/ABISysV_x86_64.cpp
 SRCS+=		Plugins/ABI/X86/ABIX86.cpp
@@ -343,6 +372,7 @@ SRCS+=		Plugins/Architecture/Arm/ArchitectureArm.cpp
 SRCS+=		Plugins/Architecture/Mips/ArchitectureMips.cpp
 SRCS+=		Plugins/Architecture/PPC64/ArchitecturePPC64.cpp
 SRCS+=		Plugins/Disassembler/LLVMC/DisassemblerLLVMC.cpp
+SRCS+=		Plugins/DynamicLoader/FreeBSD-Kernel/DynamicLoaderFreeBSDKernel.cpp
 SRCS+=		Plugins/DynamicLoader/POSIX-DYLD/DYLDRendezvous.cpp
 SRCS+=		Plugins/DynamicLoader/POSIX-DYLD/DynamicLoaderPOSIXDYLD.cpp
 SRCS+=		Plugins/DynamicLoader/Static/DynamicLoaderStatic.cpp
@@ -380,9 +410,11 @@ SRCS+=		Plugins/Instruction/MIPS64/EmulateInstructionMIPS64.cpp
 SRCS+=		Plugins/Instruction/PPC64/EmulateInstructionPPC64.cpp
 SRCS+=		Plugins/Instruction/RISCV/EmulateInstructionRISCV.cpp
 SRCS+=		Plugins/InstrumentationRuntime/ASan/InstrumentationRuntimeASan.cpp
+SRCS+=		Plugins/InstrumentationRuntime/ASanLibsanitizers/InstrumentationRuntimeASanLibsanitizers.cpp
 SRCS+=		Plugins/InstrumentationRuntime/MainThreadChecker/InstrumentationRuntimeMainThreadChecker.cpp
 SRCS+=		Plugins/InstrumentationRuntime/TSan/InstrumentationRuntimeTSan.cpp
 SRCS+=		Plugins/InstrumentationRuntime/UBSan/InstrumentationRuntimeUBSan.cpp
+SRCS+=		Plugins/InstrumentationRuntime/Utility/ReportRetriever.cpp
 SRCS+=		Plugins/JITLoader/GDB/JITLoaderGDB.cpp
 SRCS+=		Plugins/Language/CPlusPlus/BlockPointer.cpp
 SRCS+=		Plugins/Language/CPlusPlus/CPlusPlusLanguage.cpp
@@ -396,11 +428,14 @@ SRCS+=		Plugins/Language/CPlusPlus/LibCxxAtomic.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibCxxInitializerList.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibCxxList.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibCxxMap.cpp
+SRCS+=		Plugins/Language/CPlusPlus/LibCxxProxyArray.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibCxxQueue.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibCxxRangesRefView.cpp
+SRCS+=		Plugins/Language/CPlusPlus/LibCxxSliceArray.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibCxxSpan.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibCxxTuple.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibCxxUnorderedMap.cpp
+SRCS+=		Plugins/Language/CPlusPlus/LibCxxValarray.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibCxxVariant.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibCxxVector.cpp
 SRCS+=		Plugins/Language/CPlusPlus/LibStdcpp.cpp
@@ -439,6 +474,7 @@ SRCS+=		Plugins/ObjectFile/ELF/ELFHeader.cpp
 SRCS+=		Plugins/ObjectFile/ELF/ObjectFileELF.cpp
 SRCS+=		Plugins/Platform/FreeBSD/PlatformFreeBSD.cpp
 SRCS+=		Plugins/Platform/POSIX/PlatformPOSIX.cpp
+SRCS+=		Plugins/Platform/QemuUser/PlatformQemuUser.cpp
 SRCS+=		Plugins/Platform/gdb-server/PlatformRemoteGDBServer.cpp
 SRCS+=		Plugins/Process/FreeBSD/NativeProcessFreeBSD.cpp
 SRCS+=		Plugins/Process/FreeBSD/NativeRegisterContextFreeBSD.cpp
@@ -489,9 +525,11 @@ SRCS+=		Plugins/Process/Utility/RegisterContextPOSIX_arm64.cpp
 SRCS+=		Plugins/Process/Utility/RegisterContextPOSIX_mips64.cpp
 SRCS+=		Plugins/Process/Utility/RegisterContextPOSIX_powerpc.cpp
 SRCS+=		Plugins/Process/Utility/RegisterContextPOSIX_ppc64le.cpp
+SRCS+=		Plugins/Process/Utility/RegisterContextPOSIX_riscv64.cpp
 SRCS+=		Plugins/Process/Utility/RegisterContextPOSIX_x86.cpp
 SRCS+=		Plugins/Process/Utility/RegisterContextThreadMemory.cpp
 SRCS+=		Plugins/Process/Utility/RegisterContext_x86.cpp
+SRCS+=		Plugins/Process/Utility/RegisterFlagsDetector_arm64.cpp
 SRCS+=		Plugins/Process/Utility/RegisterInfoPOSIX_arm.cpp
 SRCS+=		Plugins/Process/Utility/RegisterInfoPOSIX_arm64.cpp
 SRCS+=		Plugins/Process/Utility/RegisterInfoPOSIX_ppc64le.cpp
@@ -506,6 +544,7 @@ SRCS+=		Plugins/Process/elf-core/RegisterContextPOSIXCore_arm64.cpp
 SRCS+=		Plugins/Process/elf-core/RegisterContextPOSIXCore_mips64.cpp
 SRCS+=		Plugins/Process/elf-core/RegisterContextPOSIXCore_powerpc.cpp
 SRCS+=		Plugins/Process/elf-core/RegisterContextPOSIXCore_ppc64le.cpp
+SRCS+=		Plugins/Process/elf-core/RegisterContextPOSIXCore_riscv64.cpp
 SRCS+=		Plugins/Process/elf-core/RegisterContextPOSIXCore_x86_64.cpp
 SRCS+=		Plugins/Process/elf-core/RegisterUtilities.cpp
 SRCS+=		Plugins/Process/elf-core/ThreadElfCore.cpp
@@ -538,7 +577,6 @@ SRCS+=		Plugins/SymbolFile/DWARF/DWARFCompileUnit.cpp
 SRCS+=		Plugins/SymbolFile/DWARF/DWARFContext.cpp
 SRCS+=		Plugins/SymbolFile/DWARF/DWARFDIE.cpp
 SRCS+=		Plugins/SymbolFile/DWARF/DWARFDataExtractor.cpp
-SRCS+=		Plugins/SymbolFile/DWARF/DWARFDebugAbbrev.cpp
 SRCS+=		Plugins/SymbolFile/DWARF/DWARFDebugArangeSet.cpp
 SRCS+=		Plugins/SymbolFile/DWARF/DWARFDebugAranges.cpp
 SRCS+=		Plugins/SymbolFile/DWARF/DWARFDebugInfo.cpp
@@ -560,6 +598,8 @@ SRCS+=		Plugins/SymbolFile/DWARF/SymbolFileDWARFDebugMap.cpp
 SRCS+=		Plugins/SymbolFile/DWARF/SymbolFileDWARFDwo.cpp
 SRCS+=		Plugins/SymbolFile/DWARF/UniqueDWARFASTType.cpp
 SRCS+=		Plugins/SymbolFile/Symtab/SymbolFileSymtab.cpp
+SRCS+=		Plugins/SymbolLocator/Default/SymbolLocatorDefault.cpp
+SRCS+=		Plugins/SymbolLocator/Debuginfod/SymbolLocatorDebuginfod.cpp
 SRCS+=		Plugins/SymbolVendor/ELF/SymbolVendorELF.cpp
 SRCS+=		Plugins/TypeSystem/Clang/TypeSystemClang.cpp
 SRCS+=		Plugins/UnwindAssembly/InstEmulation/UnwindAssemblyInstEmulation.cpp
@@ -579,14 +619,15 @@ SRCS+=		Symbol/FuncUnwinders.cpp
 SRCS+=		Symbol/Function.cpp
 SRCS+=		Symbol/LineEntry.cpp
 SRCS+=		Symbol/LineTable.cpp
-SRCS+=		Symbol/LocateSymbolFile.cpp
 SRCS+=		Symbol/ObjectContainer.cpp
 SRCS+=		Symbol/ObjectFile.cpp
 SRCS+=		Symbol/PostfixExpression.cpp
+SRCS+=		Symbol/SaveCoreOptions.cpp
 SRCS+=		Symbol/Symbol.cpp
 SRCS+=		Symbol/SymbolContext.cpp
 SRCS+=		Symbol/SymbolFile.cpp
 SRCS+=		Symbol/SymbolFileOnDemand.cpp
+SRCS+=		Symbol/SymbolLocator.cpp
 SRCS+=		Symbol/SymbolVendor.cpp
 SRCS+=		Symbol/Symtab.cpp
 SRCS+=		Symbol/Type.cpp
@@ -664,10 +705,13 @@ SRCS+=		Target/TraceDumper.cpp
 SRCS+=		Target/UnixSignals.cpp
 SRCS+=		Target/UnwindAssembly.cpp
 SRCS+=		Target/UnwindLLDB.cpp
+SRCS+=		Target/VerboseTrapFrameRecognizer.cpp
+SRCS+=		Utility/AddressableBits.cpp
 SRCS+=		Utility/ArchSpec.cpp
 SRCS+=		Utility/Args.cpp
 SRCS+=		Utility/Baton.cpp
 SRCS+=		Utility/Broadcaster.cpp
+SRCS+=		Utility/Checksum.cpp
 SRCS+=		Utility/CompletionRequest.cpp
 SRCS+=		Utility/Connection.cpp
 SRCS+=		Utility/ConstString.cpp
@@ -677,6 +721,7 @@ SRCS+=		Utility/DataEncoder.cpp
 SRCS+=		Utility/DataExtractor.cpp
 SRCS+=		Utility/Diagnostics.cpp
 SRCS+=		Utility/Environment.cpp
+SRCS+=		Utility/ErrorMessages.cpp
 SRCS+=		Utility/Event.cpp
 SRCS+=		Utility/FileSpec.cpp
 SRCS+=		Utility/FileSpecList.cpp
@@ -715,6 +760,24 @@ SRCS+=		Utility/VMRange.cpp
 SRCS+=		Utility/XcodeSDK.cpp
 SRCS+=		Version/Version.cpp
 
+LIBDEPS+=	clang
+LIBDEPS+=	llvm
+
+.if defined(TOOLS_PREFIX) || ${MK_LLVM_LINK_STATIC_LIBRARIES} == "yes"
+LIBPRIV=
+LIBEXT=		a
+.else
+LIBPRIV=	private
+LIBEXT=		so
+.endif
+
+.for lib in ${LIBDEPS}
+DPADD+=		${OBJTOP}/lib/clang/lib${lib}/lib${LIBPRIV}${lib}.${LIBEXT}
+LDADD+=		${OBJTOP}/lib/clang/lib${lib}/lib${LIBPRIV}${lib}.${LIBEXT}
+.endfor
+
+LIBADD+=	kvm
+
 LLDB_TBLGEN?=	lldb-tblgen
 
 CommandOptions.inc: ${LLDB_SRCS}/source/Commands/Options.td
@@ -727,8 +790,10 @@ TGHDRS+=	CommandOptions.inc
 	Core/Core \
 	Interpreter/Interpreter \
 	Plugins/JITLoader/GDB/JITLoaderGDB \
+	Plugins/Platform/QemuUser/PlatformQemuUser \
 	Plugins/Process/gdb-remote/ProcessGDBRemote \
 	Plugins/SymbolFile/DWARF/SymbolFileDWARF \
+	Plugins/SymbolLocator/Debuginfod/SymbolLocatorDebuginfod \
 	Target/Target
 ${path:T}Properties.inc: ${LLDB_SRCS}/source/${path}Properties.td
 	${LLDB_TBLGEN} -gen-lldb-property-defs \
@@ -747,8 +812,6 @@ DPSRCS+=	${TGHDRS}
 CLEANFILES+=	${TGHDRS} ${TGHDRS:C/$/.d/}
 
 .include "../clang.build.mk"
-
-INTERNALLIB=
 
 # Building lldb's bindings requires swig, but we do not want to include it in
 # the FreeBSD base system (as a build tool) because it has non-trivial

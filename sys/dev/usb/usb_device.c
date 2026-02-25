@@ -855,6 +855,7 @@ usb_config_parse(struct usb_device *udev, uint8_t iface_index, uint8_t cmd)
 					if (ep->refcount_alloc != 0)
 						return (USB_ERR_IN_USE);
 				}
+				ep++;
 			}
 		}
 
@@ -1359,7 +1360,7 @@ usb_probe_and_attach_sub(struct usb_device *udev,
 	}
 	if (uaa->temp_dev == NULL) {
 		/* create a new child */
-		uaa->temp_dev = device_add_child(udev->parent_dev, NULL, -1);
+		uaa->temp_dev = device_add_child(udev->parent_dev, NULL, DEVICE_UNIT_ANY);
 		if (uaa->temp_dev == NULL) {
 			device_printf(udev->parent_dev,
 			    "Device creation failed\n");
@@ -1880,7 +1881,7 @@ usb_alloc_device(device_t parent_dev, struct usb_bus *bus,
 	snprintf(udev->ugen_name, sizeof(udev->ugen_name),
 	    USB_GENERIC_NAME "%u.%u", device_get_unit(bus->bdev),
 	    device_index);
-	LIST_INIT(&udev->pd_list);
+	SLIST_INIT(&udev->pd_list);
 
 	/* Create the control endpoint device */
 	udev->ctrl_dev = usb_make_dev(udev, NULL, 0, 0,
@@ -2060,14 +2061,15 @@ repeat_set_config:
 		}
 #endif
 	}
-#if USB_HAVE_MSCTEST
+#if USB_HAVE_MSCTEST_AUTOQUIRK
 	if (set_config_failed == 0 && config_index == 0 &&
 	    usb_test_quirk(&uaa, UQ_MSC_NO_START_STOP) == 0 &&
 	    usb_test_quirk(&uaa, UQ_MSC_NO_PREVENT_ALLOW) == 0 &&
 	    usb_test_quirk(&uaa, UQ_MSC_NO_SYNC_CACHE) == 0 &&
 	    usb_test_quirk(&uaa, UQ_MSC_NO_TEST_UNIT_READY) == 0 &&
 	    usb_test_quirk(&uaa, UQ_MSC_NO_GETMAXLUN) == 0 &&
-	    usb_test_quirk(&uaa, UQ_MSC_NO_INQUIRY) == 0) {
+	    usb_test_quirk(&uaa, UQ_MSC_NO_INQUIRY) == 0 &&
+		usb_test_quirk(&uaa, UQ_MSC_IGNORE) == 0) {
 		/*
 		 * Try to figure out if there are any MSC quirks we
 		 * should apply automatically:
@@ -2190,7 +2192,7 @@ usb_destroy_dev(struct usb_fs_privdata *pd)
 	delist_dev(pd->cdev);
 
 	USB_BUS_LOCK(bus);
-	LIST_INSERT_HEAD(&bus->pd_cleanup_list, pd, pd_next);
+	SLIST_INSERT_HEAD(&bus->pd_cleanup_list, pd, pd_next);
 	/* get cleanup going */
 	usb_proc_msignal(USB_BUS_EXPLORE_PROC(bus),
 	    &bus->cleanup_msg[0], &bus->cleanup_msg[1]);
@@ -2207,7 +2209,7 @@ usb_cdev_create(struct usb_device *udev)
 	int inmode, outmode, inmask, outmask, mode;
 	uint8_t ep;
 
-	KASSERT(LIST_FIRST(&udev->pd_list) == NULL, ("stale cdev entries"));
+	KASSERT(SLIST_FIRST(&udev->pd_list) == NULL, ("stale cdev entries"));
 
 	DPRINTFN(2, "Creating device nodes\n");
 
@@ -2254,7 +2256,7 @@ usb_cdev_create(struct usb_device *udev)
 		    mode, UID_ROOT, GID_OPERATOR, 0600);
 
 		if (pd != NULL)
-			LIST_INSERT_HEAD(&udev->pd_list, pd, pd_next);
+			SLIST_INSERT_HEAD(&udev->pd_list, pd, pd_next);
 	}
 }
 
@@ -2265,10 +2267,10 @@ usb_cdev_free(struct usb_device *udev)
 
 	DPRINTFN(2, "Freeing device nodes\n");
 
-	while ((pd = LIST_FIRST(&udev->pd_list)) != NULL) {
+	while ((pd = SLIST_FIRST(&udev->pd_list)) != NULL) {
 		KASSERT(pd->cdev->si_drv1 == pd, ("privdata corrupt"));
 
-		LIST_REMOVE(pd, pd_next);
+		SLIST_REMOVE(&udev->pd_list, pd, usb_fs_privdata, pd_next);
 
 		usb_destroy_dev(pd);
 	}
@@ -2358,7 +2360,7 @@ usb_free_device(struct usb_device *udev, uint8_t flag)
 
 	mtx_destroy(&udev->device_mtx);
 #if USB_HAVE_UGEN
-	KASSERT(LIST_FIRST(&udev->pd_list) == NULL, ("leaked cdev entries"));
+	KASSERT(SLIST_FIRST(&udev->pd_list) == NULL, ("leaked cdev entries"));
 #endif
 
 	/* Uninitialise device */
@@ -2484,7 +2486,7 @@ usb_devinfo(struct usb_device *udev, char *dst_ptr, uint16_t dst_len)
 
 #ifdef USB_VERBOSE
 /*
- * Descriptions of of known vendors and devices ("products").
+ * Descriptions of known vendors and devices ("products").
  */
 struct usb_knowndev {
 	uint16_t vendor;
@@ -3108,4 +3110,52 @@ uint8_t
 usbd_get_endpoint_mode(struct usb_device *udev, struct usb_endpoint *ep)
 {
 	return (ep->ep_mode);
+}
+
+/*------------------------------------------------------------------------*
+ *	usbd_fill_deviceinfo
+ *
+ * This function dumps information about an USB device to the
+ * structure pointed to by the "di" argument.
+ *
+ * Returns:
+ *    0: Success
+ * Else: Failure
+ *------------------------------------------------------------------------*/
+int
+usbd_fill_deviceinfo(struct usb_device *udev, struct usb_device_info *di)
+{
+	struct usb_device *hub;
+
+	memset(di, 0, sizeof(di[0]));
+
+	di->udi_bus = device_get_unit(udev->bus->bdev);
+	di->udi_addr = udev->address;
+	di->udi_index = udev->device_index;
+	strlcpy(di->udi_serial, usb_get_serial(udev), sizeof(di->udi_serial));
+	strlcpy(di->udi_vendor, usb_get_manufacturer(udev), sizeof(di->udi_vendor));
+	strlcpy(di->udi_product, usb_get_product(udev), sizeof(di->udi_product));
+	usb_printbcd(di->udi_release, sizeof(di->udi_release),
+	    UGETW(udev->ddesc.bcdDevice));
+	di->udi_vendorNo = UGETW(udev->ddesc.idVendor);
+	di->udi_productNo = UGETW(udev->ddesc.idProduct);
+	di->udi_releaseNo = UGETW(udev->ddesc.bcdDevice);
+	di->udi_class = udev->ddesc.bDeviceClass;
+	di->udi_subclass = udev->ddesc.bDeviceSubClass;
+	di->udi_protocol = udev->ddesc.bDeviceProtocol;
+	di->udi_config_no = udev->curr_config_no;
+	di->udi_config_index = udev->curr_config_index;
+	di->udi_power = udev->flags.self_powered ? 0 : udev->power;
+	di->udi_speed = udev->speed;
+	di->udi_mode = udev->flags.usb_mode;
+	di->udi_power_mode = udev->power_mode;
+	di->udi_suspended = udev->flags.peer_suspended;
+
+	hub = udev->parent_hub;
+	if (hub) {
+		di->udi_hubaddr = hub->address;
+		di->udi_hubindex = hub->device_index;
+		di->udi_hubport = udev->port_no;
+	}
+	return (0);
 }

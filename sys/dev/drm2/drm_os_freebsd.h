@@ -154,18 +154,11 @@ typedef void			irqreturn_t;
 
 #if !defined(__arm__)
 #if defined(__i386__) || defined(__amd64__) || defined(__powerpc__) || defined(__aarch64__)
-#define DRM_MSG "This code is deprecated.  Install the graphics/drm-kmod pkg\n"
+#define DRM_MSG "WARNING! drm2 module is deprecated.  Install the graphics/drm-kmod pkg\n"
 #else
-#define DRM_MSG "This code is deprecated."
+#define DRM_MSG "WARNING! drm2 module is deprecated.\n"
 #endif
-
-#define DRM_OBSOLETE(dev)							\
-    do {									\
-	device_printf(dev, "=======================================================\n"); \
-	device_printf(dev, DRM_MSG);						\
-	device_printf(dev, "=======================================================\n"); \
-	gone_in_dev(dev, 13, "drm2 drivers");					\
-    } while (0)
+#define DRM_OBSOLETE(dev)	gone_in_dev(dev, 16, DRM_MSG)
 #endif /* __arm__ */
 
 /* DRM_READMEMORYBARRIER() prevents reordering of reads.
@@ -234,13 +227,6 @@ typedef void			irqreturn_t;
 #define	div_u64(n, d)		((n) / (d))
 #define	hweight32(i)		bitcount32(i)
 
-static inline unsigned long
-roundup_pow_of_two(unsigned long x)
-{
-
-	return (1UL << flsl(x - 1));
-}
-
 /**
  * ror32 - rotate a 32-bit value right
  * @word: value to rotate
@@ -296,13 +282,6 @@ get_unaligned_le32(const void *p)
 	return (__get_unaligned_le32((const u8 *)p));
 }
 #endif
-
-static inline unsigned long
-ilog2(unsigned long x)
-{
-
-	return (flsl(x) - 1);
-}
 
 int64_t		timeval_to_ns(const struct timeval *tv);
 struct timeval	ns_to_timeval(const int64_t nsec);
@@ -461,7 +440,6 @@ extern unsigned long drm_linux_timer_hz_mask;
 #define jiffies			ticks
 #define	jiffies_to_msecs(x)	(((int64_t)(x)) * 1000 / hz)
 #define	msecs_to_jiffies(x)	(((int64_t)(x)) * hz / 1000)
-#define	timespec_to_jiffies(x)	(((x)->tv_sec * 1000000 + (x)->tv_nsec) * hz / 1000000)
 #define	time_after(a,b)		((long)(b) - (long)(a) < 0)
 #define	time_after_eq(a,b)	((long)(b) - (long)(a) <= 0)
 #define	round_jiffies(j)	((unsigned long)(((j) + drm_linux_timer_hz_mask) & ~drm_linux_timer_hz_mask))

@@ -51,8 +51,6 @@
 #         > outbound > diverted > outbound | network terminated
 #
 # Test case naming legend:
-# ipfwon - with ipfw enabled
-# ipfwoff - with ipfw disabled
 # in - inbound
 # div - diverted
 # out - outbound
@@ -62,123 +60,88 @@
 
 . $(atf_get_srcdir)/utils.subr
 
-divert_init()
-{
-	if ! kldstat -q -m ipdivert; then
-		atf_skip "This test requires ipdivert"
-	fi
-}
-
-dummynet_init()
-{
-	if ! kldstat -q -m dummynet; then
-		atf_skip "This test requires dummynet"
-	fi
-}
-
-ipfw_init()
-{
-	if ! kldstat -q -m ipfw; then
-		atf_skip "This test requires ipfw"
-	fi
-}
-
-assert_ipfw_is_off()
-{
-	if kldstat -q -m ipfw; then
-		atf_skip "This test is for the case when ipfw is not loaded"
-	fi
-}
-
-atf_test_case "ipfwoff_in_div" "cleanup"
-ipfwoff_in_div_head()
+atf_test_case "in_div" "cleanup"
+in_div_head()
 {
 	atf_set descr 'Test inbound > diverted | divapp terminated'
 	atf_set require.user root
+	atf_set require.kmods ipdivert
 }
-ipfwoff_in_div_body()
+in_div_body()
 {
-	local ipfwon
-
 	pft_init
-	divert_init
-	test "$1" == "ipfwon" && ipfwon="yes"
-	test $ipfwon && ipfw_init || assert_ipfw_is_off
 
 	epair=$(vnet_mkepair)
 	vnet_mkjail div ${epair}b
-	ifconfig ${epair}a 192.0.2.1/24 up
-	jexec div ifconfig ${epair}b 192.0.2.2/24 up
-	test $ipfwon && jexec div ipfw add 65534 allow all from any to any
+	atf_check ifconfig ${epair}a 192.0.2.1/24 up
+	atf_check ifconfig ${epair}a inet6 2001:db8::1/64 no_dad
+	atf_check jexec div ifconfig ${epair}b 192.0.2.2/24 up
+	atf_check jexec div ifconfig ${epair}b inet6 2001:db8::2/64 no_dad
 
 	# Sanity check
-	atf_check -s exit:0 -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 2001:db8::2
 
 	jexec div pfctl -e
 	pft_set_rules div \
-		"pass all" \
-		"pass in inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 2000"
+	    "pass all" \
+	    "pass in inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 2000" \
+	    "pass in inet6 proto icmp6 icmp6-type echoreq divert-to ::1 port 2000"
 
-	jexec div $(atf_get_srcdir)/divapp 2000 &
+	jexec div $(atf_get_srcdir)/../common/divapp 2000 &
 	divapp_pid=$!
 	# Wait for the divapp to be ready
 	sleep 1
 
 	# divapp is expected to "eat" the packet
-	atf_check -s not-exit:0 -o ignore ping -c1 192.0.2.2
+	atf_check -s not-exit:0 -o ignore ping -c1 -t1 192.0.2.2
+
+	wait $divapp_pid
+
+	jexec div $(atf_get_srcdir)/../common/divapp 2000 &
+	divapp_pid=$!
+	# Wait for the divapp to be ready
+	sleep 1
+
+	# divapp is expected to "eat" the packet
+	atf_check -s not-exit:0 -o ignore ping -c1 -t1 2001:db8::2
 
 	wait $divapp_pid
 }
-ipfwoff_in_div_cleanup()
+in_div_cleanup()
 {
 	pft_cleanup
 }
 
-atf_test_case "ipfwon_in_div" "cleanup"
-ipfwon_in_div_head()
-{
-	atf_set descr 'Test inbound > diverted | divapp terminated, with ipfw enabled'
-	atf_set require.user root
-}
-ipfwon_in_div_body()
-{
-	ipfwoff_in_div_body "ipfwon"
-}
-ipfwon_in_div_cleanup()
-{
-	pft_cleanup
-}
-
-atf_test_case "ipfwoff_in_div_in" "cleanup"
-ipfwoff_in_div_in_head()
+atf_test_case "in_div_in" "cleanup"
+in_div_in_head()
 {
 	atf_set descr 'Test inbound > diverted > inbound | host terminated'
 	atf_set require.user root
+	atf_set require.kmods ipdivert
 }
-ipfwoff_in_div_in_body()
+in_div_in_body()
 {
-	local ipfwon
-
 	pft_init
-	divert_init
-	test "$1" == "ipfwon" && ipfwon="yes"
-	test $ipfwon && ipfw_init || assert_ipfw_is_off
 
 	epair=$(vnet_mkepair)
 	vnet_mkjail div ${epair}b
-	ifconfig ${epair}a 192.0.2.1/24 up
-	jexec div ifconfig ${epair}b 192.0.2.2/24 up
-	test $ipfwon && jexec div ipfw add 65534 allow all from any to any
+	atf_check ifconfig ${epair}a 192.0.2.1/24 up
+	atf_check ifconfig ${epair}a inet6 2001:db8::1/64 no_dad
+	atf_check jexec div ifconfig ${epair}b 192.0.2.2/24 up
+	atf_check jexec div ifconfig ${epair}b inet6 2001:db8::2/64 no_dad
 
 	# Sanity check
-	atf_check -s exit:0 -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 2001:db8::2
 
 	jexec div pfctl -e
 	pft_set_rules div \
-		"pass all" \
-		"pass in inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 2000 no state"
+	    "pass all" \
+	    "pass in inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 2000 no state" \
+	    "pass in inet6 proto icmp6 icmp6-type echoreq divert-to ::1 port 2000 no state"
 
-	jexec div $(atf_get_srcdir)/divapp 2000 divert-back &
+	jexec div $(atf_get_srcdir)/../common/divapp 2000 divert-back &
 	divapp_pid=$!
 	# Wait for the divapp to be ready
 	sleep 1
@@ -187,118 +150,108 @@ ipfwoff_in_div_in_body()
 	atf_check -s exit:0 -o ignore ping -c1 192.0.2.2
 
 	wait $divapp_pid
-}
-ipfwoff_in_div_in_cleanup()
-{
-	pft_cleanup
-}
 
-atf_test_case "ipfwon_in_div_in" "cleanup"
-ipfwon_in_div_in_head()
-{
-	atf_set descr 'Test inbound > diverted > inbound | host terminated, with ipfw enabled'
-	atf_set require.user root
-}
-ipfwon_in_div_in_body()
-{
-	ipfwoff_in_div_in_body "ipfwon"
-}
-ipfwon_in_div_in_cleanup()
-{
-	pft_cleanup
-}
-
-atf_test_case "ipfwoff_out_div" "cleanup"
-ipfwoff_out_div_head()
-{
-	atf_set descr 'Test outbound > diverted | divapp terminated'
-	atf_set require.user root
-}
-ipfwoff_out_div_body()
-{
-	local ipfwon
-
-	pft_init
-	divert_init
-	test "$1" == "ipfwon" && ipfwon="yes"
-	test $ipfwon && ipfw_init || assert_ipfw_is_off
-
-	epair=$(vnet_mkepair)
-	vnet_mkjail div ${epair}b
-	ifconfig ${epair}a 192.0.2.1/24 up
-	jexec div ifconfig ${epair}b 192.0.2.2/24 up
-	test $ipfwon && jexec div ipfw add 65534 allow all from any to any
-
-	# Sanity check
-	atf_check -s exit:0 -o ignore ping -c3 192.0.2.2
-
-	jexec div pfctl -e
-	pft_set_rules div \
-		"pass all" \
-		"pass in inet proto icmp icmp-type echoreq no state" \
-		"pass out inet proto icmp icmp-type echorep divert-to 127.0.0.1 port 2000 no state"
-
-	jexec div $(atf_get_srcdir)/divapp 2000 &
+	jexec div $(atf_get_srcdir)/../common/divapp 2000 divert-back &
 	divapp_pid=$!
 	# Wait for the divapp to be ready
 	sleep 1
 
 	# divapp is expected to "eat" the packet
-	atf_check -s not-exit:0 -o ignore ping -c1 192.0.2.2
+	atf_check -s exit:0 -o ignore ping -c1 -t1 2001:db8::2
 
 	wait $divapp_pid
 }
-ipfwoff_out_div_cleanup()
+in_div_in_cleanup()
 {
 	pft_cleanup
 }
 
-atf_test_case "ipfwon_out_div" "cleanup"
-ipfwon_out_div_head()
+atf_test_case "out_div" "cleanup"
+out_div_head()
 {
-	atf_set descr 'Test outbound > diverted | divapp terminated, with ipfw enabled'
+	atf_set descr 'Test outbound > diverted | divapp terminated'
 	atf_set require.user root
+	atf_set require.kmods ipdivert
 }
-ipfwon_out_div_body()
+out_div_body()
 {
-	ipfwoff_out_div_body "ipfwon"
-}
-ipfwon_out_div_cleanup()
-{
-	pft_cleanup
-}
-
-atf_test_case "ipfwoff_out_div_out" "cleanup"
-ipfwoff_out_div_out_head()
-{
-	atf_set descr 'Test outbound > diverted > outbound | network terminated'
-	atf_set require.user root
-}
-ipfwoff_out_div_out_body()
-{
-	local ipfwon
-
 	pft_init
-	divert_init
-	test "$1" == "ipfwon" && ipfwon="yes"
-	test $ipfwon && ipfw_init || assert_ipfw_is_off
 
 	epair=$(vnet_mkepair)
 	vnet_mkjail div ${epair}b
-	ifconfig ${epair}a 192.0.2.1/24 up
-	jexec div ifconfig ${epair}b 192.0.2.2/24 up
-	test $ipfwon && jexec div ipfw add 65534 allow all from any to any
+	atf_check ifconfig ${epair}a 192.0.2.1/24 up
+	atf_check ifconfig ${epair}a inet6 2001:db8::1/64 no_dad
+	atf_check jexec div ifconfig ${epair}b 192.0.2.2/24 up
+	atf_check jexec div ifconfig ${epair}b inet6 2001:db8::2/64 no_dad
 
 	# Sanity check
-	atf_check -s exit:0 -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 2001:db8::2
 
 	jexec div pfctl -e
 	pft_set_rules div \
-		"pass all" \
-		"pass in inet proto icmp icmp-type echoreq no state" \
-		"pass out inet proto icmp icmp-type echorep divert-to 127.0.0.1 port 2000 no state"
+	    "pass all" \
+	    "pass in inet proto icmp icmp-type echoreq no state" \
+	    "pass out inet proto icmp icmp-type echorep divert-to 127.0.0.1 port 2000 no state" \
+	    "pass in inet6 proto icmp6 icmp6-type echoreq no state" \
+	    "pass out inet6 proto icmp6 icmp6-type echorep divert-to ::1 port 2000 no state"
 
-	jexec div $(atf_get_srcdir)/divapp 2000 divert-back &
+	jexec div $(atf_get_srcdir)/../common/divapp 2000 &
+	divapp_pid=$!
+	# Wait for the divapp to be ready
+	sleep 1
+
+	# divapp is expected to "eat" the packet
+	atf_check -s not-exit:0 -o ignore ping -c1 -t1 192.0.2.2
+
+	wait $divapp_pid
+
+	jexec div $(atf_get_srcdir)/../common/divapp 2000 &
+	divapp_pid=$!
+	# Wait for the divapp to be ready
+	sleep 1
+
+	# divapp is expected to "eat" the packet
+	atf_check -s not-exit:0 -o ignore ping -c1 -t1 2001:db8::2
+
+	wait $divapp_pid
+}
+out_div_cleanup()
+{
+	pft_cleanup
+}
+
+atf_test_case "out_div_out" "cleanup"
+out_div_out_head()
+{
+	atf_set descr 'Test outbound > diverted > outbound | network terminated'
+	atf_set require.user root
+	atf_set require.kmods ipdivert
+}
+out_div_out_body()
+{
+	pft_init
+
+	epair=$(vnet_mkepair)
+	vnet_mkjail div ${epair}b
+	atf_check ifconfig ${epair}a 192.0.2.1/24 up
+	atf_check ifconfig ${epair}a inet6 2001:db8::1/64 no_dad
+	atf_check jexec div ifconfig ${epair}b 192.0.2.2/24 up
+	atf_check jexec div ifconfig ${epair}b inet6 2001:db8::2/64 no_dad
+
+	# Sanity check
+	atf_check -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 2001:db8::2
+
+	jexec div pfctl -e
+	pft_set_rules div \
+	    "pass all" \
+	    "pass in inet proto icmp icmp-type echoreq no state" \
+	    "pass out inet proto icmp icmp-type echorep divert-to 127.0.0.1 port 2000 no state" \
+	    "pass in inet6 proto icmp6 icmp6-type echoreq no state" \
+	    "pass out inet6 proto icmp6 icmp6-type echorep divert-to ::1 port 2000 no state"
+
+	jexec div $(atf_get_srcdir)/../common/divapp 2000 divert-back &
 	divapp_pid=$!
 	# Wait for the divapp to be ready
 	sleep 1
@@ -307,129 +260,123 @@ ipfwoff_out_div_out_body()
 	atf_check -s exit:0 -o ignore ping -c1 192.0.2.2
 
 	wait $divapp_pid
+
+	jexec div $(atf_get_srcdir)/../common/divapp 2000 divert-back &
+	divapp_pid=$!
+	# Wait for the divapp to be ready
+	sleep 1
+
+	# divapp is NOT expected to "eat" the packet
+	atf_check -s exit:0 -o ignore ping -c1 2001:db8::2
+
+	wait $divapp_pid
 }
-ipfwoff_out_div_out_cleanup()
+out_div_out_cleanup()
 {
 	pft_cleanup
 }
 
-atf_test_case "ipfwon_out_div_out" "cleanup"
-ipfwon_out_div_out_head()
-{
-	atf_set descr 'Test outbound > diverted > outbound | network terminated, with ipfw enabled'
-	atf_set require.user root
-}
-ipfwon_out_div_out_body()
-{
-	ipfwoff_out_div_out_body "ipfwon"
-}
-ipfwon_out_div_out_cleanup()
-{
-	pft_cleanup
-}
-
-atf_test_case "ipfwoff_in_div_in_fwd_out_div_out" "cleanup"
-ipfwoff_in_div_in_fwd_out_div_out_head()
+atf_test_case "in_div_in_fwd_out_div_out" "cleanup"
+in_div_in_fwd_out_div_out_head()
 {
 	atf_set descr 'Test inbound > diverted > inbound > forwarded > outbound > diverted > outbound | network terminated'
 	atf_set require.user root
+	atf_set require.kmods ipdivert
 }
-ipfwoff_in_div_in_fwd_out_div_out_body()
+in_div_in_fwd_out_div_out_body()
 {
-	local ipfwon
-
 	pft_init
-	divert_init
-	test "$1" == "ipfwon" && ipfwon="yes"
-	test $ipfwon && ipfw_init || assert_ipfw_is_off
 
 	# host <a--epair0--b> router <a--epair1--b> site
 	epair0=$(vnet_mkepair)
 	epair1=$(vnet_mkepair)
 
 	vnet_mkjail router ${epair0}b ${epair1}a
-	ifconfig ${epair0}a 192.0.2.1/24 up
-	jexec router sysctl net.inet.ip.forwarding=1
-	jexec router ifconfig ${epair0}b 192.0.2.2/24 up
-	jexec router ifconfig ${epair1}a 198.51.100.1/24 up
-	test $ipfwon && jexec router ipfw add 65534 allow all from any to any
+	atf_check ifconfig ${epair0}a 192.0.2.1/24 up
+	atf_check ifconfig ${epair0}a inet6 2001:db8::1/64 no_dad
+	atf_check -o ignore jexec router sysctl net.inet.ip.forwarding=1
+	atf_check -o ignore jexec router sysctl net.inet6.ip6.forwarding=1
+	atf_check jexec router ifconfig ${epair0}b 192.0.2.2/24 up
+	atf_check jexec router ifconfig ${epair0}b inet6 2001:db8::2/64 no_dad
+	atf_check jexec router ifconfig ${epair1}a 198.51.100.1/24 up
+	atf_check jexec router ifconfig ${epair1}a inet6 2001:db9::1/64 no_dad
 
 	vnet_mkjail site ${epair1}b
 	jexec site ifconfig ${epair1}b 198.51.100.2/24 up
+	jexec site ifconfig ${epair1}b inet6 2001:db9::2/64 no_dad
 	jexec site route add default 198.51.100.1
-	test $ipfwon && jexec site ipfw add 65534 allow all from any to any
+	jexec site route -6 add default 2001:db9::1
 
-	route add -net 198.51.100.0/24 192.0.2.2
+	atf_check -o ignore route add -net 198.51.100.0/24 192.0.2.2
+	atf_check -o ignore route -6 add -net 2001:db9::/64 2001:db8::2
 
 	# Sanity check
-	atf_check -s exit:0 -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 2001:db8::2
 
 	# Should be routed without pf
-	atf_check -s exit:0 -o ignore ping -c3 198.51.100.2
+	atf_check -o ignore ping -c3 198.51.100.2
+	atf_check -o ignore ping -c3 2001:db9::2
 
 	jexec router pfctl -e
 	pft_set_rules router \
-		"pass all" \
-		"pass in inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 2001 no state" \
-		"pass out inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 2002 no state"
+	    "pass all" \
+	    "pass in inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 2001 no state" \
+	    "pass out inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 2002 no state" \
+	    "pass in inet6 proto icmp6 icmp6-type echoreq divert-to ::1 port 2001 no state" \
+	    "pass out inet6 proto icmp6 icmp6-type echoreq divert-to ::1 port 2002 no state"
 
-	jexec router $(atf_get_srcdir)/divapp 2001 divert-back &
+	jexec router $(atf_get_srcdir)/../common/divapp 2001 divert-back &
 	indivapp_pid=$!
-	jexec router $(atf_get_srcdir)/divapp 2002 divert-back &
+	jexec router $(atf_get_srcdir)/../common/divapp 2002 divert-back &
 	outdivapp_pid=$!
-	# Wait for the divappS to be ready
+	# Wait for the divapps to be ready
 	sleep 1
 
-	# Both divappS are NOT expected to "eat" the packet
+	# Both divapps are NOT expected to "eat" the packet
 	atf_check -s exit:0 -o ignore ping -c1 198.51.100.2
 
 	wait $indivapp_pid && wait $outdivapp_pid
+
+	jexec router $(atf_get_srcdir)/../common/divapp 2001 divert-back &
+	indivapp_pid=$!
+	jexec router $(atf_get_srcdir)/../common/divapp 2002 divert-back &
+	outdivapp_pid=$!
+	# Wait for the divapps to be ready
+	sleep 1
+
+	# Both divapps are NOT expected to "eat" the packet
+	atf_check -o ignore ping -c1 2001:db9::2
+
+	wait $indivapp_pid && wait $outdivapp_pid
 }
-ipfwoff_in_div_in_fwd_out_div_out_cleanup()
+in_div_in_fwd_out_div_out_cleanup()
 {
 	pft_cleanup
 }
 
-atf_test_case "ipfwon_in_div_in_fwd_out_div_out" "cleanup"
-ipfwon_in_div_in_fwd_out_div_out_head()
-{
-	atf_set descr 'Test inbound > diverted > inbound > forwarded > outbound > diverted > outbound | network terminated, with ipfw enabled'
-	atf_set require.user root
-}
-ipfwon_in_div_in_fwd_out_div_out_body()
-{
-	ipfwoff_in_div_in_fwd_out_div_out_body "ipfwon"
-}
-ipfwon_in_div_in_fwd_out_div_out_cleanup()
-{
-	pft_cleanup
-}
-
-atf_test_case "ipfwoff_in_dn_in_div_in_out_div_out_dn_out" "cleanup"
-ipfwoff_in_dn_in_div_in_out_div_out_dn_out_head()
+atf_test_case "in_dn_in_div_in_out_div_out_dn_out" "cleanup"
+in_dn_in_div_in_out_div_out_dn_out_head()
 {
 	atf_set descr 'Test inbound > delayed+diverted > outbound > diverted+delayed > outbound | network terminated'
 	atf_set require.user root
+	atf_set require.kmods dummynet ipdivert
 }
-ipfwoff_in_dn_in_div_in_out_div_out_dn_out_body()
+in_dn_in_div_in_out_div_out_dn_out_body()
 {
-	local ipfwon
-
 	pft_init
-	divert_init
-	dummynet_init
-	test "$1" == "ipfwon" && ipfwon="yes"
-	test $ipfwon && ipfw_init || assert_ipfw_is_off
 
 	epair=$(vnet_mkepair)
 	vnet_mkjail alcatraz ${epair}b
-	ifconfig ${epair}a 192.0.2.1/24 up
-	ifconfig ${epair}a ether 02:00:00:00:00:01
-	jexec alcatraz ifconfig ${epair}b 192.0.2.2/24 up
-	test $ipfwon && jexec alcatraz ipfw add 65534 allow all from any to any
+	atf_check ifconfig ${epair}a 192.0.2.1/24 up
+	atf_check ifconfig ${epair}a inet6 2001:db8::1/64 no_dad
+	atf_check ifconfig ${epair}a ether 02:00:00:00:00:01
+	atf_check jexec alcatraz ifconfig ${epair}b 192.0.2.2/24 up
+	atf_check jexec alcatraz ifconfig ${epair}b inet6 2001:db8::2/64 no_dad
 
 	# Sanity check
-	atf_check -s exit:0 -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 2001:db8::2
 
 	# a) ping should time out due to very narrow dummynet pipes {
 
@@ -438,20 +385,36 @@ ipfwoff_in_dn_in_div_in_out_div_out_dn_out_body()
 
 	jexec alcatraz pfctl -e
 	pft_set_rules alcatraz \
-		"ether pass in from 02:00:00:00:00:01 l3 all dnpipe 1001" \
-		"ether pass out to 02:00:00:00:00:01 l3 all dnpipe 1002 " \
-		"pass all" \
-		"pass in inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 1001 no state" \
-		"pass out inet proto icmp icmp-type echorep divert-to 127.0.0.1 port 1002 no state"
+	    "ether pass in from 02:00:00:00:00:01 l3 all dnpipe 1001" \
+	    "ether pass out to 02:00:00:00:00:01 l3 all dnpipe 1002 " \
+	    "pass all" \
+	    "pass in inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 1001 no state" \
+	    "pass out inet proto icmp icmp-type echorep divert-to 127.0.0.1 port 1002 no state" \
+	    "pass in inet6 proto icmp6 icmp6-type echoreq divert-to ::1 port 1001 no state" \
+	    "pass out inet6 proto icmp6 icmp6-type echorep divert-to ::1 port 1002 no state"
 
-	jexec alcatraz $(atf_get_srcdir)/divapp 1001 divert-back &
+	jexec alcatraz $(atf_get_srcdir)/../common/divapp 1001 divert-back &
 	indivapp_pid=$!
-	jexec alcatraz $(atf_get_srcdir)/divapp 1002 divert-back &
+	jexec alcatraz $(atf_get_srcdir)/../common/divapp 1002 divert-back &
 	outdivapp_pid=$!
-	# Wait for the divappS to be ready
+	# Wait for the divapps to be ready
 	sleep 1
 
 	atf_check -s not-exit:0 -o ignore ping -c1 -s56 -t1 192.0.2.2
+
+	wait $indivapp_pid
+	atf_check_not_equal 0 $?
+	wait $outdivapp_pid
+	atf_check_not_equal 0 $?
+
+	jexec alcatraz $(atf_get_srcdir)/../common/divapp 1001 divert-back &
+	indivapp_pid=$!
+	jexec alcatraz $(atf_get_srcdir)/../common/divapp 1002 divert-back &
+	outdivapp_pid=$!
+	# Wait for the divapps to be ready
+	sleep 1
+
+	atf_check -s not-exit:0 -o ignore ping -c1 -s56 -t1 2001:db8::2
 
 	wait $indivapp_pid
 	atf_check_not_equal 0 $?
@@ -467,20 +430,36 @@ ipfwoff_in_dn_in_div_in_out_div_out_dn_out_body()
 
 	jexec alcatraz pfctl -e
 	pft_set_rules alcatraz \
-		"ether pass in from 02:00:00:00:00:01 l3 all dnpipe 2001" \
-		"ether pass out to 02:00:00:00:00:01 l3 all dnpipe 2002 " \
-		"pass all" \
-		"pass in inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 2001 no state" \
-		"pass out inet proto icmp icmp-type echorep divert-to 127.0.0.1 port 2002 no state"
+	    "ether pass in from 02:00:00:00:00:01 l3 all dnpipe 2001" \
+	    "ether pass out to 02:00:00:00:00:01 l3 all dnpipe 2002 " \
+	    "pass all" \
+	    "pass in inet proto icmp icmp-type echoreq divert-to 127.0.0.1 port 2001 no state" \
+	    "pass out inet proto icmp icmp-type echorep divert-to 127.0.0.1 port 2002 no state" \
+	    "pass in inet6 proto icmp6 icmp6-type echoreq divert-to ::1 port 2001 no state" \
+	    "pass out inet6 proto icmp6 icmp6-type echorep divert-to ::1 port 2002 no state"
 
-	jexec alcatraz $(atf_get_srcdir)/divapp 2001 divert-back &
+	jexec alcatraz $(atf_get_srcdir)/../common/divapp 2001 divert-back &
 	indivapp_pid=$!
-	jexec alcatraz $(atf_get_srcdir)/divapp 2002 divert-back &
+	jexec alcatraz $(atf_get_srcdir)/../common/divapp 2002 divert-back &
 	outdivapp_pid=$!
-	# Wait for the divappS to be ready
+	# Wait for the divapps to be ready
 	sleep 1
 
-	atf_check -s exit:0 -o ignore ping -c1 -s56 -t1 192.0.2.2
+	atf_check -o ignore ping -c1 -s56 -t1 192.0.2.2
+
+	wait $indivapp_pid
+	atf_check_equal 0 $?
+	wait $outdivapp_pid
+	atf_check_equal 0 $?
+
+	jexec alcatraz $(atf_get_srcdir)/../common/divapp 2001 divert-back &
+	indivapp_pid=$!
+	jexec alcatraz $(atf_get_srcdir)/../common/divapp 2002 divert-back &
+	outdivapp_pid=$!
+	# Wait for the divapps to be ready
+	sleep 1
+
+	atf_check -o ignore ping -c1 -s56 -t1 2001:db8::2
 
 	wait $indivapp_pid
 	atf_check_equal 0 $?
@@ -489,41 +468,108 @@ ipfwoff_in_dn_in_div_in_out_div_out_dn_out_body()
 
 	# }
 }
-ipfwoff_in_dn_in_div_in_out_div_out_dn_out_cleanup()
+in_dn_in_div_in_out_div_out_dn_out_cleanup()
 {
 	pft_cleanup
 }
 
-atf_test_case "ipfwon_in_dn_in_div_in_out_div_out_dn_out" "cleanup"
-ipfwon_in_dn_in_div_in_out_div_out_dn_out_head()
+atf_test_case "pr260867" "cleanup"
+pr260867_head()
 {
-	atf_set descr 'Test inbound > delayed+diverted > outbound > diverted+delayed > outbound | network terminated, with ipfw enabled'
+	atf_set descr 'Test for the loop reported in PR260867'
 	atf_set require.user root
+	atf_set require.kmods ipdivert
 }
-ipfwon_in_dn_in_div_in_out_div_out_dn_out_body()
+pr260867_body()
 {
-	ipfwoff_in_dn_in_div_in_out_div_out_dn_out_body "ipfwon"
+	pft_init
+
+	epair=$(vnet_mkepair)
+
+	atf_check ifconfig ${epair}a 192.0.2.1/24 up
+	atf_check ifconfig ${epair}a inet6 2001:db8::1/64 no_dad
+
+	vnet_mkjail alcatraz ${epair}b
+	atf_check jexec alcatraz ifconfig ${epair}b 192.0.2.2/24 up
+	atf_check jexec alcatraz ifconfig ${epair}b inet6 2001:db8::2/64 no_dad
+
+	# Sanity check
+	atf_check -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 2001:db8::2
+
+	jexec alcatraz /usr/sbin/inetd -p ${PWD}/inetd-echo.pid $(atf_get_srcdir)/echo_inetd.conf
+	jexec alcatraz $(atf_get_srcdir)/../common/divapp 1001 divert-back &
+
+	jexec alcatraz pfctl -e
+	pft_set_rules alcatraz \
+	    "pass in on ${epair}b proto tcp from any to port 7 divert-to 0.0.0.0 port 1001"
+
+	reply=$(echo "foo" | nc -N 192.0.2.2 7)
+	if [ "${reply}" != "foo" ]; then
+		atf_fail "Did not receive v4 echo reply"
+	fi
+
+	reply=$(echo "foo" | nc -N -6 2001:db8::2 7)
+	if [ "${reply}" != "foo" ]; then
+		atf_fail "Did not receive v6 echo reply"
+	fi
 }
-ipfwon_in_dn_in_div_in_out_div_out_dn_out_cleanup()
+pr260867_cleanup()
+{
+	pft_cleanup
+}
+
+atf_test_case "pr260867_icmp" "cleanup"
+pr260867_icmp_head()
+{
+	atf_set descr 'Variant of the PR260867 test'
+	atf_set require.user root
+	atf_set require.kmods ipdivert
+}
+pr260867_icmp_body()
+{
+	pft_init
+
+	epair=$(vnet_mkepair)
+
+	atf_check ifconfig ${epair}a 192.0.2.1/24 up
+	atf_check ifconfig ${epair}a inet6 2001:db8::1/64 no_dad
+
+	vnet_mkjail alcatraz ${epair}b
+	atf_check jexec alcatraz ifconfig ${epair}b 192.0.2.2/24 up
+	atf_check jexec alcatraz ifconfig ${epair}b inet6 2001:db8::2/64 no_dad
+
+	# Sanity check
+	atf_check -o ignore ping -c3 192.0.2.2
+	atf_check -o ignore ping -c3 2001:db8::2
+
+	jexec alcatraz $(atf_get_srcdir)/../common/divapp 1001 divert-back &
+
+	jexec alcatraz pfctl -e
+	pft_set_rules alcatraz \
+	    "pass in on ${epair}b proto icmp from any to any divert-to 0.0.0.0 port 1001" \
+	    "pass in on ${epair}b proto icmp6 from any to any divert-to :: port 1001"
+
+	atf_check -o ignore ping -c 3 192.0.2.2
+	atf_check -o ignore ping -c 3 2001:db8::2
+}
+pr260867_icmp_cleanup()
 {
 	pft_cleanup
 }
 
 atf_init_test_cases()
 {
-	atf_add_test_case "ipfwoff_in_div"
-	atf_add_test_case "ipfwoff_in_div_in"
-	atf_add_test_case "ipfwon_in_div"
-	atf_add_test_case "ipfwon_in_div_in"
+	atf_add_test_case "in_div"
+	atf_add_test_case "in_div_in"
 
-	atf_add_test_case "ipfwoff_out_div"
-	atf_add_test_case "ipfwoff_out_div_out"
-	atf_add_test_case "ipfwon_out_div"
-	atf_add_test_case "ipfwon_out_div_out"
+	atf_add_test_case "out_div"
+	atf_add_test_case "out_div_out"
 
-	atf_add_test_case "ipfwoff_in_div_in_fwd_out_div_out"
-	atf_add_test_case "ipfwon_in_div_in_fwd_out_div_out"
+	atf_add_test_case "in_div_in_fwd_out_div_out"
 
-	atf_add_test_case "ipfwoff_in_dn_in_div_in_out_div_out_dn_out"
-	atf_add_test_case "ipfwon_in_dn_in_div_in_out_div_out_dn_out"
+	atf_add_test_case "in_dn_in_div_in_out_div_out_dn_out"
+
+	atf_add_test_case "pr260867"
+	atf_add_test_case "pr260867_icmp"
 }

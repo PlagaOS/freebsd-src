@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Konstantin Belousov <kib@FreeBSD.org>
  * under sponsorship from the FreeBSD Foundation.
@@ -116,6 +115,19 @@ __thr_malloc(size_t nbytes)
 	curthread = _get_curthread();
 	thr_malloc_lock(curthread);
 	res = __crt_malloc(nbytes);
+	thr_malloc_unlock(curthread);
+	return (res);
+}
+
+void *
+__thr_aligned_alloc_offset(size_t align, size_t size, size_t offset)
+{
+	struct pthread *curthread;
+	void *res;
+
+	curthread = _get_curthread();
+	thr_malloc_lock(curthread);
+	res = __crt_aligned_alloc_offset(align, size, offset);
 	thr_malloc_unlock(curthread);
 	return (res);
 }

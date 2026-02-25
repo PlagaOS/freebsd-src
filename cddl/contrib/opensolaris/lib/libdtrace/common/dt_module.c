@@ -109,8 +109,7 @@ dt_module_syminit32(dt_module_t *dmp)
 		if (sym->st_name == 0 || sym->st_name >= ss_size)
 			continue; /* skip null or invalid names */
 
-		if (sym->st_value != 0 &&
-		    (ELF32_ST_BIND(sym->st_info) != STB_LOCAL || sym->st_size)) {
+		if (ELF32_ST_BIND(sym->st_info) != STB_LOCAL || sym->st_size) {
 			asrsv++; /* reserve space in the address map */
 
 #if defined(__FreeBSD__)
@@ -159,8 +158,7 @@ dt_module_syminit64(dt_module_t *dmp)
 		if (sym->st_name == 0 || sym->st_name >= ss_size)
 			continue; /* skip null or invalid names */
 
-		if (sym->st_value != 0 &&
-		    (ELF64_ST_BIND(sym->st_info) != STB_LOCAL || sym->st_size)) {
+		if (ELF64_ST_BIND(sym->st_info) != STB_LOCAL || sym->st_size) {
 			asrsv++; /* reserve space in the address map */
 #if defined(__FreeBSD__)
 			sym->st_value += (Elf_Addr) dmp->dm_reloc_offset;
@@ -245,8 +243,7 @@ dt_module_symsort32(dt_module_t *dmp)
 
 	for (i = 1; i < n; i++, dsp++) {
 		Elf32_Sym *sym = symtab + dsp->ds_symid;
-		if (sym->st_value != 0 &&
-		    (ELF32_ST_BIND(sym->st_info) != STB_LOCAL || sym->st_size))
+		if (ELF32_ST_BIND(sym->st_info) != STB_LOCAL || sym->st_size)
 			*sympp++ = sym;
 	}
 
@@ -269,8 +266,7 @@ dt_module_symsort64(dt_module_t *dmp)
 
 	for (i = 1; i < n; i++, dsp++) {
 		Elf64_Sym *sym = symtab + dsp->ds_symid;
-		if (sym->st_value != 0 &&
-		    (ELF64_ST_BIND(sym->st_info) != STB_LOCAL || sym->st_size))
+		if (ELF64_ST_BIND(sym->st_info) != STB_LOCAL || sym->st_size)
 			*sympp++ = sym;
 	}
 
@@ -452,17 +448,17 @@ dt_module_symaddr64(dt_module_t *dmp, GElf_Addr addr,
 }
 
 static const dt_modops_t dt_modops_32 = {
-	dt_module_syminit32,
-	dt_module_symsort32,
-	dt_module_symname32,
-	dt_module_symaddr32
+	.do_syminit = dt_module_syminit32,
+	.do_symsort = dt_module_symsort32,
+	.do_symname = dt_module_symname32,
+	.do_symaddr = dt_module_symaddr32
 };
 
 static const dt_modops_t dt_modops_64 = {
-	dt_module_syminit64,
-	dt_module_symsort64,
-	dt_module_symname64,
-	dt_module_symaddr64
+	.do_syminit = dt_module_syminit64,
+	.do_symsort = dt_module_symsort64,
+	.do_symname = dt_module_symname64,
+	.do_symaddr = dt_module_symaddr64
 };
 
 dt_module_t *
@@ -1218,7 +1214,7 @@ dt_module_update(dtrace_hdl_t *dtp, struct kld_file_stat *k_stat)
 			continue; /* skip any malformed sections */
 		if (sh.sh_size == 0)
 			continue;
-		if (sh.sh_type == SHT_PROGBITS || sh.sh_type == SHT_NOBITS) {
+		if (sh.sh_flags & SHF_ALLOC) {
 			alignmask = sh.sh_addralign - 1;
 			mapbase += alignmask;
 			mapbase &= ~alignmask;
@@ -1251,19 +1247,21 @@ dt_module_update(dtrace_hdl_t *dtp, struct kld_file_stat *k_stat)
 	 * [Text][R/O data][R/W data][Dynamic][BSS][Non loadable]
 	 */
 	dmp->dm_text_size = dmp->dm_data_va - dmp->dm_text_va;
-#if defined(__i386__)
-	/*
-	 * Find the first load section and figure out the relocation
-	 * offset for the symbols. The kernel module will not need
-	 * relocation, but the kernel linker modules will.
-	 */
-	for (i = 0; gelf_getphdr(dmp->dm_elf, i, &ph) != NULL; i++) {
-		if (ph.p_type == PT_LOAD) {
-			dmp->dm_reloc_offset = k_stat->address - ph.p_vaddr;
-			break;
+
+	if (!is_elf_obj) {
+		/*
+		 * Find the first load section and figure out the relocation
+		 * offset for the symbols. The kernel module will not need
+		 * relocation, but the kernel linker modules will.
+		 */
+		for (i = 0; gelf_getphdr(dmp->dm_elf, i, &ph) != NULL; i++) {
+			if (ph.p_type == PT_LOAD) {
+				dmp->dm_reloc_offset =
+				    k_stat->address - ph.p_vaddr;
+				break;
+			}
 		}
 	}
-#endif
 
 	if (dmp->dm_info.objfs_info_primary)
 		dmp->dm_flags |= DT_DM_PRIMARY;

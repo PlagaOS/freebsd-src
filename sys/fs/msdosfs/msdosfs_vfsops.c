@@ -575,7 +575,6 @@ mountmsdosfs(struct vnode *odevvp, struct mount *mp)
 	pmp->pm_bo = bo;
 
 	lockinit(&pmp->pm_fatlock, 0, msdosfs_lock_msg, 0, 0);
-	lockinit(&pmp->pm_checkpath_lock, 0, "msdoscp", 0, 0);
 
 	TASK_INIT(&pmp->pm_rw2ro_task, 0, msdosfs_remount_ro, pmp);
 
@@ -722,7 +721,9 @@ mountmsdosfs(struct vnode *odevvp, struct mount *mp)
 		}
 	}
 
-	clusters = (pmp->pm_fatsize / pmp->pm_fatmult) * pmp->pm_fatdiv ;
+	clusters = (pmp->pm_fatsize / pmp->pm_fatmult) * pmp->pm_fatdiv;
+	if (clusters >= (CLUST_RSRVD & pmp->pm_fatmask))
+		clusters = CLUST_RSRVD & pmp->pm_fatmask;
 	if (pmp->pm_maxcluster >= clusters) {
 #ifdef MSDOSFS_DEBUG
 		printf("Warning: number of clusters (%ld) exceeds FAT "
@@ -869,7 +870,6 @@ error_exit:
 	}
 	if (pmp != NULL) {
 		lockdestroy(&pmp->pm_fatlock);
-		lockdestroy(&pmp->pm_checkpath_lock);
 		free(pmp->pm_inusemap, M_MSDOSFSFAT);
 		free(pmp, M_MSDOSFSMNT);
 		mp->mnt_data = NULL;
@@ -969,7 +969,6 @@ msdosfs_unmount(struct mount *mp, int mntflags)
 	dev_rel(pmp->pm_dev);
 	free(pmp->pm_inusemap, M_MSDOSFSFAT);
 	lockdestroy(&pmp->pm_fatlock);
-	lockdestroy(&pmp->pm_checkpath_lock);
 	free(pmp, M_MSDOSFSMNT);
 	mp->mnt_data = NULL;
 	return (error);
@@ -1185,7 +1184,7 @@ msdosfs_fhtovp(struct mount *mp, struct fid *fhp, int flags, struct vnode **vpp)
 	error = deget(pmp, defhp->defid_dirclust, defhp->defid_dirofs,
 	    LK_EXCLUSIVE, &dep);
 	if (error) {
-		*vpp = NULLVP;
+		*vpp = NULL;
 		return (error);
 	}
 	*vpp = DETOV(dep);

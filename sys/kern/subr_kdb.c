@@ -238,7 +238,7 @@ static int
 kdb_sysctl_trap(SYSCTL_HANDLER_ARGS)
 {
 	int error, i;
-	int *addr = (int *)0x10;
+	int *volatile addr = (int *)0x10;
 
 	error = sysctl_wire_old_buffer(req, sizeof(int));
 	if (error == 0) {
@@ -330,7 +330,7 @@ kdb_reboot(void)
 #define	KEY_CRTLP	16	/* ^P */
 #define	KEY_CRTLR	18	/* ^R */
 
-/* States of th KDB "alternate break sequence" detecting state machine. */
+/* States of the KDB "alternate break sequence" detecting state machine. */
 enum {
 	KDB_ALT_BREAK_SEEN_NONE,
 	KDB_ALT_BREAK_SEEN_CR,

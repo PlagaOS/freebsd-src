@@ -55,6 +55,7 @@
 #include <pthread.h>
 #include <pthread_np.h>
 
+#include "bhyverun.h"
 #include "mevent.h"
 
 #define	MEVENT_MAX	64
@@ -78,6 +79,12 @@ struct mevent {
 	int	me_closefd;
 	int	me_fflags;
 	LIST_ENTRY(mevent) me_list;
+};
+
+enum mevent_update_type {
+	UPDATE_ENABLE,
+	UPDATE_DISABLE,
+	UPDATE_TIMER,
 };
 
 static LIST_HEAD(listhead, mevent) global_head, change_head;
@@ -237,7 +244,6 @@ mevent_build(struct kevent *kev)
 			 */
 			close(mevp->me_fd);
 		} else {
-			assert((mevp->me_state & EV_ADD) == 0);
 			mevent_populate(mevp, &kev[i]);
 			i++;
 		}
@@ -375,30 +381,35 @@ mevent_add_disabled(int tfd, enum ev_type type,
 }
 
 static int
-mevent_update(struct mevent *evp, bool enable)
+mevent_update(struct mevent *evp, enum mevent_update_type type, int msecs)
 {
 	int newstate;
 
 	mevent_qlock();
 
 	/*
-	 * It's not possible to enable/disable a deleted event
+	 * It's not possible to update a deleted event
 	 */
 	assert((evp->me_state & EV_DELETE) == 0);
 
 	newstate = evp->me_state;
-	if (enable) {
+	if (type == UPDATE_ENABLE) {
 		newstate |= EV_ENABLE;
 		newstate &= ~EV_DISABLE;
-	} else {
+	} else if (type == UPDATE_DISABLE) {
 		newstate |= EV_DISABLE;
 		newstate &= ~EV_ENABLE;
+	} else {
+		assert(type == UPDATE_TIMER);
+		assert(evp->me_type == EVF_TIMER);
+		newstate |= EV_ADD;
+		evp->me_msecs = msecs;
 	}
 
 	/*
-	 * No update needed if state isn't changing
+	 * No update needed if enable/disable had no effect
 	 */
-	if (evp->me_state != newstate) {
+	if (evp->me_state != newstate || type == UPDATE_TIMER) {
 		evp->me_state = newstate;
 
 		/*
@@ -421,15 +432,19 @@ mevent_update(struct mevent *evp, bool enable)
 int
 mevent_enable(struct mevent *evp)
 {
-
-	return (mevent_update(evp, true));
+	return (mevent_update(evp, UPDATE_ENABLE, -1));
 }
 
 int
 mevent_disable(struct mevent *evp)
 {
+	return (mevent_update(evp, UPDATE_DISABLE, -1));
+}
 
-	return (mevent_update(evp, false));
+int
+mevent_timer_update(struct mevent *evp, int msecs)
+{
+	return (mevent_update(evp, UPDATE_TIMER, msecs));
 }
 
 static int
@@ -503,7 +518,7 @@ mevent_dispatch(void)
 	ret = pipe(mevent_pipefd);
 	if (ret < 0) {
 		perror("pipe");
-		exit(0);
+		exit(BHYVE_EXIT_ERROR);
 	}
 
 #ifndef WITHOUT_CAPSICUM

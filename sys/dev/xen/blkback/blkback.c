@@ -145,12 +145,14 @@ static MALLOC_DEFINE(M_XENBLOCKBACK, "xbbd", "Xen Block Back Driver Data");
  */
 #define	XBB_MAX_SEGMENTS_PER_REQLIST XBB_MAX_SEGMENTS_PER_REQUEST
 
+#define XBD_SECTOR_SHFT		9
+
 /*--------------------------- Forward Declarations ---------------------------*/
 struct xbb_softc;
 struct xbb_xen_req;
 
 static void xbb_attach_failed(struct xbb_softc *xbb, int err, const char *fmt,
-			      ...) __attribute__((format(printf, 3, 4)));
+			      ...) __printflike(3, 4);
 static int  xbb_shutdown(struct xbb_softc *xbb);
 
 /*------------------------------ Data Structures -----------------------------*/
@@ -1150,7 +1152,9 @@ xbb_get_resources(struct xbb_softc *xbb, struct xbb_xen_reqlist **reqlist,
 	if (*reqlist == NULL) {
 		*reqlist = nreqlist;
 		nreqlist->operation = ring_req->operation;
-		nreqlist->starting_sector_number = ring_req->sector_number;
+		nreqlist->starting_sector_number =
+		    (ring_req->sector_number << XBD_SECTOR_SHFT) >>
+		    xbb->sector_size_shift;
 		STAILQ_INSERT_TAIL(&xbb->reqlist_pending_stailq, nreqlist,
 				   links);
 	}
@@ -2476,13 +2480,13 @@ xbb_open_file(struct xbb_softc *xbb)
 	xbb->sector_size = 512;
 
 	/*
-	 * Sanity check.  The media size has to be at least one
-	 * sector long.
+	 * Sanity check.  The media size must be a multiple of the sector
+	 * size.
 	 */
-	if (xbb->media_size < xbb->sector_size) {
+	if ((xbb->media_size % xbb->sector_size) != 0) {
 		error = EINVAL;
 		xenbus_dev_fatal(xbb->dev, error,
-				 "file %s size %ju < block size %u",
+				 "file %s size %ju not multiple of block size %u",
 				 xbb->dev_name,
 				 (uintmax_t)xbb->media_size,
 				 xbb->sector_size);
@@ -3086,9 +3090,13 @@ xbb_publish_backend_info(struct xbb_softc *xbb)
 			return (error);
 		}
 
+		/*
+		 * The 'sectors' node is special and always contains the size
+		 * in units of 512b, regardless of the value in 'sector-size'.
+		 */
 		leaf = "sectors";
-		error = xs_printf(xst, our_path, leaf,
-				  "%"PRIu64, xbb->media_num_sectors);
+		error = xs_printf(xst, our_path, leaf, "%ju",
+		    (uintmax_t)(xbb->media_size >> XBD_SECTOR_SHFT));
 		if (error != 0)
 			break;
 

@@ -2,7 +2,7 @@
 # Please see the file src/etc/mtree/README before making changes to this file.
 #
 
-/set type=dir uname=root gname=wheel mode=0755
+/set type=dir uname=root gname=wheel mode=0755 tags=package=clibs-dev
 .
     arpa
     ..
@@ -10,17 +10,13 @@
     ..
     atf-c++
     ..
-    bsm
+    bsm                 tags=package=audit-dev
     ..
     bsnmp
     ..
     c++
         v1
             __algorithm
-                pstl_backends
-                    cpu_backends
-                    ..
-                ..
             ..
             __atomic
             ..
@@ -35,6 +31,8 @@
             __concepts
             ..
             __condition_variable
+            ..
+            __configuration
             ..
             __coroutine
             ..
@@ -60,6 +58,8 @@
                 locale_base_api
                 ..
             ..
+            __math
+            ..
             __mdspan
             ..
             __memory
@@ -70,10 +70,12 @@
             ..
             __numeric
             ..
+            __ostream
+            ..
             __pstl
-                internal
-                    omp
-                    ..
+                backends
+                ..
+                cpu_algos
                 ..
             ..
             __random
@@ -87,6 +89,8 @@
             __system_error
             ..
             __thread
+                support
+                ..
             ..
             __tuple
             ..
@@ -97,6 +101,8 @@
             __variant
             ..
             experimental
+                __simd
+                ..
             ..
             ext
             ..
@@ -112,7 +118,7 @@
         scsi
         ..
     ..
-    casper
+    casper              tags=package=libcasper-dev
     ..
     crypto
     ..
@@ -120,8 +126,6 @@
         acpica
         ..
         agp
-        ..
-        an
         ..
         ciss
         ..
@@ -155,6 +159,8 @@
         ..
         nvme
         ..
+        nvmf
+        ..
         ofw
         ..
         pbio
@@ -179,15 +185,15 @@
         ..
         vkbd
         ..
+        vmm
+        ..
         wg
         ..
-        wi
-        ..
     ..
-    devdctl
+    devdctl             tags=package=utilities-dev
     ..
-    edit
-        readline
+    edit                tags=package=runtime-dev
+        readline        tags=package=runtime-dev
         ..
     ..
     fs
@@ -246,37 +252,39 @@
         virstor
         ..
     ..
-    gssapi
+    gssapi              tags=package=kerberos-dev
     ..
-    infiniband
-        complib
+    gssrpc              tags=package=kerberos-dev
+    ..
+    infiniband          tags=package=utilities-dev
+        complib         tags=package=utilities-dev
         ..
-        iba
+        iba             tags=package=utilities-dev
         ..
-        opensm
+        opensm          tags=package=utilities-dev
         ..
-        vendor
+        vendor          tags=package=utilities-dev
         ..
     ..
     isofs
         cd9660
         ..
     ..
-    kadm5
+    kadm5               tags=package=kerberos-dev
     ..
-    krb5
+    krb5                tags=package=kerberos-dev
     ..
-    lib80211
+    lib80211            tags=package=runtime-dev
     ..
-    lib9p
+    lib9p               tags=package=lib9p-dev
     ..
     libipt
     ..
     libmilter
     ..
-    libxo
+    libxo               tags=package=runtime-dev
     ..
-    lzma
+    lzma                tags=package=xz-dev
     ..
     machine
         pc
@@ -291,8 +299,6 @@
     net80211
     ..
     netgraph
-        atm
-        ..
         bluetooth
             include
             ..
@@ -310,14 +316,14 @@
     ..
     netinet6
     ..
+    netipsec
+    ..
     netlink
         route
         ..
     ..
-    netipsec
-    ..
     netpfil
-        pf
+        pf              tags=package=pf-dev
         ..
     ..
     netsmb
@@ -342,20 +348,20 @@
         stm
         ..
     ..
-    openssl
+    openssl             tags=package=openssl-dev
     ..
-    pcap
+    pcap                tags=package=utilities-dev
     ..
     protocols
     ..
-    rdma
+    rdma                tags=package=utilities-dev
     ..
     rpc
     ..
     rpcsvc
     ..
     security
-        audit
+        audit           tags=package=audit-dev
         ..
         mac_biba
         ..
@@ -371,6 +377,8 @@
         ..
         mac_veriexec
         ..
+    ..
+    ssp
     ..
     sys
         disk

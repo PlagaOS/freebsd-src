@@ -1,3 +1,58 @@
+Spleen 2.2.0 (2026-02-01)
+
+- Add stand alone caron in the 8x16, 12x24, 16x32, and 32x64 versions
+- Fix stand alone breve in the 12x24 version
+- Add white square symbol in the 8x16, 16x32, and 32x64 versions
+- Add dagger and double dagger symbols in the 8x16, 12x24, 16x32, and
+  32x64 versions
+- Fix black and white squares alignment in the 16x32 and 32x64 versions
+- Add black and white square characters in the 12x24 version
+- Add hyphen, along with en and em dashes in the 8x16, 12x24, 16x32, and
+  32x64 versions
+- Add mathematical left and right angle brackets in the 8x16, 12x24, 16x32,
+  and 32x64 versions
+- Fix right parenthesis alignment in the 32x64 version
+- Fix right curly bracket alignment in the 12x24 version
+- Fix less-than sign alignment in the 12x24 version
+
+- Makefile: replace BSD Make .for loops with portable dependency rules,
+  the project can now be built with both BSD Make and GNU Make
+- Add 'woff' and 'woff2' targets to generate WOFF and WOFF2 versions
+- Add tests for validating and sanitizing OTF, WOFF and WOFF2 fonts
+
+
+
+Spleen 2.1.0 (2024-03-22)
+
+- Document how wsfont header files (for OpenBSD and NetBSD) are generated
+- Add base cyrillic (basic alphabet + most used extended) characters (Thanks
+  Slava Voronzoff!)
+- Fix latin small letter 'u' smoothing in the 32x64 version
+- Fix smoothing on more variants of 'u' in the 32x64 version
+
+
+
+Spleen 2.0.2 (2023-12-25)
+
+- Fix MALE and FEMALE character ordering in the 16x32 and 32x64
+  versions (Thanks Mike Cui)
+- Update README to add a link to the Alpine Linux package
+
+
+
+Spleen 2.0.1 (2023-11-17)
+
+- Add a 'com' target to generate SPLEEN.COM, the DOS version of Spleen
+- Also add 'com' in the 'all' target
+- Update README to add a link to the Guix package
+- In the Spleen loader for DOS, put 4C00h in ax and not 4Ch
+- README.md: add Gentoo package link
+- Switch to using Oxipng as it compresses even more than OptiPNG
+- Add a new FAQ file answering frequently asked questions about Spleen
+- Remove C0 control characters range in the 8x16, 16x32, and 32x64 versions
+
+
+
 Spleen 2.0.0 (2023-05-28)
 
 - Add full support for CP437 (IBM PC) in the 8x16, 16x32, and 32x64 versions

@@ -1,4 +1,3 @@
-
 .include <src.opts.mk>
 
 LLVM_BASE=	${SRCTOP}/contrib/llvm-project
@@ -50,6 +49,7 @@ SRCS+=		ELF/Arch/PPC.cpp
 SRCS+=		ELF/Arch/PPC64.cpp
 SRCS+=		ELF/Arch/RISCV.cpp
 SRCS+=		ELF/Arch/SPARCV9.cpp
+SRCS+=		ELF/Arch/SystemZ.cpp
 SRCS+=		ELF/Arch/X86.cpp
 SRCS+=		ELF/Arch/X86_64.cpp
 SRCS+=		ELF/CallGraphSort.cpp
@@ -81,9 +81,17 @@ SRCS+=		tools/lld/lld.cpp
 
 LIBDEPS+=	llvm
 
+.if defined(TOOLS_PREFIX) || ${MK_LLVM_LINK_STATIC_LIBRARIES} == "yes"
+LIBPRIV=
+LIBEXT=		a
+.else
+LIBPRIV=	private
+LIBEXT=		so
+.endif
+
 .for lib in ${LIBDEPS}
-DPADD+=		${OBJTOP}/lib/clang/lib${lib}/lib${lib}.a
-LDADD+=		${OBJTOP}/lib/clang/lib${lib}/lib${lib}.a
+DPADD+=		${OBJTOP}/lib/clang/lib${lib}/lib${LIBPRIV}${lib}.${LIBEXT}
+LDADD+=		${OBJTOP}/lib/clang/lib${lib}/lib${LIBPRIV}${lib}.${LIBEXT}
 .endfor
 
 INCFILE=	Options.inc

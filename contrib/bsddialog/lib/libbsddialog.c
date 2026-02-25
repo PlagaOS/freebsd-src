@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2021-2023 Alfonso Sabato Siciliano
+ * Copyright (c) 2021-2025 Alfonso Sabato Siciliano
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -107,13 +107,26 @@ int bsddialog_backtitle(struct bsddialog_conf *conf, const char *backtitle)
 	move(0, 1);
 	clrtoeol();
 	addstr(CHECK_STR(backtitle));
-	if (conf->no_lines != true)
-		mvhline(1, 1, conf->ascii_lines ? '-' : ACS_HLINE,
-		    SCREENCOLS - 2);
+	if (conf->no_lines != true) {
+		if (conf->ascii_lines)
+			mvhline(1, 1, '-', SCREENCOLS - 2);
+		else
+			mvhline_set(1, 1, WACS_HLINE, SCREENCOLS - 2);
+	}
 
-	refresh();
+	wnoutrefresh(stdscr);
 
 	return (BSDDIALOG_OK);
+}
+
+int bsddialog_backtitle_rf(struct bsddialog_conf *conf, const char *backtitle)
+{
+	int rv;
+
+	rv = bsddialog_backtitle(conf, backtitle);
+	doupdate();
+
+	return (rv);
 }
 
 bool bsddialog_inmode(void)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -94,6 +95,15 @@ gethrestime_sec(void)
 	struct timeval tv;
 	(void) gettimeofday(&tv, NULL);
 	return (tv.tv_sec);
+}
+
+static inline hrtime_t
+getlrtime(void)
+{
+	struct timeval tv;
+	(void) gettimeofday(&tv, NULL);
+	return ((((uint64_t)tv.tv_sec) * NANOSEC) +
+	    ((uint64_t)tv.tv_usec * NSEC_PER_USEC));
 }
 
 static inline hrtime_t

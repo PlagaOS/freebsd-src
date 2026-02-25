@@ -371,7 +371,7 @@ int (*nfsrv4_ops2[NFSV42_NOPS])(struct nfsrv_descript *,
 	(int (*)(struct nfsrv_descript *, int, vnode_t , vnode_t , struct nfsexstuff *, struct nfsexstuff *))0,
 	(int (*)(struct nfsrv_descript *, int, vnode_t , vnode_t , struct nfsexstuff *, struct nfsexstuff *))0,
 	(int (*)(struct nfsrv_descript *, int, vnode_t , vnode_t , struct nfsexstuff *, struct nfsexstuff *))0,
-	(int (*)(struct nfsrv_descript *, int, vnode_t , vnode_t , struct nfsexstuff *, struct nfsexstuff *))0,
+	nfsrvd_clone,
 	(int (*)(struct nfsrv_descript *, int, vnode_t , vnode_t , struct nfsexstuff *, struct nfsexstuff *))0,
 	(int (*)(struct nfsrv_descript *, int, vnode_t , vnode_t , struct nfsexstuff *, struct nfsexstuff *))0,
 	(int (*)(struct nfsrv_descript *, int, vnode_t , vnode_t , struct nfsexstuff *, struct nfsexstuff *))0,
@@ -797,7 +797,7 @@ nfsrvd_compound(struct nfsrv_descript *nd, int isdgram, u_char *tag,
 					!LIST_EMPTY(&clp->lc_deleg))
 					nfsrv_writestable(clp->lc_id,
 					    clp->lc_idlen, NFSNST_REVOKE, p);
-				    nfsrv_cleanclient(clp, p);
+				    nfsrv_cleanclient(clp, p, false, NULL);
 				    nfsrv_freedeleglist(&clp->lc_deleg);
 				    nfsrv_freedeleglist(&clp->lc_olddeleg);
 				    LIST_REMOVE(clp, lc_hash);
@@ -1110,7 +1110,7 @@ nfsrvd_compound(struct nfsrv_descript *nd, int isdgram, u_char *tag,
 				if (vp != savevp) {
 					if (savevp)
 						vrele(savevp);
-					VREF(vp);
+					vref(vp);
 					savevp = vp;
 					savevpnes = vpnes;
 					save_fsid = cur_fsid;
@@ -1155,7 +1155,7 @@ nfsrvd_compound(struct nfsrv_descript *nd, int isdgram, u_char *tag,
 						    nfsvno_testexp(nd,
 						    &savevpnes);
 					if (nd->nd_repstat == 0) {
-						VREF(savevp);
+						vref(savevp);
 						vrele(vp);
 						vp = savevp;
 						vpnes = savevpnes;
@@ -1235,7 +1235,7 @@ tryagain:
 					break;
 				}
 			}
-			VREF(vp);
+			vref(vp);
 			if (nfsv4_opflag[op].modifyfs)
 				vn_start_write(vp, &temp_mp, V_WAIT);
 			error = (*(nfsrv4_ops1[op]))(nd, isdgram, vp,
@@ -1279,8 +1279,8 @@ tryagain:
 			if (nfsv4_opflag[op].modifyfs)
 				vn_start_write(savevp, &temp_mp, V_WAIT);
 			if (NFSVOPLOCK(savevp, LK_EXCLUSIVE) == 0) {
-				VREF(vp);
-				VREF(savevp);
+				vref(vp);
+				vref(savevp);
 				error = (*(nfsrv4_ops2[op]))(nd, isdgram,
 				    savevp, vp, &savevpnes, &vpnes);
 			} else
@@ -1301,7 +1301,7 @@ tryagain:
 							lktype = LK_SHARED;
 					}
 					if (NFSVOPLOCK(vp, lktype) == 0)
-						VREF(vp);
+						vref(vp);
 					else
 						nd->nd_repstat = NFSERR_PERM;
 				} else {
@@ -1422,13 +1422,11 @@ static struct ucred *
 nfsrv_createrootcred(void)
 {
 	struct ucred *cr;
-	gid_t grp;
 
 	cr = crget();
 	cr->cr_uid = cr->cr_ruid = cr->cr_svuid = UID_ROOT;
-	grp = GID_WHEEL;
-	crsetgroups(cr, 1, &grp);
-	cr->cr_rgid = cr->cr_svgid = cr->cr_groups[0];
+	crsetgroups_and_egid(cr, 0, NULL, GID_WHEEL);
+	cr->cr_rgid = cr->cr_svgid = cr->cr_gid;
 	cr->cr_prison = curthread->td_ucred->cr_prison;
 	prison_hold(cr->cr_prison);
 #ifdef MAC

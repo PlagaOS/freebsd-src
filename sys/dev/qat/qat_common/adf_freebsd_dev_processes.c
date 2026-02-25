@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/* Copyright(c) 2007-2022 Intel Corporation */
-
+/* Copyright(c) 2007-2025 Intel Corporation */
 #include "qat_freebsd.h"
 #include "adf_cfg.h"
 #include "adf_common_drv.h"
@@ -90,6 +89,7 @@ static struct filterops adf_state_read_filterops = {
 	.f_attach = NULL,
 	.f_detach = adf_state_kqread_detach,
 	.f_event = adf_state_kqread_event,
+	.f_copy = knote_triv_copy,
 };
 
 static struct cdev *adf_processes_dev;
@@ -146,8 +146,6 @@ adf_processes_open(struct cdev *dev, int oflags, int devtype, struct thread *td)
 		return ENXIO;
 	}
 	prv_data = malloc(sizeof(*prv_data), M_QAT, M_WAITOK | M_ZERO);
-	if (!prv_data)
-		return ENOMEM;
 	INIT_LIST_HEAD(&prv_data->list);
 	error = devfs_set_cdevpriv(prv_data, adf_processes_release);
 	if (error) {
@@ -412,17 +410,6 @@ adf_state_set(int dev, enum adf_event event)
 		state->state.dev_state = event;
 		state->state.dev_id = dev;
 		STAILQ_INSERT_TAIL(head, state, entries_state);
-		if (event == ADF_EVENT_STOP) {
-			state = NULL;
-			state = malloc(sizeof(struct entry_state),
-				       M_QAT,
-				       M_NOWAIT | M_ZERO);
-			if (!state)
-				continue;
-			state->state.dev_state = ADF_EVENT_SHUTDOWN;
-			state->state.dev_id = dev;
-			STAILQ_INSERT_TAIL(head, state, entries_state);
-		}
 	}
 	mtx_unlock(&mtx);
 	callout_schedule(&callout, ADF_STATE_CALLOUT_TIME);
@@ -453,7 +440,7 @@ adf_state_event_handler(struct adf_accel_dev *accel_dev, enum adf_event event)
 	case ADF_EVENT_START:
 		return ret;
 	case ADF_EVENT_STOP:
-		break;
+		return ret;
 	case ADF_EVENT_ERROR:
 		break;
 #if defined(QAT_UIO) && defined(QAT_DBG)
@@ -550,6 +537,7 @@ adf_state_destroy(void)
 	struct entry_proc_events *proc_events = NULL;
 
 	adf_service_unregister(&adf_state_hndl);
+	destroy_dev(adf_state_dev);
 	mtx_lock(&callout_mtx);
 	callout_stop(&callout);
 	mtx_unlock(&callout_mtx);
@@ -562,7 +550,6 @@ adf_state_destroy(void)
 	}
 	mtx_unlock(&mtx);
 	mtx_destroy(&mtx);
-	destroy_dev(adf_state_dev);
 }
 
 static int
@@ -573,14 +560,8 @@ adf_state_open(struct cdev *dev, int oflags, int devtype, struct thread *td)
 	int ret = 0;
 
 	prv_data = malloc(sizeof(*prv_data), M_QAT, M_WAITOK | M_ZERO);
-	if (!prv_data)
-		return -ENOMEM;
 	entry_proc_events =
 	    malloc(sizeof(struct entry_proc_events), M_QAT, M_WAITOK | M_ZERO);
-	if (!entry_proc_events) {
-		free(prv_data, M_QAT);
-		return -ENOMEM;
-	}
 	mtx_lock(&mtx);
 	prv_data->cdev = dev;
 	prv_data->cdev->si_drv1 = prv_data;

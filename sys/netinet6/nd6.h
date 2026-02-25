@@ -62,22 +62,6 @@ struct llentry;
 #define ND6_IS_LLINFO_PROBREACH(n) ((n)->ln_state > ND6_LLINFO_INCOMPLETE)
 #define ND6_LLINFO_PERMANENT(n) (((n)->la_expire == 0) && ((n)->ln_state > ND6_LLINFO_INCOMPLETE))
 
-struct nd_ifinfo {
-	u_int32_t linkmtu;		/* LinkMTU */
-	u_int32_t maxmtu;		/* Upper bound of LinkMTU */
-	u_int32_t basereachable;	/* BaseReachableTime */
-	u_int32_t reachable;		/* Reachable Time */
-	u_int32_t retrans;		/* Retrans Timer */
-	u_int32_t flags;		/* Flags */
-	int recalctm;			/* BaseReacable re-calculation timer */
-	u_int8_t chlim;			/* CurHopLimit */
-	u_int8_t initialized; /* Flag to see the entry is initialized */
-	/* the following 3 members are for privacy extension for addrconf */
-	u_int8_t randomseed0[8]; /* upper 64 bits of MD5 digest */
-	u_int8_t randomseed1[8]; /* lower 64 bits (usually the EUI64 IFID) */
-	u_int8_t randomid[8];	/* current random ID */
-};
-
 #define ND6_IFF_PERFORMNUD	0x1
 #define ND6_IFF_ACCEPT_RTADV	0x2
 #define ND6_IFF_PREFER_SOURCE	0x4 /* Not used in FreeBSD. */
@@ -89,21 +73,12 @@ struct nd_ifinfo {
 #define	ND6_IFF_NO_RADR		0x40
 #define ND6_IFF_NO_PREFER_IFACE	0x80 /* XXX: not related to ND. */
 #define ND6_IFF_NO_DAD		0x100
+#define ND6_IFF_STABLEADDR	0x800
 #ifdef EXPERIMENTAL
 /* XXX: not related to ND. */
 #define	ND6_IFF_IPV6_ONLY	0x200 /* draft-ietf-6man-ipv6only-flag */
 #define	ND6_IFF_IPV6_ONLY_MANUAL	0x400
 #define	ND6_IFF_IPV6_ONLY_MASK	(ND6_IFF_IPV6_ONLY|ND6_IFF_IPV6_ONLY_MANUAL)
-#endif
-
-#ifdef _KERNEL
-#define ND_IFINFO(ifp) \
-	(((struct in6_ifextra *)if_getafdata(ifp, AF_INET6))->nd_ifinfo)
-#define IN6_LINKMTU(ifp) \
-	((ND_IFINFO(ifp)->linkmtu && ND_IFINFO(ifp)->linkmtu < (ifp)->if_mtu) \
-	    ? ND_IFINFO(ifp)->linkmtu \
-	    : ((ND_IFINFO(ifp)->maxmtu && ND_IFINFO(ifp)->maxmtu < (ifp)->if_mtu) \
-		? ND_IFINFO(ifp)->maxmtu : (ifp)->if_mtu))
 #endif
 
 struct in6_nbrinfo {
@@ -139,26 +114,29 @@ struct in6_prefix {
 	/* struct sockaddr_in6 advrtr[] */
 };
 
-#ifdef _KERNEL
-struct	in6_ondireq {
+struct in6_ndireq {
 	char ifname[IFNAMSIZ];
-	struct {
-		u_int32_t linkmtu;	/* LinkMTU */
-		u_int32_t maxmtu;	/* Upper bound of LinkMTU */
-		u_int32_t basereachable; /* BaseReachableTime */
-		u_int32_t reachable;	/* Reachable Time */
-		u_int32_t retrans;	/* Retrans Timer */
-		u_int32_t flags;	/* Flags */
+	struct nd_ifinfo {
+		uint32_t linkmtu;	/* LinkMTU */
+		uint32_t maxmtu;	/* Upper bound of LinkMTU */
+		uint32_t basereachable;	/* BaseReachableTime */
+		uint32_t reachable;	/* Reachable Time */
+		uint32_t retrans;	/* Retrans Timer */
+		uint32_t flags;		/* Flags */
 		int recalctm;		/* BaseReacable re-calculation timer */
-		u_int8_t chlim;		/* CurHopLimit */
-		u_int8_t receivedra;
+		uint8_t chlim;		/* CurHopLimit */
+		/*
+		 * The below members are not used.  They came from KAME and
+		 * are hanging around to preserve ABI compatibility of the
+		 * SIOCGIFINFO_IN6 ioctl.
+		 * The original comment documented the random* members as a
+		 * privacy extension for addrconf.
+		 */
+		uint8_t initialized;	/* compat: always 1 */
+		uint8_t randomseed0[8]; /* upper 64 bits of MD5 digest */
+		uint8_t randomseed1[8]; /* lower 64 bits (the EUI64 IFID?) */
+		uint8_t randomid[8];	/* current random ID */
 	} ndi;
-};
-#endif
-
-struct	in6_ndireq {
-	char ifname[IFNAMSIZ];
-	struct nd_ifinfo ndi;
 };
 
 struct	in6_ndifreq {
@@ -169,6 +147,10 @@ struct	in6_ndifreq {
 /* Prefix status */
 #define NDPRF_ONLINK		0x1
 #define NDPRF_DETACHED		0x2
+
+/* ND6 NA output flags */
+#define	ND6_NA_OPT_LLA		0x01
+#define	ND6_NA_CARP_MASTER	0x02
 
 /* protocol constants */
 #define MAX_RTR_SOLICITATION_DELAY	1	/* 1sec */
@@ -184,10 +166,10 @@ struct	in6_ndifreq {
 #define RETRANS_TIMER			1000	/* msec */
 #define MIN_RANDOM_FACTOR		512	/* 1024 * 0.5 */
 #define MAX_RANDOM_FACTOR		1536	/* 1024 * 1.5 */
-#define DEF_TEMP_VALID_LIFETIME		604800	/* 1 week */
+#define DEF_TEMP_VALID_LIFETIME		172800	/* 2 days */
 #define DEF_TEMP_PREFERRED_LIFETIME	86400	/* 1 day */
 #define TEMPADDR_REGEN_ADVANCE		5	/* sec */
-#define MAX_TEMP_DESYNC_FACTOR		600	/* 10 min */
+#define TEMP_MAX_DESYNC_FACTOR_BASE	300	/* 5 min */
 #define ND_COMPUTE_RTIME(x) \
 		(((MIN_RANDOM_FACTOR * (x >> 10)) + (arc4random() & \
 		((MAX_RANDOM_FACTOR - MIN_RANDOM_FACTOR) * (x >> 10)))) /1000)
@@ -242,17 +224,12 @@ struct nd_prefix {
 #define ndpr_raf		ndpr_flags
 #define ndpr_raf_onlink		ndpr_flags.onlink
 #define ndpr_raf_auto		ndpr_flags.autonomous
-#define ndpr_raf_ra_derived	ndpr_flags.ra_derived
 #define ndpr_raf_router		ndpr_flags.router
 
 struct nd_pfxrouter {
 	LIST_ENTRY(nd_pfxrouter) pfr_entry;
 	struct nd_defrouter *router;
 };
-
-#ifdef MALLOC_DECLARE
-MALLOC_DECLARE(M_IP6NDP);
-#endif
 
 /* nd6.c */
 VNET_DECLARE(int, nd6_mmaxtries);
@@ -293,11 +270,13 @@ VNET_DECLARE(struct mtx, nd6_onlink_mtx);
 /* nd6_rtr.c */
 VNET_DECLARE(int, nd6_defifindex);
 VNET_DECLARE(int, ip6_desync_factor);	/* seconds */
+VNET_DECLARE(uint32_t, ip6_temp_max_desync_factor); /* seconds */
 VNET_DECLARE(u_int32_t, ip6_temp_preferred_lifetime); /* seconds */
 VNET_DECLARE(u_int32_t, ip6_temp_valid_lifetime); /* seconds */
 VNET_DECLARE(int, ip6_temp_regen_advance); /* seconds */
 #define	V_nd6_defifindex		VNET(nd6_defifindex)
 #define	V_ip6_desync_factor		VNET(ip6_desync_factor)
+#define	V_ip6_temp_max_desync_factor	VNET(ip6_temp_max_desync_factor)
 #define	V_ip6_temp_preferred_lifetime	VNET(ip6_temp_preferred_lifetime)
 #define	V_ip6_temp_valid_lifetime	VNET(ip6_temp_valid_lifetime)
 #define	V_ip6_temp_regen_advance	VNET(ip6_temp_regen_advance)
@@ -344,8 +323,8 @@ void nd6_init(void);
 #ifdef VIMAGE
 void nd6_destroy(void);
 #endif
-struct nd_ifinfo *nd6_ifattach(struct ifnet *);
-void nd6_ifdetach(struct ifnet *, struct nd_ifinfo *);
+void nd6_ifattach(struct ifnet *);
+void nd6_ifdetach(struct ifnet *);
 int nd6_is_addr_neighbor(const struct sockaddr_in6 *, struct ifnet *);
 void nd6_option_init(void *, int, union nd_opts *);
 struct nd_opt_hdr *nd6_option(union nd_opts *);

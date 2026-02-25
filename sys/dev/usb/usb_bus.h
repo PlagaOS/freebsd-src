@@ -86,7 +86,7 @@ struct usb_bus {
 	struct usb_bus_msg shutdown_msg[2];
 #if USB_HAVE_UGEN
 	struct usb_bus_msg cleanup_msg[2];
-	LIST_HEAD(,usb_fs_privdata) pd_cleanup_list;
+	SLIST_HEAD(,usb_fs_privdata) pd_cleanup_list;
 #endif
 	/*
 	 * This mutex protects the USB hardware:
@@ -106,7 +106,7 @@ struct usb_bus {
 	const struct usb_bus_methods *methods;	/* filled by HC driver */
 	struct usb_device **devices;
 
-	struct ifnet *ifp;	/* only for USB Packet Filter */
+	struct bpf_if *bpf;	/* USB Packet Filter */
 
 	usb_power_mask_t hw_power_state;	/* see USB_HW_POWER_XXX */
 	usb_size_t uframe_usage[USB_HS_MICRO_FRAMES_MAX];

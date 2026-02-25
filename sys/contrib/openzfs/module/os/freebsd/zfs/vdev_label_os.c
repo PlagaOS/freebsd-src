@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -41,7 +42,8 @@ vdev_label_write_pad2(vdev_t *vd, const char *buf, size_t size)
 	spa_t *spa = vd->vdev_spa;
 	zio_t *zio;
 	abd_t *pad2;
-	int flags = ZIO_FLAG_CONFIG_WRITER | ZIO_FLAG_CANFAIL;
+	int flags = ZIO_FLAG_CONFIG_WRITER | ZIO_FLAG_CANFAIL |
+	    ZIO_FLAG_TRYHARD;
 	int error;
 
 	if (size > VDEV_PAD_SIZE)
@@ -58,16 +60,11 @@ vdev_label_write_pad2(vdev_t *vd, const char *buf, size_t size)
 	abd_copy_from_buf(pad2, buf, size);
 	abd_zero_off(pad2, size, VDEV_PAD_SIZE - size);
 
-retry:
 	zio = zio_root(spa, NULL, NULL, flags);
 	vdev_label_write(zio, vd, 0, pad2,
 	    offsetof(vdev_label_t, vl_be),
 	    VDEV_PAD_SIZE, NULL, NULL, flags);
 	error = zio_wait(zio);
-	if (error != 0 && !(flags & ZIO_FLAG_TRYHARD)) {
-		flags |= ZIO_FLAG_TRYHARD;
-		goto retry;
-	}
 
 	abd_free(pad2);
 	return (error);
@@ -96,7 +93,7 @@ vdev_check_boot_reserve(spa_t *spa, vdev_t *childvd)
 {
 	ASSERT(childvd->vdev_ops->vdev_op_leaf);
 
-	size_t size = SPA_MINBLOCKSIZE;
+	size_t size = 1ULL << childvd->vdev_top->vdev_ashift;
 	abd_t *abd = abd_alloc_linear(size, B_FALSE);
 
 	zio_t *pio = zio_root(spa, NULL, NULL, 0);

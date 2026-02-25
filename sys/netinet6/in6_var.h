@@ -93,29 +93,12 @@ struct in6_addrlifetime {
 	u_int32_t ia6t_pltime;	/* prefix lifetime */
 };
 
-struct nd_ifinfo;
-struct scope6_id;
-struct lltable;
-struct mld_ifsoftc;
-struct in6_multi;
-
-struct in6_ifextra {
-	counter_u64_t *in6_ifstat;
-	counter_u64_t *icmp6_ifstat;
-	struct nd_ifinfo *nd_ifinfo;
-	struct scope6_id *scope6_id;
-	struct lltable *lltable;
-	struct mld_ifsoftc *mld_ifinfo;
-};
-
-#define	LLTABLE6(ifp)	(((struct in6_ifextra *)(ifp)->if_afdata[AF_INET6])->lltable)
-
 #ifdef _KERNEL
 
 SLIST_HEAD(in6_multi_head, in6_multi);
 MALLOC_DECLARE(M_IP6MADDR);
 
-struct	in6_ifaddr {
+struct in6_ifaddr {
 	struct	ifaddr ia_ifa;		/* protocol-independent info */
 #define	ia_ifp		ia_ifa.ifa_ifp
 #define ia_flags	ia_ifa.ifa_flags
@@ -323,8 +306,7 @@ struct in6_prflags {
 	struct prf_ra {
 		u_char onlink : 1;
 		u_char autonomous : 1;
-		u_char ra_derived: 1;
-		u_char reserved : 5;
+		u_char reserved : 6;
 	} prf_ra;
 	u_char prf_reserved1;
 	u_short prf_reserved2;
@@ -355,7 +337,6 @@ struct  in6_prefixreq {
 
 #define ipr_raf_onlink		ipr_flags.prf_ra.onlink
 #define ipr_raf_auto		ipr_flags.prf_ra.autonomous
-#define ipr_raf_ra_derived	ipr_flags.prf_ra.ra_derived
 
 #define ipr_statef_onlink	ipr_flags.prf_state.onlink
 
@@ -449,9 +430,6 @@ struct	in6_rrenumreq {
 
 #define SIOCGIFAFLAG_IN6	_IOWR('i', 73, struct in6_ifreq)
 
-#ifdef _KERNEL
-#define OSIOCGIFINFO_IN6	_IOWR('i', 76, struct in6_ondireq)
-#endif
 #define SIOCGIFINFO_IN6		_IOWR('i', 108, struct in6_ndireq)
 #define SIOCSIFINFO_IN6		_IOWR('i', 109, struct in6_ndireq)
 #define SIOCSNDFLUSH_IN6	_IOWR('i', 77, struct in6_ifreq)
@@ -510,6 +488,56 @@ struct	in6_rrenumreq {
 #endif
 
 #ifdef _KERNEL
+/*
+ * Structure pointed at by ifp->if_inet6.
+ */
+struct in6_ifextra {
+	counter_u64_t in6_ifstat[sizeof(struct in6_ifstat) / sizeof(uint64_t)];
+	counter_u64_t icmp6_ifstat[sizeof(struct icmp6_ifstat) /
+				   sizeof(uint64_t)];
+	/* ND6 */
+	uint32_t	nd_linkmtu;
+	uint32_t	nd_maxmtu;
+	uint32_t	nd_basereachable;
+	uint32_t	nd_reachable;
+	uint32_t	nd_retrans;
+	uint32_t	nd_flags;
+	int		nd_recalc_timer;
+	u_int		nd_dad_failures;
+	uint8_t		nd_curhoplimit;
+
+	struct mld_ifsoftc {
+		/* Timers and invervals measured in seconds. */
+		LIST_ENTRY(mld_ifsoftc) mli_link;
+		struct ifnet *mli_ifp;  /* interface this instance belongs to */
+		uint32_t mli_version;   /* MLDv1 Host Compatibility Mode */
+		uint32_t mli_v1_timer;  /* MLDv1 Querier Present timer */
+		uint32_t mli_v2_timer;  /* MLDv2 General Query timer */
+		uint32_t mli_flags;     /* MLD per-interface flags */
+		uint32_t mli_rv;        /* MLDv2 Robustness Variable */
+		uint32_t mli_qi;        /* MLDv2 Query Interval */
+		uint32_t mli_qri;       /* MLDv2 Query Response Interval */
+		uint32_t mli_uri;       /* MLDv2 Unsolicited Report Interval */
+		struct mbufq     mli_gq; /* queue of general query responses */
+	} mld_ifsoftc;
+
+	struct scope6_id {
+		/*
+		 * 16 is correspondent to 4bit multicast scope field. i.e. from
+		 * node-local to global with some reserved/unassigned types.
+		 */
+#define	IPV6_ADDR_SCOPES_COUNT	16
+		uint32_t	s6id_list[IPV6_ADDR_SCOPES_COUNT];
+	} scope6_id;
+
+	struct lltable *lltable;
+
+	struct epoch_context	epoch_ctx;
+};
+
+#define	LLTABLE6(ifp)	((ifp)->if_inet6->lltable)
+#define	DAD_FAILURES(ifp)	((ifp)->if_inet6->nd_dad_failures)
+
 VNET_DECLARE(struct in6_ifaddrhead, in6_ifaddrhead);
 VNET_DECLARE(struct in6_ifaddrlisthead *, in6_ifaddrhashtbl);
 VNET_DECLARE(u_long, in6_ifaddrhmask);
@@ -545,13 +573,9 @@ extern struct rmlock in6_ifaddr_lock;
 #define in6_ifstat_inc(ifp, tag) \
 do {								\
 	if (ifp)						\
-		counter_u64_add(((struct in6_ifextra *)		\
-		    ((ifp)->if_afdata[AF_INET6]))->in6_ifstat[	\
+		counter_u64_add((ifp)->if_inet6->in6_ifstat[	\
 		    offsetof(struct in6_ifstat, tag) / sizeof(uint64_t)], 1);\
 } while (/*CONSTCOND*/ 0)
-
-VNET_DECLARE(unsigned long, in6_maxmtu);
-#define	V_in6_maxmtu			VNET(in6_maxmtu)
 #endif /* _KERNEL */
 
 /*
@@ -870,12 +894,9 @@ void	in6_purgeaddr(struct ifaddr *);
 void	in6_purgeifaddr(struct in6_ifaddr *);
 int	in6if_do_dad(struct ifnet *);
 void	in6_savemkludge(struct in6_ifaddr *);
-void	*in6_domifattach(struct ifnet *);
-void	in6_domifdetach(struct ifnet *, void *);
-int	in6_domifmtu(struct ifnet *);
+uint32_t in6_ifmtu(const struct ifnet *);
 struct rib_head *in6_inithead(uint32_t fibnum);
 void	in6_detachhead(struct rib_head *rh);
-void	in6_setmaxmtu(void);
 int	in6_if2idlen(struct ifnet *);
 struct in6_ifaddr *in6ifa_ifpforlinklocal(struct ifnet *, int);
 struct in6_ifaddr *in6ifa_ifpwithaddr(struct ifnet *, const struct in6_addr *);
@@ -897,6 +918,8 @@ int	in6_src_ioctl(u_long, caddr_t);
 void	in6_newaddrmsg(struct in6_ifaddr *, int);
 
 void	in6_purge_proxy_ndp(struct ifnet *);
+void	in6_ifarrival(void *, struct ifnet *);
+
 /*
  * Extended API for IPv6 FIB support.
  */

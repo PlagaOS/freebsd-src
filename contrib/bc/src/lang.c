@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2018-2023 Gavin D. Howard and contributors.
+ * Copyright (c) 2018-2025 Gavin D. Howard and contributors.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -73,9 +73,10 @@ bc_func_insert(BcFunc* f, BcProgram* p, char* name, BcType type, size_t line)
 		BcAuto* aptr = bc_vec_item(&f->autos, i);
 
 		// If they match, barf.
-		if (BC_ERR(idx == aptr->idx && type == aptr->type))
+		if (BC_ERR(idx == aptr->idx &&
+		           BC_IS_ARRAY(type) == BC_IS_ARRAY(aptr->type)))
 		{
-			const char* array = type == BC_TYPE_ARRAY ? "[]" : "";
+			const char* array = BC_IS_ARRAY(type) ? "[]" : "";
 
 			bc_error(BC_ERR_PARSE_DUP_LOCAL, line, name, array);
 		}
@@ -136,7 +137,7 @@ bc_func_reset(BcFunc* f)
 #endif // BC_ENABLED
 }
 
-#if BC_DEBUG
+#if BC_DEBUG || BC_ENABLE_MEMCHECK
 void
 bc_func_free(void* func)
 {
@@ -155,7 +156,7 @@ bc_func_free(void* func)
 	}
 #endif // BC_ENABLED
 }
-#endif // BC_DEBUG
+#endif // BC_DEBUG || BC_ENABLE_MEMCHECK
 
 void
 bc_array_init(BcVec* a, bool nums)

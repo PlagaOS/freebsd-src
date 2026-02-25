@@ -73,6 +73,8 @@ unionfs_domount(struct mount *mp)
 {
 	struct vnode   *lowerrootvp;
 	struct vnode   *upperrootvp;
+	struct vnode   *lvp1;
+	struct vnode   *lvp2;
 	struct unionfs_mount *ump;
 	char           *target;
 	char           *tmp;
@@ -256,7 +258,7 @@ unionfs_domount(struct mount *mp)
 		ump->um_lowervp = lowerrootvp;
 		ump->um_uppervp = upperrootvp;
 	}
-	ump->um_rootvp = NULLVP;
+	ump->um_rootvp = NULL;
 	ump->um_uid = uid;
 	ump->um_gid = gid;
 	ump->um_udir = udir;
@@ -277,10 +279,31 @@ unionfs_domount(struct mount *mp)
 	VOP_UNLOCK(ump->um_uppervp);
 
 	/*
+	 * Detect common cases in which constructing a unionfs hierarchy
+	 * would produce deadlock (or failed locking assertions) upon
+	 * use of the resulting unionfs vnodes.  This typically happens
+	 * when the requested upper and lower filesytems (which themselves
+	 * may be unionfs instances and/or nullfs aliases) end up resolving
+	 * to the same base-layer files.  Note that this is not meant to be
+	 * an exhaustive check of all possible deadlock-producing scenarios.
+	 */
+	lvp1 = lvp2 = NULL;
+	VOP_GETLOWVNODE(ump->um_lowervp, &lvp1, FREAD);
+	VOP_GETLOWVNODE(ump->um_uppervp, &lvp2, FREAD);
+	if (lvp1 != NULL && lvp1 == lvp2)
+		error = EDEADLK;
+	if (lvp1 != NULL)
+		vrele(lvp1);
+	if (lvp2 != NULL)
+		vrele(lvp2);
+
+	/*
 	 * Get the unionfs root vnode.
 	 */
-	error = unionfs_nodeget(mp, ump->um_uppervp, ump->um_lowervp,
-	    NULLVP, &(ump->um_rootvp), NULL);
+	if (error == 0) {
+		error = unionfs_nodeget(mp, ump->um_uppervp, ump->um_lowervp,
+		    NULL, &(ump->um_rootvp), NULL);
+	}
 	if (error != 0) {
 		vrele(upperrootvp);
 		free(ump, M_UNIONFSMNT);
@@ -327,18 +350,15 @@ unionfs_domount(struct mount *mp)
 	 * unionfs_lock()) and the mountpoint's busy count.  Without this,
 	 * unmount will lock the covered vnode lock (directly through the
 	 * covered vnode) and wait for the busy count to drain, while a
-	 * concurrent lookup will increment the busy count and then lock
+	 * concurrent lookup will increment the busy count and then may lock
 	 * the covered vnode lock (indirectly through unionfs_lock()).
 	 *
-	 * Note that we can't yet use this facility for the 'below' case
-	 * in which the upper vnode is the covered vnode, because that would
-	 * introduce a different LOR in which the cross-mount lookup would
-	 * effectively hold the upper vnode lock before acquiring the lower
-	 * vnode lock, while an unrelated lock operation would still acquire
-	 * the lower vnode lock before the upper vnode lock, which is the
-	 * order unionfs currently requires.
+	 * Note that this is only needed for the 'below' case in which the
+	 * upper vnode is also the covered vnode, because unionfs_lock()
+	 * only locks the upper vnode as long as both lower and upper vnodes
+	 * are present (which they will always be for the unionfs mount root).
 	 */
-	if (!below) {
+	if (below) {
 		vn_lock(mp->mnt_vnodecovered, LK_EXCLUSIVE | LK_RETRY | LK_CANRECURSE);
 		mp->mnt_vnodecovered->v_vflag |= VV_CROSSLOCK;
 		VOP_UNLOCK(mp->mnt_vnodecovered);
@@ -561,7 +581,7 @@ unionfs_extattrctl(struct mount *mp, int cmd, struct vnode *filename_vp,
 	ump = MOUNTTOUNIONFSMOUNT(mp);
 	unp = VTOUNIONFS(filename_vp);
 
-	if (unp->un_uppervp != NULLVP) {
+	if (unp->un_uppervp != NULL) {
 		return (VFS_EXTATTRCTL(ump->um_uppermp, cmd,
 		    unp->un_uppervp, namespace, attrname));
 	} else {

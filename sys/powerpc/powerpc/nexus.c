@@ -86,6 +86,7 @@ static device_method_t nexus_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		nexus_probe),
 	DEVMETHOD(device_attach,	nexus_attach),
+	DEVMETHOD(device_shutdown,	bus_generic_shutdown),
 
 	/* Bus interface */
 	DEVMETHOD(bus_add_child,	bus_generic_add_child),
@@ -141,8 +142,8 @@ nexus_attach(device_t dev)
 	device_add_child(dev, "ofwbus", 0);
 
 	/* Now, probe children. */
-	bus_generic_probe(dev);
-	bus_generic_attach(dev);
+	bus_identify_children(dev);
+	bus_attach_children(dev);
 
 	return (0);
 }
@@ -288,7 +289,7 @@ nexus_map_resource(device_t bus, device_t child, struct resource *r,
 		if ((rman_get_flags(r) & RF_LITTLEENDIAN) != 0)
 			map->r_bustag = &bs_le_tag;
 		else
-			map->r_bustag = nexus_get_bus_tag(NULL, NULL);
+			map->r_bustag = &bs_be_tag;
 		map->r_size = length;
 		map->r_bushandle = (bus_space_handle_t)map->r_vaddr;
 		break;

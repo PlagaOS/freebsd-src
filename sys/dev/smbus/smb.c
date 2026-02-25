@@ -104,7 +104,7 @@ static device_method_t smb_methods[] = {
 
 	/* smbus interface */
 	DEVMETHOD(smbus_intr,		smbus_generic_intr),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t smb_driver = {
@@ -126,8 +126,8 @@ static void
 smb_identify(driver_t *driver, device_t parent)
 {
 
-	if (device_find_child(parent, "smb", -1) == NULL)
-		BUS_ADD_CHILD(parent, 0, "smb", -1);
+	if (device_find_child(parent, "smb", DEVICE_UNIT_ANY) == NULL)
+		BUS_ADD_CHILD(parent, 0, "smb", DEVICE_UNIT_ANY);
 }
 
 static int

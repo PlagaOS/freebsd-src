@@ -26,16 +26,16 @@
 #include <err.h>
 #include <errno.h>
 #include <getopt.h>
-#include <stdlib.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <limits.h>
 
 #include "diff.h"
 #include "xmalloc.h"
 
-static const char diff_version[] = "FreeBSD diff 20240307";
+static const char diff_version[] = "FreeBSD diff 20260206";
 bool	 lflag, Nflag, Pflag, rflag, sflag, Tflag, cflag;
 bool	 ignore_file_case, suppress_common, color, noderef;
 static bool help = false;
@@ -137,10 +137,9 @@ static bool do_color(void);
 int
 main(int argc, char **argv)
 {
-	const char *errstr = NULL;
-	char *ep, **oargv;
-	long  l;
-	int   ch, dflags, lastch, gotstdin, prevoptind, newarg;
+	const char *errstr;
+	char **oargv;
+	int ch, dflags, lastch, gotstdin, prevoptind, newarg;
 
 	oargv = argv;
 	gotstdin = 0;
@@ -177,7 +176,7 @@ main(int argc, char **argv)
 			}
 
 			if (diff_algorithm == D_DIFFNONE) {
-				printf("unknown algorithm: %s\n", optarg);
+				warnx("unknown algorithm: %s", optarg);
 				usage();
 			}
 			break;
@@ -194,10 +193,13 @@ main(int argc, char **argv)
 			cflag = true;
 			diff_format = D_CONTEXT;
 			if (optarg != NULL) {
-				l = strtol(optarg, &ep, 10);
-				if (*ep != '\0' || l < 0 || l >= INT_MAX)
+				diff_context = (int) strtonum(optarg,
+				    1, INT_MAX, &errstr);
+				if (errstr != NULL) {
+					warnx("context size is %s: %s",
+					    errstr, optarg);
 					usage();
-				diff_context = (int)l;
+				}
 			}
 			break;
 		case 'd':
@@ -249,6 +251,7 @@ main(int argc, char **argv)
 				usage();
 			break;
 		case 'l':
+			dflags |= D_PAGINATION;
 			lflag = true;
 			break;
 		case 'N':
@@ -293,10 +296,13 @@ main(int argc, char **argv)
 				conflicting_format();
 			diff_format = D_UNIFIED;
 			if (optarg != NULL) {
-				l = strtol(optarg, &ep, 10);
-				if (*ep != '\0' || l < 0 || l >= INT_MAX)
+				diff_context = (int) strtonum(optarg,
+				    0, INT_MAX, &errstr);
+				if (errstr != NULL) {
+					warnx("context size is %s: %s",
+					    errstr, optarg);
 					usage();
-				diff_context = (int)l;
+				}
 			}
 			break;
 		case 'w':
@@ -304,8 +310,8 @@ main(int argc, char **argv)
 			break;
 		case 'W':
 			width = (int) strtonum(optarg, 1, INT_MAX, &errstr);
-			if (errstr) {
-				warnx("Invalid argument for width");
+			if (errstr != NULL) {
+				warnx("width is %s: %s", errstr, optarg);
 				usage();
 			}
 			break;
@@ -345,8 +351,8 @@ main(int argc, char **argv)
 			break;
 		case OPT_TSIZE:
 			tabsize = (int) strtonum(optarg, 1, INT_MAX, &errstr);
-			if (errstr) {
-				warnx("Invalid argument for tabsize");
+			if (errstr != NULL) {
+				warnx("tabsize is %s: %s", errstr, optarg);
 				usage();
 			}
 			break;
@@ -363,12 +369,14 @@ main(int argc, char **argv)
 				colorflag = COLORFLAG_ALWAYS;
 			else if (strncmp(optarg, "never", 5) == 0)
 				colorflag = COLORFLAG_NEVER;
-			else
-				errx(2, "unsupported --color value '%s' (must be always, auto, or never)",
-					optarg);
+			else {
+				warnx("unsupported --color value "
+				    "(must be always, auto, or never): "
+				    "%s", optarg);
+				usage();
+			}
 			break;
 		case OPT_NO_DEREFERENCE:
-			rflag = true;
 			noderef = true;
 			break;
 		case OPT_VERSION:
@@ -517,20 +525,23 @@ static void
 read_excludes_file(char *file)
 {
 	FILE *fp;
-	char *buf, *pattern;
-	size_t len;
+	char *pattern = NULL;
+	size_t blen = 0;
+	ssize_t len;
 
 	if (strcmp(file, "-") == 0)
 		fp = stdin;
 	else if ((fp = fopen(file, "r")) == NULL)
 		err(2, "%s", file);
-	while ((buf = fgetln(fp, &len)) != NULL) {
-		if (buf[len - 1] == '\n')
-			len--;
-		if ((pattern = strndup(buf, len)) == NULL)
-			err(2, "xstrndup");
+	while ((len = getline(&pattern, &blen, fp)) >= 0) {
+		if ((len > 0) && (pattern[len - 1] == '\n'))
+			pattern[len - 1] = '\0';
 		push_excludes(pattern);
+		/* we allocate a new string per line */
+		pattern = NULL;
+		blen = 0;
 	}
+	free(pattern);
 	if (strcmp(file, "-") != 0)
 		fclose(fp);
 }
@@ -627,7 +638,7 @@ usage(void)
 	    "       diff [-aBbdilNPprsTtw] [-c | -e | -f | -n | -q | -u] [--ignore-case]\n"
 	    "            [--no-ignore-case] [--normal] [--tabsize] [-I pattern] [-L label]\n"
 	    "            [-F pattern] [-S name] [-X file] [-x pattern] dir1 dir2\n"
-	    "       diff [-aBbditwW] [--expand-tabs] [--ignore-all-blanks]\n"
+	    "       diff [-aBbditwW] [--expand-tabs] [--ignore-all-space]\n"
 	    "            [--ignore-blank-lines] [--ignore-case] [--minimal]\n"
 	    "            [--no-ignore-file-name-case] [--strip-trailing-cr]\n"
 	    "            [--suppress-common-lines] [--tabsize] [--text] [--width]\n"

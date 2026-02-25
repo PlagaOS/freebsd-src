@@ -476,7 +476,7 @@ atopcase_add_child(struct atopcase_softc *sc, struct atopcase_child *ac,
 		goto exit;
 	}
 
-	hidbus = device_add_child(sc->sc_dev, "hidbus", -1);
+	hidbus = device_add_child(sc->sc_dev, "hidbus", DEVICE_UNIT_ANY);
 	if (hidbus == NULL) {
 		device_printf(sc->sc_dev, "can't add child\n");
 		err = ENOMEM;
@@ -533,7 +533,8 @@ atopcase_init(struct atopcase_softc *sc)
 	if (sc->sc_tq != NULL)
 		taskqueue_enqueue_timeout(sc->sc_tq, &sc->sc_task, hz / 120);
 
-	return (bus_generic_attach(sc->sc_dev));
+	bus_attach_children(sc->sc_dev);
+	return (0);
 
 err:
 	return (err);
@@ -544,7 +545,7 @@ atopcase_destroy(struct atopcase_softc *sc)
 {
 	int err;
 
-	err = device_delete_children(sc->sc_dev);
+	err = bus_generic_detach(sc->sc_dev);
 	if (err)
 		return (err);
 

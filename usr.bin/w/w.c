@@ -108,6 +108,8 @@ static struct entry {
 
 #define	debugproc(p) *(&((struct kinfo_proc *)p)->ki_udata)
 
+#define	W_XO_VERSION	"1"
+
 #define	W_DISPUSERSIZE	10
 #define	W_DISPLINESIZE	8
 #define	W_MAXHOSTSIZE	40
@@ -133,14 +135,16 @@ main(int argc, char *argv[])
 	char buf[MAXHOSTNAMELEN], fn[MAXHOSTNAMELEN];
 	char *dot;
 
-	(void)setlocale(LC_ALL, "");
-	use_ampm = (*nl_langinfo(T_FMT_AMPM) != '\0');
-	use_comma = (*nl_langinfo(RADIXCHAR) != ',');
 
 	argc = xo_parse_args(argc, argv);
 	if (argc < 0)
 		exit(1);
 
+	if (xo_get_style(NULL) == XO_STYLE_TEXT) {
+		setlocale(LC_ALL, "");
+	}
+	use_ampm = (*nl_langinfo(T_FMT_AMPM) != '\0');
+	use_comma = (*nl_langinfo(RADIXCHAR) != ',');
 	/* Are we w(1) or uptime(1)? */
 	if (strcmp(basename(argv[0]), "uptime") == 0) {
 		wcmd = 0;
@@ -317,6 +321,7 @@ main(int argc, char *argv[])
 	if (fromwidth > W_MAXHOSTSIZE)
 		fromwidth = W_MAXHOSTSIZE;
 
+	xo_set_version(W_XO_VERSION);
 	xo_open_container("uptime-information");
 
 	if (header || wcmd == 0) {
@@ -468,7 +473,7 @@ main(int argc, char *argv[])
 static void
 pr_header(time_t *nowp, int nusers)
 {
-	char buf[64];
+	char buf[64], *s, *e;
 	struct sbuf upbuf;
 	double avenrun[3];
 	struct timespec tp;
@@ -479,8 +484,15 @@ pr_header(time_t *nowp, int nusers)
 	 * Print time of day.
 	 */
 	if (strftime(buf, sizeof(buf),
-	    use_ampm ? "%l:%M%p" : "%k:%M", localtime(nowp)) != 0)
-		xo_emit("{:time-of-day/%s} ", buf);
+	    use_ampm ? "%l:%M%p" : "%k:%M", localtime(nowp)) != 0) {
+		s = buf;
+		if (xo_get_style(NULL) != XO_STYLE_TEXT) {
+			/* trim leading whitespace */
+			while (isspace((unsigned char)*s))
+				s++;
+		}
+		xo_emit("{:time-of-day/%s} ", s);
+	}
 	/*
 	 * Print how long system has been up.
 	 */
@@ -511,21 +523,31 @@ pr_header(time_t *nowp, int nusers)
 
 		if (days > 0)
 			sbuf_printf(&upbuf, " %ld day%s,",
-				days, days > 1 ? "s" : "");
+			    days, days > 1 ? "s" : "");
 		if (hrs > 0 && mins > 0)
 			sbuf_printf(&upbuf, " %2ld:%02ld,", hrs, mins);
 		else if (hrs > 0)
 			sbuf_printf(&upbuf, " %ld hr%s,",
-				hrs, hrs > 1 ? "s" : "");
+			    hrs, hrs > 1 ? "s" : "");
 		else if (mins > 0)
 			sbuf_printf(&upbuf, " %ld min%s,",
-				mins, mins > 1 ? "s" : "");
+			    mins, mins > 1 ? "s" : "");
 		else
 			sbuf_printf(&upbuf, " %ld sec%s,",
-				secs, secs > 1 ? "s" : "");
+			    secs, secs > 1 ? "s" : "");
 		if (sbuf_finish(&upbuf) != 0)
 			xo_err(1, "Could not generate output");
-		xo_emit("{:uptime-human/%s}", sbuf_data(&upbuf));
+		s = sbuf_data(&upbuf);
+		if (xo_get_style(NULL) != XO_STYLE_TEXT) {
+			e = s + sbuf_len(&upbuf) - 1;
+			/* trim leading whitespace */
+			while (isspace((unsigned char)*s))
+				s++;
+			/* trim trailing comma */
+			if (e > s && *e == ',')
+				*e = '\0';
+		}
+		xo_emit("{:uptime-human/%s}", s);
 		sbuf_delete(&upbuf);
 	}
 

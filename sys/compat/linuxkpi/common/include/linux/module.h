@@ -32,6 +32,8 @@
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/module.h>
+#include <sys/queue.h>
+#include <sys/linker.h>
 
 #include <linux/list.h>
 #include <linux/compiler.h>
@@ -51,7 +53,44 @@
 #define	MODULE_SUPPORTED_DEVICE(name)
 #define	MODULE_IMPORT_NS(_name)
 
+/* Linux has an empty element at the end of the ID table -> nitems() - 1. */
+#define	MODULE_DEVICE_TABLE(_bus, _table)				\
+									\
+static device_method_t _ ## _bus ## _ ## _table ## _methods[] = {	\
+	DEVMETHOD_END							\
+};									\
+									\
+static driver_t _ ## _bus ## _ ## _table ## _driver = {			\
+	"lkpi_" #_bus #_table,						\
+	_ ## _bus ## _ ## _table ## _methods,				\
+	0								\
+};									\
+									\
+DRIVER_MODULE(lkpi_ ## _table, _bus, _ ## _bus ## _ ## _table ## _driver,\
+	0, 0);								\
+									\
+MODULE_DEVICE_TABLE_BUS_ ## _bus(_bus, _table)
+
+/*
+ * THIS_MODULE is used to differentiate modules on Linux. We currently
+ * completely stub out any Linux struct module usage, but THIS_MODULE is still
+ * used to populate the "owner" fields of various drivers.  Even though we
+ * don't actually dereference these "owner" fields they are still used by
+ * drivers to check if devices/dmabufs/etc come from different modules. For
+ * example, during DRM GEM import some drivers check if the dmabuf's owner
+ * matches the dev's owner. If they match because they are both NULL drivers
+ * may incorrectly think two resources come from the same module.
+ *
+ * To handle this we specify an undefined symbol __this_linker_file, which
+ * will get special treatment from the linker when resolving. This will
+ * populate the usages of __this_linker_file with the linker_file_t of the
+ * module.
+ */
+#ifdef KLD_MODULE
+#define	THIS_MODULE	((struct module *)&__this_linker_file)
+#else
 #define	THIS_MODULE	((struct module *)0)
+#endif
 
 #define	__MODULE_STRING(x) __stringify(x)
 

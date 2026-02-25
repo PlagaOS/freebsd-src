@@ -261,7 +261,7 @@ static kobj_method_t quicc_methods[] = {
 	KOBJMETHOD(uart_transmit,	quicc_bus_transmit),
 	KOBJMETHOD(uart_grab,		quicc_bus_grab),
 	KOBJMETHOD(uart_ungrab,		quicc_bus_ungrab),
-	{ 0, 0 }
+	KOBJMETHOD_END
 };
 
 struct uart_class uart_quicc_class = {
@@ -412,7 +412,6 @@ quicc_bus_param(struct uart_softc *sc, int baudrate, int databits,
 static int
 quicc_bus_probe(struct uart_softc *sc)
 {
-	char buf[80];
 	int error;
 
 	error = quicc_probe(&sc->sc_bas);
@@ -422,8 +421,7 @@ quicc_bus_probe(struct uart_softc *sc)
 	sc->sc_rxfifosz = 1;
 	sc->sc_txfifosz = 1;
 
-	snprintf(buf, sizeof(buf), "quicc, channel %d", sc->sc_bas.chan);
-	device_set_desc_copy(sc->sc_dev, buf);
+	device_set_descf(sc->sc_dev, "quicc, channel %d", sc->sc_bas.chan);
 	return (0);
 }
 

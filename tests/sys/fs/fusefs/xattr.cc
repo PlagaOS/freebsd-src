@@ -100,7 +100,11 @@ void expect_removexattr(uint64_t ino, const char *attr, int error)
 	).WillOnce(Invoke(ReturnErrno(error)));
 }
 
-void expect_setxattr(uint64_t ino, const char *attr, const char *value,
+/*
+ * Expect a FUSE_SETXATTR request in the format used by protocol 7.33 and
+ * later, with the FUSE_SETXATTR_EXT bit set.
+ */
+void expect_setxattr_ext(uint64_t ino, const char *attr, const char *value,
 	ProcessMockerT r)
 {
 	EXPECT_CALL(*m_mock, process(
@@ -110,6 +114,8 @@ void expect_setxattr(uint64_t ino, const char *attr, const char *value,
 			const char *v = a + strlen(a) + 1;
 			return (in.header.opcode == FUSE_SETXATTR &&
 				in.header.nodeid == ino &&
+				in.body.setxattr.size == (strlen(value) + 1) &&
+				in.body.setxattr.setxattr_flags == 0 &&
 				0 == strcmp(attr, a) &&
 				0 == strcmp(value, v));
 		}, Eq(true)),
@@ -117,6 +123,36 @@ void expect_setxattr(uint64_t ino, const char *attr, const char *value,
 	).WillOnce(Invoke(r));
 }
 
+/*
+ * Expect a FUSE_SETXATTR request in the format used by protocol 7.32 and
+ * earlier.
+ */
+void expect_setxattr_7_32(uint64_t ino, const char *attr, const char *value,
+	ProcessMockerT r)
+{
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			const char *a = (const char *)in.body.bytes +
+				FUSE_COMPAT_SETXATTR_IN_SIZE;
+			const char *v = a + strlen(a) + 1;
+			return (in.header.opcode == FUSE_SETXATTR &&
+				in.header.nodeid == ino &&
+				in.body.setxattr.size == (strlen(value) + 1) &&
+				0 == strcmp(attr, a) &&
+				0 == strcmp(value, v));
+		}, Eq(true)),
+		_)
+	).WillOnce(Invoke(r));
+}
+};
+
+class Xattr_7_32: public Xattr {
+public:
+virtual void SetUp()
+{
+	m_kernel_minor_version = 32;
+	Xattr::SetUp();
+}
 };
 
 class Getxattr: public Xattr {};
@@ -153,6 +189,14 @@ void TearDown() {
 
 class Removexattr: public Xattr {};
 class Setxattr: public Xattr {};
+class SetxattrExt: public Setxattr {
+public:
+virtual void SetUp() {
+	m_init_flags |= FUSE_SETXATTR_EXT;
+	Setxattr::SetUp();
+}
+};
+class Setxattr_7_32:public Xattr_7_32 {};
 class RofsXattr: public Xattr {
 public:
 virtual void SetUp() {
@@ -350,7 +394,7 @@ TEST_F(Listxattr, enotsup)
  * On Linux, however, the file system is supposed to return ERANGE if an
  * insufficiently large buffer is passed to listxattr(2).
  *
- * fusefs(5) must guarantee the usual FreeBSD behavior.
+ * fusefs(4) must guarantee the usual FreeBSD behavior.
  */
 TEST_F(Listxattr, erange)
 {
@@ -569,7 +613,7 @@ TEST_F(Listxattr, size_only_race_smaller)
 	}));
 	expect_listxattr(ino, sizeof(attrs0),
 		ReturnImmediate([&](auto in __unused, auto& out) {
-			strlcpy((char*)out.body.bytes, attrs1, sizeof(attrs1));
+			memcpy((char*)out.body.bytes, attrs1, sizeof(attrs1));
 			out.header.len = sizeof(fuse_out_header) +
 			    sizeof(attrs1);
 		})
@@ -728,6 +772,7 @@ TEST_F(Removexattr, system)
 		<< strerror(errno);
 }
 
+
 /*
  * If the filesystem returns ENOSYS, then it will be treated as a permanent
  * failure and all future VOP_SETEXTATTR calls will fail with EOPNOTSUPP
@@ -742,7 +787,7 @@ TEST_F(Setxattr, enosys)
 	ssize_t r;
 
 	expect_lookup(RELPATH, ino, S_IFREG | 0644, 0, 2);
-	expect_setxattr(ino, "user.foo", value, ReturnErrno(ENOSYS));
+	expect_setxattr_7_32(ino, "user.foo", value, ReturnErrno(ENOSYS));
 
 	r = extattr_set_file(FULLPATH, ns, "foo", (const void*)value,
 		value_len);
@@ -769,7 +814,7 @@ TEST_F(Setxattr, enotsup)
 	ssize_t r;
 
 	expect_lookup(RELPATH, ino, S_IFREG | 0644, 0, 1);
-	expect_setxattr(ino, "user.foo", value, ReturnErrno(ENOTSUP));
+	expect_setxattr_7_32(ino, "user.foo", value, ReturnErrno(ENOTSUP));
 
 	r = extattr_set_file(FULLPATH, ns, "foo", (const void*)value,
 		value_len);
@@ -789,7 +834,7 @@ TEST_F(Setxattr, user)
 	ssize_t r;
 
 	expect_lookup(RELPATH, ino, S_IFREG | 0644, 0, 1);
-	expect_setxattr(ino, "user.foo", value, ReturnErrno(0));
+	expect_setxattr_7_32(ino, "user.foo", value, ReturnErrno(0));
 
 	r = extattr_set_file(FULLPATH, ns, "foo", (const void*)value,
 		value_len);
@@ -808,7 +853,47 @@ TEST_F(Setxattr, system)
 	ssize_t r;
 
 	expect_lookup(RELPATH, ino, S_IFREG | 0644, 0, 1);
-	expect_setxattr(ino, "system.foo", value, ReturnErrno(0));
+	expect_setxattr_7_32(ino, "system.foo", value, ReturnErrno(0));
+
+	r = extattr_set_file(FULLPATH, ns, "foo", (const void*)value,
+		value_len);
+	ASSERT_EQ(value_len, r) << strerror(errno);
+}
+
+
+/*
+ * For servers using protocol 7.32 and older, the kernel should use the older
+ * FUSE_SETXATTR format.
+ */
+TEST_F(Setxattr_7_32, ok)
+{
+	uint64_t ino = 42;
+	const char value[] = "whatever";
+	ssize_t value_len = strlen(value) + 1;
+	int ns = EXTATTR_NAMESPACE_USER;
+	ssize_t r;
+
+	expect_lookup(RELPATH, ino, S_IFREG | 0644, 0, 1);
+	expect_setxattr_7_32(ino, "user.foo", value, ReturnErrno(0));
+
+	r = extattr_set_file(FULLPATH, ns, "foo", (const void *)value,
+		value_len);
+	ASSERT_EQ(value_len, r) << strerror(errno);
+}
+
+/*
+ * Successfully set a user attribute using the extended format
+ */
+TEST_F(SetxattrExt, user)
+{
+	uint64_t ino = 42;
+	const char value[] = "whatever";
+	ssize_t value_len = strlen(value) + 1;
+	int ns = EXTATTR_NAMESPACE_USER;
+	ssize_t r;
+
+	expect_lookup(RELPATH, ino, S_IFREG | 0644, 0, 1);
+	expect_setxattr_ext(ino, "user.foo", value, ReturnErrno(0));
 
 	r = extattr_set_file(FULLPATH, ns, "foo", (const void*)value,
 		value_len);

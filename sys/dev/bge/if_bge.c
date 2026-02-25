@@ -2699,7 +2699,6 @@ bge_chipid(device_t dev)
 static int
 bge_probe(device_t dev)
 {
-	char buf[96];
 	char model[64];
 	const struct bge_revision *br;
 	const char *pname;
@@ -2727,9 +2726,8 @@ bge_probe(device_t dev)
 				    br != NULL ? br->br_name :
 				    "NetXtreme/NetLink Ethernet Controller");
 			}
-			snprintf(buf, sizeof(buf), "%s, %sASIC rev. %#08x",
+			device_set_descf(dev, "%s, %sASIC rev. %#08x",
 			    model, br != NULL ? "" : "unknown ", id);
-			device_set_desc_copy(dev, buf);
 			return (BUS_PROBE_DEFAULT);
 		}
 		t++;
@@ -3714,11 +3712,6 @@ bge_attach(device_t dev)
 
 	/* Set up ifnet structure */
 	ifp = sc->bge_ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		device_printf(sc->bge_dev, "failed to if_alloc()\n");
-		error = ENXIO;
-		goto fail;
-	}
 	if_setsoftc(ifp, sc);
 	if_initname(ifp, device_get_name(dev), device_get_unit(dev));
 	if_setflags(ifp, IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
@@ -3728,7 +3721,12 @@ bge_attach(device_t dev)
 	if_setgetcounterfn(ifp, bge_get_counter);
 	if_setsendqlen(ifp, BGE_TX_RING_CNT - 1);
 	if_setsendqready(ifp);
-	if_sethwassist(ifp, sc->bge_csum_features);
+	/* Initially enable checksum offloading either for all of IPv4, TCP/IPv4
+	 * and UDP/IPv4, or for none. This avoids problems when the interface
+	 * is added to a bridge.
+	 */
+	if (sc->bge_csum_features & CSUM_UDP)
+		if_sethwassist(ifp, sc->bge_csum_features);
 	if_setcapabilities(ifp, IFCAP_HWCSUM | IFCAP_VLAN_HWTAGGING |
 	    IFCAP_VLAN_MTU);
 	if ((sc->bge_flags & (BGE_FLAG_TSO | BGE_FLAG_TSO3)) != 0) {
@@ -3739,6 +3737,13 @@ bge_attach(device_t dev)
 	if_setcapabilitiesbit(ifp, IFCAP_VLAN_HWCSUM, 0);
 #endif
 	if_setcapenable(ifp, if_getcapabilities(ifp));
+	/*
+	 * Disable TXCSUM capability initially, if UDP checksum offloading is
+	 * not enabled. This avoids problems when the interface is added to a
+	 * bridge.
+	 */
+	if ((sc->bge_csum_features & CSUM_UDP) == 0)
+		if_setcapenablebit(ifp, 0, IFCAP_TXCSUM);
 #ifdef DEVICE_POLLING
 	if_setcapabilitiesbit(ifp, IFCAP_POLLING, 0);
 #endif
@@ -3897,12 +3902,6 @@ again:
 		    ~BGE_MSIMODE_ONE_SHOT_DISABLE);
 		sc->bge_tq = taskqueue_create_fast("bge_taskq", M_WAITOK,
 		    taskqueue_thread_enqueue, &sc->bge_tq);
-		if (sc->bge_tq == NULL) {
-			device_printf(dev, "could not create taskqueue.\n");
-			ether_ifdetach(ifp);
-			error = ENOMEM;
-			goto fail;
-		}
 		error = taskqueue_start_threads(&sc->bge_tq, 1, PI_NET,
 		    "%s taskq", device_get_nameunit(sc->bge_dev));
 		if (error != 0) {
@@ -3962,7 +3961,6 @@ bge_detach(device_t dev)
 		ifmedia_removeall(&sc->bge_ifmedia);
 	else if (sc->bge_miibus != NULL) {
 		bus_generic_detach(dev);
-		device_delete_child(dev, sc->bge_miibus);
 	}
 
 	bge_release_resources(sc);

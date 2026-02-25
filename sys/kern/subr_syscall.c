@@ -55,8 +55,8 @@ syscallenter(struct thread *td)
 	struct proc *p;
 	struct syscall_args *sa;
 	struct sysent *se;
-	int error, traced;
-	bool sy_thr_static;
+	int error;
+	bool sy_thr_static, traced;
 
 	VM_CNT_INC(v_syscall);
 	p = td->td_proc;
@@ -74,6 +74,8 @@ syscallenter(struct thread *td)
 			td->td_dbgflags |= TDB_SCE;
 		PROC_UNLOCK(p);
 	}
+	if ((td->td_pflags2 & TDP2_UEXTERR) != 0)
+		td->td_pflags2 &= ~TDP2_EXTERR;
 	error = (p->p_sysent->sv_fetch_syscall_args)(td);
 	se = sa->callp;
 #ifdef KTRACE
@@ -118,10 +120,13 @@ syscallenter(struct thread *td)
 	 * In capability mode, we only allow access to system calls
 	 * flagged with SYF_CAPENABLED.
 	 */
-	if (__predict_false(IN_CAPABILITY_MODE(td) &&
-	    (se->sy_flags & SYF_CAPENABLED) == 0)) {
-		td->td_errno = error = ECAPMODE;
-		goto retval;
+	if ((se->sy_flags & SYF_CAPENABLED) == 0) {
+		if (CAP_TRACING(td))
+			ktrcapfail(CAPFAIL_SYSCALL, NULL);
+		if (IN_CAPABILITY_MODE(td)) {
+			td->td_errno = error = ECAPMODE;
+			goto retval;
+		}
 	}
 #endif
 
@@ -138,9 +143,8 @@ syscallenter(struct thread *td)
 
 	sy_thr_static = (se->sy_thrcnt & SY_THR_STATIC) != 0;
 
-	if (__predict_false(SYSTRACE_ENABLED() ||
-	    AUDIT_SYSCALL_ENTER(sa->code, td) ||
-	    !sy_thr_static)) {
+	if (__predict_false(AUDIT_SYSCALL_ENABLED() ||
+	    SYSTRACE_ENABLED() || !sy_thr_static)) {
 		if (!sy_thr_static) {
 			error = syscall_thread_enter(td, &se);
 			sy_thr_static = (se->sy_thrcnt & SY_THR_STATIC) != 0;
@@ -155,6 +159,9 @@ syscallenter(struct thread *td)
 		if (__predict_false(se->sy_entry != 0))
 			(*systrace_probe_func)(sa, SYSTRACE_ENTRY, 0);
 #endif
+
+		AUDIT_SYSCALL_ENTER(sa->code, td);
+
 		error = (se->sy_call)(td, sa->args);
 		/* Save the latest error return value. */
 		if (__predict_false((td->td_pflags & TDP_NERRNO) != 0))
@@ -202,6 +209,8 @@ syscallenter(struct thread *td)
 		PROC_UNLOCK(p);
 	}
 	(p->p_sysent->sv_set_syscall_retval)(td, error);
+	if (error != 0 && (td->td_pflags2 & TDP2_UEXTERR) != 0)
+		exterr_copyout(td);
 }
 
 static inline void
@@ -210,7 +219,7 @@ syscallret(struct thread *td)
 	struct proc *p;
 	struct syscall_args *sa;
 	ksiginfo_t ksi;
-	int traced;
+	bool traced;
 
 	KASSERT(td->td_errno != ERELOOKUP,
 	    ("ERELOOKUP not consumed syscall %d", td->td_sa.code));
@@ -241,9 +250,9 @@ syscallret(struct thread *td)
 	}
 #endif
 
-	traced = 0;
+	traced = false;
 	if (__predict_false(p->p_flag & P_TRACED)) {
-		traced = 1;
+		traced = true;
 		PROC_LOCK(p);
 		td->td_dbgflags |= TDB_SCX;
 		PROC_UNLOCK(p);

@@ -21,6 +21,7 @@
 bool opt_stdout = false;
 bool opt_force = false;
 bool opt_keep_original = false;
+bool opt_synchronous = true;
 bool opt_robot = false;
 bool opt_ignore_check = false;
 
@@ -92,6 +93,12 @@ parse_block_list(const char *str_const)
 	free(opt_block_list);
 	opt_block_list = xmalloc((count + 1) * sizeof(block_list_entry));
 
+	// Clear the bitmask of filter chains in use.
+	block_list_chain_mask = 0;
+
+	// Reset the largest Block size found in --block-list.
+	block_list_largest = 0;
+
 	for (size_t i = 0; i < count; ++i) {
 		// Locate the next comma and replace it with \0.
 		char *p = strchr(str, ',');
@@ -99,7 +106,7 @@ parse_block_list(const char *str_const)
 			*p = '\0';
 
 		// Use the default filter chain unless overridden.
-		opt_block_list[i].filters_index = 0;
+		opt_block_list[i].chain_num = 0;
 
 		// To specify a filter chain, the block list entry may be
 		// prepended with "[filter-chain-number]:". The size is
@@ -126,10 +133,13 @@ parse_block_list(const char *str_const)
 						"filter chain number '%c:'"),
 						str[0]);
 
-			int filter_num = str[0] - '0';
-			opt_block_list[i].filters_index =
-					(uint32_t)filter_num;
+			const unsigned chain_num = (unsigned)(str[0] - '0');
+			opt_block_list[i].chain_num = chain_num;
+			block_list_chain_mask |= 1U << chain_num;
 			str += 2;
+		} else {
+			// This Block uses the default filter chain.
+			block_list_chain_mask |= 1U << 0;
 		}
 
 		if (str[0] == '\0') {
@@ -153,9 +163,23 @@ parse_block_list(const char *str_const)
 
 				opt_block_list[i].size = UINT64_MAX;
 			}
+
+			// Remember the largest Block size in the list.
+			//
+			// NOTE: Do this after handling the special value 0
+			// because when 0 is used, we don't want to reduce
+			// the Block size of the multithreaded encoder.
+			if (block_list_largest < opt_block_list[i].size)
+				block_list_largest = opt_block_list[i].size;
 		}
 
-		str = p + 1;
+		// Be standards compliant: p + 1 is undefined behavior
+		// if p == NULL. That occurs on the last iteration of
+		// the loop when we won't care about the value of str
+		// anymore anyway. That is, this is done conditionally
+		// solely for standard conformance reasons.
+		if (p != NULL)
+			str = p + 1;
 	}
 
 	// Terminate the array.
@@ -194,6 +218,7 @@ parse_real(args_info *args, int argc, char **argv)
 		OPT_LZMA1,
 		OPT_LZMA2,
 
+		OPT_NO_SYNC,
 		OPT_SINGLE_STREAM,
 		OPT_NO_SPARSE,
 		OPT_FILES,
@@ -226,10 +251,10 @@ parse_real(args_info *args, int argc, char **argv)
 		{ "force",        no_argument,       NULL,  'f' },
 		{ "stdout",       no_argument,       NULL,  'c' },
 		{ "to-stdout",    no_argument,       NULL,  'c' },
+		{ "no-sync",      no_argument,       NULL,  OPT_NO_SYNC },
 		{ "single-stream", no_argument,      NULL,  OPT_SINGLE_STREAM },
 		{ "no-sparse",    no_argument,       NULL,  OPT_NO_SPARSE },
 		{ "suffix",       required_argument, NULL,  'S' },
-		// { "recursive",      no_argument,       NULL,  'r' }, // TODO
 		{ "files",        optional_argument, NULL,  OPT_FILES },
 		{ "files0",       optional_argument, NULL,  OPT_FILES0 },
 
@@ -238,7 +263,7 @@ parse_real(args_info *args, int argc, char **argv)
 		{ "check",        required_argument, NULL,  'C' },
 		{ "ignore-check", no_argument,       NULL,  OPT_IGNORE_CHECK },
 		{ "block-size",   required_argument, NULL,  OPT_BLOCK_SIZE },
-		{ "block-list",  required_argument, NULL,  OPT_BLOCK_LIST },
+		{ "block-list",   required_argument, NULL,  OPT_BLOCK_LIST },
 		{ "memlimit-compress",   required_argument, NULL, OPT_MEM_COMPRESS },
 		{ "memlimit-decompress", required_argument, NULL, OPT_MEM_DECOMPRESS },
 		{ "memlimit-mt-decompress", required_argument, NULL, OPT_MEM_MT_DECOMPRESS },
@@ -253,17 +278,17 @@ parse_real(args_info *args, int argc, char **argv)
 		{ "best",         no_argument,       NULL,  '9' },
 
 		// Filters
-		{ "filters",      optional_argument, NULL,  OPT_FILTERS},
-		{ "filters1",     optional_argument, NULL,  OPT_FILTERS1},
-		{ "filters2",     optional_argument, NULL,  OPT_FILTERS2},
-		{ "filters3",     optional_argument, NULL,  OPT_FILTERS3},
-		{ "filters4",     optional_argument, NULL,  OPT_FILTERS4},
-		{ "filters5",     optional_argument, NULL,  OPT_FILTERS5},
-		{ "filters6",     optional_argument, NULL,  OPT_FILTERS6},
-		{ "filters7",     optional_argument, NULL,  OPT_FILTERS7},
-		{ "filters8",     optional_argument, NULL,  OPT_FILTERS8},
-		{ "filters9",     optional_argument, NULL,  OPT_FILTERS9},
-		{ "filters-help", optional_argument, NULL,  OPT_FILTERS_HELP},
+		{ "filters",      required_argument, NULL,  OPT_FILTERS},
+		{ "filters1",     required_argument, NULL,  OPT_FILTERS1},
+		{ "filters2",     required_argument, NULL,  OPT_FILTERS2},
+		{ "filters3",     required_argument, NULL,  OPT_FILTERS3},
+		{ "filters4",     required_argument, NULL,  OPT_FILTERS4},
+		{ "filters5",     required_argument, NULL,  OPT_FILTERS5},
+		{ "filters6",     required_argument, NULL,  OPT_FILTERS6},
+		{ "filters7",     required_argument, NULL,  OPT_FILTERS7},
+		{ "filters8",     required_argument, NULL,  OPT_FILTERS8},
+		{ "filters9",     required_argument, NULL,  OPT_FILTERS9},
+		{ "filters-help", no_argument,       NULL,  OPT_FILTERS_HELP},
 
 		{ "lzma1",        optional_argument, NULL,  OPT_LZMA1 },
 		{ "lzma2",        optional_argument, NULL,  OPT_LZMA2 },
@@ -455,7 +480,6 @@ parse_real(args_info *args, int argc, char **argv)
 		case OPT_FILTERS_HELP:
 			// This doesn't return.
 			message_filters_help();
-			break;
 
 		case OPT_X86:
 			coder_add_filter(LZMA_FILTER_X86,
@@ -590,6 +614,9 @@ parse_real(args_info *args, int argc, char **argv)
 
 		case OPT_SINGLE_STREAM:
 			opt_single_stream = true;
+
+			// Since 5.7.1alpha --single-stream implies --keep.
+			opt_keep_original = true;
 			break;
 
 		case OPT_NO_SPARSE:
@@ -599,7 +626,7 @@ parse_real(args_info *args, int argc, char **argv)
 		case OPT_FILES:
 			args->files_delim = '\n';
 
-		// Fall through
+			FALLTHROUGH;
 
 		case OPT_FILES0:
 			if (args->files_name != NULL)
@@ -631,6 +658,10 @@ parse_real(args_info *args, int argc, char **argv)
 		case OPT_FLUSH_TIMEOUT:
 			opt_flush_timeout = str_to_uint64("flush-timeout",
 					optarg, 0, UINT64_MAX);
+			break;
+
+		case OPT_NO_SYNC:
+			opt_synchronous = false;
 			break;
 
 		default:
@@ -800,6 +831,13 @@ args_parse(args_info *args, int argc, char **argv)
 		opt_keep_original = true;
 		opt_stdout = true;
 	}
+
+	// Don't use fsync() if --keep is specified or implied.
+	// However, don't document this as "--keep implies --no-sync"
+	// because if syncing support was added to --flush-timeout,
+	// it would sync even if --keep was specified.
+	if (opt_keep_original)
+		opt_synchronous = false;
 
 	// When compressing, if no --format flag was used, or it
 	// was --format=auto, we compress to the .xz format.

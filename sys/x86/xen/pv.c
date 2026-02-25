@@ -60,6 +60,7 @@
 
 #include <machine/_inttypes.h>
 #include <machine/intr_machdep.h>
+#include <x86/acpica_machdep.h>
 #include <x86/apicvar.h>
 #include <x86/init.h>
 #include <machine/pc/bios.h>
@@ -93,8 +94,8 @@ uint64_t hammer_time_xen(vm_paddr_t);
 #define MAX_E820_ENTRIES	128
 
 /*--------------------------- Forward Declarations ---------------------------*/
-static caddr_t xen_pvh_parse_preload_data(uint64_t);
-static void pvh_parse_memmap(caddr_t, vm_paddr_t *, int *);
+static void xen_pvh_parse_preload_data(uint64_t);
+static void pvh_parse_memmap(vm_paddr_t *, int *);
 
 /*---------------------------- Extern Declarations ---------------------------*/
 /*
@@ -157,7 +158,6 @@ hammer_time_xen(vm_paddr_t start_info_paddr)
 {
 	struct hvm_modlist_entry *mod;
 	uint64_t physfree;
-	char *kenv;
 
 	start_info = (struct hvm_start_info *)(start_info_paddr + KERNBASE);
 	if (start_info->magic != XEN_HVM_START_MAGIC_VALUE) {
@@ -196,15 +196,6 @@ hammer_time_xen(vm_paddr_t start_info_paddr)
 			    PAGE_SIZE), physfree);
 	}
 
-	/*
-	 * Init a static kenv using a free page. The contents will be filled
-	 * from the parse_preload_data hook.
-	 */
-	kenv = (void *)(physfree + KERNBASE);
-	physfree += PAGE_SIZE;
-	bzero_early(kenv, PAGE_SIZE);
-	init_static_kenv(kenv, PAGE_SIZE);
-
 	/* Set the hooks for early functions that diverge from bare metal */
 	init_ops = xen_pvh_init_ops;
 	hvm_start_flags = start_info->flags;
@@ -214,52 +205,6 @@ hammer_time_xen(vm_paddr_t start_info_paddr)
 }
 
 /*-------------------------------- PV specific -------------------------------*/
-
-/*
- * When booted as a PVH guest FreeBSD needs to avoid using the RSDP address
- * hint provided by the loader because it points to the native set of ACPI
- * tables instead of the ones crafted by Xen. The acpi.rsdp env variable is
- * removed from kenv if present, and a new acpi.rsdp is added to kenv that
- * points to the address of the Xen crafted RSDP.
- */
-static bool reject_option(const char *option)
-{
-	static const char *reject[] = {
-		"acpi.rsdp",
-	};
-	unsigned int i;
-
-	for (i = 0; i < nitems(reject); i++)
-		if (strncmp(option, reject[i], strlen(reject[i])) == 0)
-			return (true);
-
-	return (false);
-}
-
-static void
-xen_pvh_set_env(char *env, bool (*filter)(const char *))
-{
-	char *option;
-
-	if (env == NULL)
-		return;
-
-	option = env;
-	while (*option != 0) {
-		char *value;
-
-		if (filter != NULL && filter(option)) {
-			option += strlen(option) + 1;
-			continue;
-		}
-
-		value = option;
-		option = strsep(&value, "=");
-		if (kern_setenv(option, value) != 0 && isxen())
-			xc_printf("unable to add kenv %s=%s\n", option, value);
-		option = value + strlen(value) + 1;
-	}
-}
 
 #ifdef DDB
 /*
@@ -306,14 +251,12 @@ xen_pvh_parse_symtab(void)
 }
 #endif
 
-static caddr_t
+static void
 xen_pvh_parse_preload_data(uint64_t modulep)
 {
-	caddr_t kmdp;
 	vm_ooffset_t off;
 	vm_paddr_t metadata;
 	char *envp;
-	char acpi_rsdp[19];
 
 	TSENTER();
 	if (start_info->modlist_paddr != 0) {
@@ -339,14 +282,6 @@ xen_pvh_parse_preload_data(uint64_t modulep)
 			preload_metadata = (caddr_t)(mod[0].paddr +
 			    header->modulep_offset + KERNBASE);
 
-			kmdp = preload_search_by_type("elf kernel");
-			if (kmdp == NULL)
-				kmdp = preload_search_by_type("elf64 kernel");
-			if (kmdp == NULL) {
-				xc_printf("Unable to find kernel\n");
-				HYPERVISOR_shutdown(SHUTDOWN_crash);
-			}
-
 			/*
 			 * Xen has relocated the metadata and the modules, so
 			 * we need to recalculate it's position. This is done
@@ -354,62 +289,66 @@ xen_pvh_parse_preload_data(uint64_t modulep)
 			 * calculating the offset from the real modulep
 			 * position.
 			 */
-			metadata = MD_FETCH(kmdp, MODINFOMD_MODULEP,
-			    vm_paddr_t);
-			off = mod[0].paddr + header->modulep_offset - metadata +
-			    KERNBASE;
+			off = header->modulep_offset;
 		} else {
 			preload_metadata = (caddr_t)(mod[0].paddr + KERNBASE);
-
-			kmdp = preload_search_by_type("elf kernel");
-			if (kmdp == NULL)
-				kmdp = preload_search_by_type("elf64 kernel");
-			if (kmdp == NULL) {
-				xc_printf("Unable to find kernel\n");
-				HYPERVISOR_shutdown(SHUTDOWN_crash);
-			}
-
-			metadata = MD_FETCH(kmdp, MODINFOMD_MODULEP, vm_paddr_t);
-			off = mod[0].paddr + KERNBASE - metadata;
+			off = 0;
 		}
+
+		/* Initialize preload_kmdp */
+		preload_initkmdp(false);
+		if (preload_kmdp == NULL) {
+			xc_printf("Unable to find kernel metadata\n");
+			HYPERVISOR_shutdown(SHUTDOWN_crash);
+		}
+
+		metadata = MD_FETCH(preload_kmdp, MODINFOMD_MODULEP,
+		    vm_paddr_t);
+		off += mod[0].paddr + KERNBASE - metadata;
 
 		preload_bootstrap_relocate(off);
 
-		boothowto = MD_FETCH(kmdp, MODINFOMD_HOWTO, int);
-		envp = MD_FETCH(kmdp, MODINFOMD_ENVP, char *);
+		boothowto = MD_FETCH(preload_kmdp, MODINFOMD_HOWTO, int);
+		envp = MD_FETCH(preload_kmdp, MODINFOMD_ENVP, char *);
 		if (envp != NULL)
 			envp += off;
-		xen_pvh_set_env(envp, reject_option);
+		init_static_kenv(envp, 0);
 
-		if (MD_FETCH(kmdp, MODINFOMD_EFI_MAP, void *) != NULL)
+		if (MD_FETCH(preload_kmdp, MODINFOMD_EFI_MAP, void *) != NULL)
 		    strlcpy(bootmethod, "UEFI", sizeof(bootmethod));
 		else
 		    strlcpy(bootmethod, "BIOS", sizeof(bootmethod));
 	} else {
+		static char kenv_buffer[PAGE_SIZE];
+
+		/* Provide a static kenv so the command line can be parsed. */
+		init_static_kenv(kenv_buffer, sizeof(kenv_buffer));
+
 		/* Parse the extra boot information given by Xen */
 		if (start_info->cmdline_paddr != 0)
 			boot_parse_cmdline_delim(
 			    (char *)(start_info->cmdline_paddr + KERNBASE),
 			    ", \t\n");
-		kmdp = NULL;
 		strlcpy(bootmethod, "PVH", sizeof(bootmethod));
 	}
 
 	boothowto |= boot_env_to_howto();
 
-	snprintf(acpi_rsdp, sizeof(acpi_rsdp), "%#" PRIx64,
-	    start_info->rsdp_paddr);
-	kern_setenv("acpi.rsdp", acpi_rsdp);
+	/*
+	 * When booted as a PVH guest FreeBSD must not use the RSDP address
+	 * hint provided by the loader because it points to the native set of
+	 * ACPI tables instead of the ones crafted by Xen.
+	 */
+	acpi_set_root(start_info->rsdp_paddr);
 
 #ifdef DDB
 	xen_pvh_parse_symtab();
 #endif
 	TSEXIT();
-	return (kmdp);
 }
 
 static void
-pvh_parse_memmap_start_info(caddr_t kmdp, vm_paddr_t *physmap,
+pvh_parse_memmap_start_info(vm_paddr_t *physmap,
     int *physmap_idx)
 {
 	const struct hvm_memmap_table_entry * entries;
@@ -439,7 +378,7 @@ pvh_parse_memmap_start_info(caddr_t kmdp, vm_paddr_t *physmap,
 }
 
 static void
-xen_pvh_parse_memmap(caddr_t kmdp, vm_paddr_t *physmap, int *physmap_idx)
+xen_pvh_parse_memmap(vm_paddr_t *physmap, int *physmap_idx)
 {
 	struct xen_memory_map memmap;
 	u_int32_t size;
@@ -464,7 +403,7 @@ xen_pvh_parse_memmap(caddr_t kmdp, vm_paddr_t *physmap, int *physmap_idx)
 }
 
 static void
-pvh_parse_memmap(caddr_t kmdp, vm_paddr_t *physmap, int *physmap_idx)
+pvh_parse_memmap(vm_paddr_t *physmap, int *physmap_idx)
 {
 
 	/*
@@ -473,7 +412,7 @@ pvh_parse_memmap(caddr_t kmdp, vm_paddr_t *physmap, int *physmap_idx)
 	 * Xen and need to use the Xen hypercall.
 	 */
 	if ((start_info->version >= 1) && (start_info->memmap_paddr != 0))
-		pvh_parse_memmap_start_info(kmdp, physmap, physmap_idx);
+		pvh_parse_memmap_start_info(physmap, physmap_idx);
 	else
-		xen_pvh_parse_memmap(kmdp, physmap, physmap_idx);
+		xen_pvh_parse_memmap(physmap, physmap_idx);
 }

@@ -1,3 +1,4 @@
+PACKAGE=	zstd
 
 PROG=	zstd
 SRCS=	\
@@ -26,7 +27,6 @@ MLINKS=	zstd.1 unzstd.1 \
 	zstd.1 zstdcat.1 \
 	zstd.1 zstdmt.1
 
-CSTD=c11
 WARNS?=	2
 LIBADD=	zstd
 .PATH: ${SRCTOP}/sys/contrib/zstd/programs

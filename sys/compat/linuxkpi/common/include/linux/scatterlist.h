@@ -32,8 +32,11 @@
 #define	_LINUXKPI_LINUX_SCATTERLIST_H_
 
 #include <sys/types.h>
+#include <sys/proc.h>
+#include <sys/sched.h>
 #include <sys/sf_buf.h>
 
+#include <linux/err.h>
 #include <linux/page.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
@@ -669,6 +672,13 @@ sg_pcopy_to_buffer(struct scatterlist *sgl, unsigned int nents,
 	if (!PMAP_HAS_DMAP)
 		sched_unpin();
 	return (total);
+}
+
+static inline void
+sg_set_folio(struct scatterlist *sg, struct folio *folio, size_t len,
+    size_t offset)
+{
+	sg_set_page(sg, &folio->page, len, offset);
 }
 
 #endif					/* _LINUXKPI_LINUX_SCATTERLIST_H_ */

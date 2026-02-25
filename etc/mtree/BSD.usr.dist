@@ -6,37 +6,41 @@
 .
     bin
     ..
-    include
-        private
-            bsddialog
+    include                   tags=package=clibs-dev
+        private               tags=package=clibs-dev
+            bsddialog         tags=package=utilities-dev
             ..
-            bsdstat
+            bsdstat           tags=package=libbsdstat-dev
             ..
-            event1
+            event1            tags=package=libevent1-dev
             ..
-            gmock
-                internal
-                    custom
+            gmock             tags=package=utilities-dev
+                internal      tags=package=utilities-dev
+                    custom    tags=package=utilities-dev
                     ..
                 ..
             ..
-            gtest
-                internal
-                    custom
+            gtest             tags=package=utilities-dev
+                internal      tags=package=utilities-dev
+                    custom    tags=package=utilities-dev
                     ..
                 ..
             ..
-            sqlite3
+            samplerate        tags=package=sound-dev
             ..
-            ucl
+            sqlite3           tags=package=libsqlite3-dev
             ..
-            zstd
+            ucl               tags=package=libucl-dev
+            ..
+            yaml              tags=package=libyaml-dev
+            ..
+            zstd              tags=package=runtime-dev
             ..
         ..
     ..
     lib
         clang
-            17
+            19
                 include
                     cuda_wrappers
                         bits
@@ -74,14 +78,32 @@
         engines-3
         ..
         flua
+            freebsd
+                sys
+                ..
+            ..
         ..
         i18n
+        ..
+        krb5                    tags=package=kerberos-kdc
+            kdb                 tags=package=kerberos-kdc
+            ..
+            plugins             tags=package=kerberos-kdc
+                kdb             tags=package=kerberos-kdc
+                ..
+                preauth         tags=package=kerberos-kdc
+                ..
+                tls             tags=package=kerberos-kdc
+                ..
+            ..
         ..
         libxo
             encoder
             ..
         ..
         ossl-modules
+        ..
+        virtual_oss
         ..
     ..
     libdata
@@ -159,10 +181,8 @@
         ..
         hyperv
         ..
-        kgdb
-        ..
-        lpr
-            ru
+        lpr			tags=package=lp
+            ru			tags=package=lp
             ..
         ..
         sendmail
@@ -206,9 +226,9 @@
         calendar
         ..
         certs
-            trusted tags=package=caroot
+            trusted         tags=package=caroot
             ..
-            untrusted tags=package=caroot
+            untrusted       tags=package=caroot
             ..
         ..
         dict
@@ -218,15 +238,13 @@
             ..
             atf             tags=package=tests
             ..
-            kyua             tags=package=tests
+            kyua            tags=package=tests
             ..
             legal
             ..
-            llvm
-                clang
+            llvm            tags=package=clang
+                clang       tags=package=clang
                 ..
-            ..
-            ncurses
             ..
             ntp
                 drivers
@@ -249,12 +267,12 @@
         ..
         dtrace
         ..
+        et        tags=package=kerberos-dev
+        ..
         examples
             BSD_daemon
             ..
             FreeBSD_version
-            ..
-            IPv6
             ..
             bhyve
             ..
@@ -267,8 +285,6 @@
             diskless
             ..
             dma
-            ..
-            drivers
             ..
             dwatch
             ..
@@ -285,6 +301,8 @@
             hostapd
             ..
             indent
+            ..
+            inotify
             ..
             ipfilter
             ..
@@ -316,7 +334,7 @@
                     ..
                 ..
             ..
-            kyua             tags=package=tests
+            kyua            tags=package=tests
             ..
             libusb20
             ..
@@ -334,7 +352,7 @@
             ..
             ppp
             ..
-            printing
+            printing		tags=package=lp
             ..
             scsi_target
             ..
@@ -453,16 +471,22 @@
         ..
         keys
             pkg
-                revoked tags=package=runtime
+                revoked         tags=package=runtime
                 ..
-                trusted tags=package=runtime
+                trusted         tags=package=runtime
+                ..
+            ..
+            pkgbase-15
+                revoked         tags=package=runtime
+                ..
+                trusted         tags=package=runtime
                 ..
             ..
         ..
-        kyua             tags=package=tests
-            misc         tags=package=tests
+        kyua            tags=package=tests
+            misc            tags=package=tests
             ..
-            store        tags=package=tests
+            store           tags=package=tests
             ..
         ..
         locale
@@ -817,6 +841,10 @@
                 ..
             ..
         ..
+        pkg
+            triggers
+            ..
+        ..
         security
         ..
         sendmail
@@ -837,7 +865,7 @@
             scrnmaps
             ..
         ..
-        tabset
+        tabset                tags=package=ncurses-lib
         ..
         vi
             catalog

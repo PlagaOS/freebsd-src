@@ -1,15 +1,8 @@
-# SPDX-License-Identifier: BSD-2-Clause
-#
-#	$Id: subdir.mk,v 1.22 2024/02/19 00:06:19 sjg Exp $
+# $Id: subdir.mk,v 1.28 2025/08/09 22:42:24 sjg Exp $
 #
 #	@(#) Copyright (c) 2002-2024, Simon J. Gerraty
 #
-#	This file is provided in the hope that it will
-#	be of use.  There is absolutely NO WARRANTY.
-#	Permission to copy, redistribute or otherwise
-#	use this file is hereby granted provided that
-#	the above copyright notice and this notice are
-#	left intact.
+#	SPDX-License-Identifier: BSD-2-Clause
 #
 #	Please send copies of changes and bug-fixes to:
 #	sjg@crufty.net
@@ -29,7 +22,7 @@ _this ?= ${.PARSEFILE:S,bsd.,,}
 .if !target(__${_this}__)
 __${_this}__: .NOTMAIN
 
-.if defined(SUBDIR)
+.if defined(SUBDIR) || defined(SUBDIR.yes)
 
 .if ${.MAKE.LEVEL} == 0 && ${MK_DIRDEPS_BUILD:Uno} == "yes"
 .include <meta.subdir.mk>
@@ -37,7 +30,6 @@ __${_this}__: .NOTMAIN
 _SUBDIRUSE:
 .elif !commands(_SUBDIRUSE) && !defined(NO_SUBDIR) && !defined(NOSUBDIR)
 .-include <local.subdir.mk>
-.-include <${.CURDIR}/Makefile.inc>
 .if !target(.MAIN)
 .MAIN: all
 .endif
@@ -53,7 +45,7 @@ MISSING_DIR=echo "Skipping ===> ${.CURDIR}/$$_dir"; exit 0
 # our target should be of the form ${_target}-${_dir}
 _SUBDIR_USE: .USE
 	@Exists() { test -f $$1; }; \
-	_dir=${.TARGET:C/^.*-//} \
+	_dir=${.TARGET:C/^[^-]*-//} \
 	_target=${.TARGET:C/-.*//:S/real//:S/.depend/depend/}; \
 	if ! Exists ${.CURDIR}/$$_dir/[mM]akefile; then \
 		${MISSING_DIR}; \
@@ -82,7 +74,7 @@ realinstall: beforeinstall _SUBDIRUSE
 
 # the interface from others
 # this may require additions to SUBDIR_TAREGTS
-_SUBDIRUSE: .USE subdir-${.TARGET}
+_SUBDIRUSE: .USE subdir-${.TARGET:C/-.*//:S/real//:S/.depend/depend/}
 
 SUBDIR_TARGETS += \
 	all \
@@ -93,13 +85,14 @@ SUBDIR_TARGETS += \
 	depend \
 	lint \
 	obj \
-	realinstall \
 	tags \
 	etags
 
-.if ${SUBDIR} == "@auto"
+.if ${SUBDIR:U} == "@auto"
 SUBDIR = ${echo ${.CURDIR}/*/[Mm]akefile:L:sh:H:T:O:N\*}
 .endif
+# allow for things like SUBDIR.${MK_TESTS}
+SUBDIR += ${SUBDIR.yes:U}
 
 __subdirs =
 .for d in ${SUBDIR}

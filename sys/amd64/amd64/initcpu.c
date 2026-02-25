@@ -2,21 +2,21 @@
  * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) KATO Takenori, 1997, 1998.
- * 
+ *
  * All rights reserved.  Unpublished rights reserved under the copyright
  * laws of Japan.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
- * 
+ *
  * 1. Redistributions of source code must retain the above copyright
  *    notice, this list of conditions and the following disclaimer as
  *    the first lines of this file unmodified.
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
  * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
  * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
@@ -291,6 +291,19 @@ initializecpu(void)
 		cr4 |= CR4_PKE;
 
 	/*
+	 * Any CPU having Linear Address Space Separation (LASS)
+	 * should have SMAP, but check it to be sure.  Otherwise
+	 * userspace accesses from kernel cannot work.
+	 */
+	if (IS_BSP() && (cpu_stdext_feature4 & CPUID_STDEXT4_LASS) != 0 &&
+	    (cpu_stdext_feature & CPUID_STDEXT_SMAP) != 0) {
+		lass_enabled = 1;
+		TUNABLE_INT_FETCH("hw.lass", &lass_enabled);
+	}
+	if (lass_enabled)
+		cr4 |= CR4_LASS;
+
+	/*
 	 * If SMEP is present, we only need to flush RSB (by default)
 	 * on context switches, to prevent cross-process ret2spec
 	 * attacks.  Do it automatically if ibrs_disable is set, to
@@ -324,6 +337,10 @@ initializecpu(void)
 		msr = rdmsr(MSR_EFER) | EFER_NXE;
 		wrmsr(MSR_EFER, msr);
 		pg_nx = PG_NX;
+	}
+	if ((amd_feature2 & AMDID2_TCE) != 0) {
+		msr = rdmsr(MSR_EFER) | EFER_TCE;
+		wrmsr(MSR_EFER, msr);
 	}
 	hw_ibrs_recalculate(false);
 	hw_ssb_recalculate(false);

@@ -34,15 +34,10 @@
 #include <sys/socket.h>
 #include "libc_private.h"
 
-__weak_reference(__sys_sendto, __sendto);
-
 #pragma weak sendto
 ssize_t
 sendto(int s, const void *msg, size_t len, int flags,
     const struct sockaddr *to, socklen_t tolen)
 {
-	return (((ssize_t (*)(int, const void *, size_t, int,
-	    const struct sockaddr *, socklen_t))
-	    *(__libc_interposing_slot(INTERPOS_sendto)))
-	    (s, msg, len, flags, to, tolen));
+	return (INTERPOS_SYS(sendto, s, msg, len, flags, to, tolen));
 }

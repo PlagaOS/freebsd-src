@@ -314,6 +314,9 @@ __MAKE_SHELL?=/bin/sh
 	path=${__MAKE_SHELL}
 .endif
 
+# We expect .SHELL to be POSIX
+isPOSIX_SHELL?= :
+
 # Hack for ports compatibility. Historically, ports makefiles have
 # assumed they can examine MACHINE_CPU without including anything
 # because this was automatically included in sys.mk. For /usr/src,
@@ -321,7 +324,7 @@ __MAKE_SHELL?=/bin/sh
 # the ports files are modernized, and a reasonable transition
 # period has passed, include it while we're in a ports tree here
 # to preserve historic behavior.
-.if exists(${.CURDIR}/../../Mk/bsd.port.mk)
+.if exists(${.CURDIR}/../../Mk/Uses)
 .include <bsd.cpu.mk>
 .endif
 

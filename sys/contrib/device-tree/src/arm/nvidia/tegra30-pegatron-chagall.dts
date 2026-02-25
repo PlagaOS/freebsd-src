@@ -1110,6 +1110,7 @@
 
 	uartb: serial@70006040 {
 		compatible = "nvidia,tegra30-hsuart";
+		reset-names = "serial";
 		/delete-property/ reg-shift;
 		status = "okay";
 
@@ -1118,6 +1119,7 @@
 
 	uartc: serial@70006200 {
 		compatible = "nvidia,tegra30-hsuart";
+		reset-names = "serial";
 		/delete-property/ reg-shift;
 		status = "okay";
 
@@ -1152,6 +1154,14 @@
 	lcd_ddc: i2c@7000c000 {
 		status = "okay";
 		clock-frequency = <400000>;
+
+		embedded-controller@10 {
+			compatible = "pegatron,chagall-ec";
+			reg = <0x10>;
+
+			monitored-battery = <&battery>;
+			power-supplies = <&mains>;
+		};
 
 		/* Wolfson Microelectronics WM8903 audio codec */
 		wm8903: audio-codec@1a {
@@ -2594,6 +2604,14 @@
 		default-brightness-level = <15>;
 	};
 
+	battery: battery-cell {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion-polymer";
+		charge-full-design-microamp-hours = <3050000>;
+		energy-full-design-microwatt-hours = <23000000>;
+		operating-range-celsius = <0 45>;
+	};
+
 	/* PMIC has a built-in 32KHz oscillator which is used by PMC */
 	clk32k_in: clock-32k {
 		compatible = "fixed-clock";
@@ -2626,7 +2644,7 @@
 	};
 
 	display-panel {
-		compatible = "panel-lvds";
+		compatible = "hannstar,hsd101pww2", "panel-lvds";
 
 		width-mm = <217>;
 		height-mm = <136>;

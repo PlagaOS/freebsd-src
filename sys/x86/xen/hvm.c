@@ -47,6 +47,7 @@
 #include <machine/cpu.h>
 #include <machine/md_var.h>
 #include <machine/metadata.h>
+#include <machine/pc/bios.h>
 #include <machine/smp.h>
 
 #include <x86/apicreg.h>
@@ -212,15 +213,6 @@ fixup_console(void)
 		struct vbe_fb vbe;
 	} *fb = NULL;
 	int size;
-	caddr_t kmdp;
-
-	kmdp = preload_search_by_type("elf kernel");
-	if (kmdp == NULL)
-		kmdp = preload_search_by_type("elf64 kernel");
-	if (kmdp == NULL) {
-		xc_printf("Unable to find kernel metadata\n");
-		return;
-	}
 
 	size = HYPERVISOR_platform_op(&op);
 	if (size < 0) {
@@ -230,7 +222,7 @@ fixup_console(void)
 
 	switch (console->video_type) {
 	case XEN_VGATYPE_VESA_LFB:
-		fb = (__typeof__ (fb))preload_search_info(kmdp,
+		fb = (__typeof__ (fb))preload_search_info(preload_kmdp,
 		    MODINFO_METADATA | MODINFOMD_VBE_FB);
 
 		if (fb == NULL) {
@@ -246,7 +238,7 @@ fixup_console(void)
 		/* FALLTHROUGH */
 	case XEN_VGATYPE_EFI_LFB:
 		if (fb == NULL) {
-			fb = (__typeof__ (fb))preload_search_info(kmdp,
+			fb = (__typeof__ (fb))preload_search_info(preload_kmdp,
 			    MODINFO_METADATA | MODINFOMD_EFI_FB);
 			if (fb == NULL) {
 				xc_printf("No EFI FB in kernel metadata\n");
@@ -547,4 +539,53 @@ xen_has_iommu_maps(void)
 	cpuid_count(hv_base + 4, 0, regs);
 
 	return (regs[0] & XEN_HVM_CPUID_IOMMU_MAPPINGS);
+}
+
+int
+xen_arch_init_physmem(device_t dev, struct rman *mem)
+{
+	static struct bios_smap smap[128];
+	struct xen_memory_map memmap = {
+		.nr_entries = nitems(smap),
+	};
+	unsigned int i;
+	int error;
+
+	set_xen_guest_handle(memmap.buffer, smap);
+	error = HYPERVISOR_memory_op(XENMEM_memory_map, &memmap);
+	if (error != 0)
+		return (0);
+
+	/*
+	 * Fill with UNUSABLE regions, as it's always fine to use those for
+	 * foreign mappings, they will never be populated.
+	 */
+	for (i = 0; i < memmap.nr_entries; i++) {
+		const vm_paddr_t max_phys = cpu_getmaxphyaddr();
+		vm_paddr_t start, end;
+
+		if (smap[i].type != SMAP_TYPE_ACPI_ERROR)
+			continue;
+
+		start = round_page(smap[i].base);
+		/* In 32bit mode we possibly need to truncate the addresses. */
+		end = MIN(trunc_page(smap[i].base + smap[i].length) - 1,
+		    max_phys);
+
+		if (start >= end)
+			continue;
+
+		if (bootverbose != 0)
+			device_printf(dev,
+			    "scratch mapping region @ [%016jx, %016jx]\n",
+			    start, end);
+
+		error = rman_manage_region(mem, start, end);
+		if (error != 0)
+			device_printf(dev,
+			    "unable to add scratch region [%016jx, %016jx]: %d\n",
+			    start, end, error);
+	}
+
+	return (0);
 }

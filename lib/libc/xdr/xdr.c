@@ -84,12 +84,10 @@ xdr_free(xdrproc_t proc, void *objp)
  * XDR nothing
  */
 bool_t
-xdr_void(void)
+xdr_void(XDR *xdrs __unused, void *ptr __unused)
 {
-
 	return (TRUE);
 }
-
 
 /*
  * XDR integers
@@ -621,7 +619,7 @@ xdr_netobj(XDR *xdrs, struct netobj *np)
 }
 
 /*
- * XDR a descriminated union
+ * XDR a discriminated union
  * Support routine for discriminated unions.
  * You create an array of xdrdiscrim structures, terminated with
  * an entry with a null procedure pointer.  The routine gets
@@ -698,6 +696,13 @@ xdr_string(XDR *xdrs, char **cpp, u_int maxsize)
 		if (sp == NULL) {
 			return(TRUE);	/* already free */
 		}
+		/*
+		 * XXX: buggy software may call this without a third
+		 * argument via xdr_free().  Ignore maxsize since it may
+		 * be invalid.  Otherwise, if it's very small, we might
+		 * fail to free the string.
+		 */
+		maxsize = RPC_MAXDATASIZE;
 		/* FALLTHROUGH */
 	case XDR_ENCODE:
 		size = strlen(sp);

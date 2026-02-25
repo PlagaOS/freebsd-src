@@ -894,6 +894,8 @@ main(int argc, char *argv[])
 			as_path = 0;
 		}
 	}
+	if (as_path)
+	        signal(SIGPIPE, SIG_IGN);
 
 	/*
 	 * Message to users
@@ -1008,6 +1010,10 @@ main(int argc, char *argv[])
 							    rcvhlim <= 1)
 								printf(" !");
 							++got_there;
+							break;
+						default:
+							++unreachable;
+							printf(" !<%d>", code & 0xff);
 							break;
 						}
 					} else if (type == ICMP6_PARAM_PROB &&
@@ -1213,7 +1219,7 @@ send_probe(int seq, u_long hops)
 		tcp->th_seq = (tcp->th_sport << 16) | tcp->th_dport;
 		tcp->th_ack = 0;
 		tcp->th_off = 5;
-		tcp->th_flags = TH_SYN;
+		__tcp_set_flags(tcp, TH_SYN);
 		tcp->th_sum = 0;
 		tcp->th_sum = tcp_chksum(&Src, &Dst, outpacket, datalen);
 		break;
@@ -1573,13 +1579,30 @@ void
 print(struct msghdr *mhdr, int cc)
 {
 	struct sockaddr_in6 *from = (struct sockaddr_in6 *)mhdr->msg_name;
+	int as, status;
 	char hbuf[NI_MAXHOST];
 
 	if (cap_getnameinfo(capdns, (struct sockaddr *)from, from->sin6_len,
 	    hbuf, sizeof(hbuf), NULL, 0, NI_NUMERICHOST) != 0)
 		strlcpy(hbuf, "invalid", sizeof(hbuf));
-	if (as_path)
-		printf(" [AS%u]", as_lookup(asn, hbuf, AF_INET6));
+	while (as_path) {
+		as = as_lookup(asn, hbuf, AF_INET6, &status);
+		if (status) {
+			as_shutdown(asn);
+			asn = as_setup(as_server);
+			if (asn == NULL) {
+				fprintf(stderr, "traceroute6: as_setup failed, AS# lookups"
+						" disabled\n");
+				(void)fflush(stderr);
+				as_path = 0;
+				break;
+			}
+			else
+				continue;
+		}
+		printf(" [AS%u]", as);
+		break;
+	}
 	if (nflag)
 		printf(" %s", hbuf);
 	else

@@ -22,7 +22,7 @@
 .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 .\" SUCH DAMAGE.
 .\"
-.Dd March 26, 2023
+.Dd January 24, 2026
 .Dt KQUEUE 2
 .Os
 .Sh NAME
@@ -37,6 +37,8 @@
 .Fn kqueue "void"
 .Ft int
 .Fn kqueuex "u_int flags"
+.Ft int
+.Fn kqueue1 "int flags"
 .Ft int
 .Fo kevent
 .Fa "int kq"
@@ -92,26 +94,62 @@ which will allow sharing of the kqueue between two processes.
 The
 .Fn kqueuex
 system call also creates a new kernel event queue, and additionally takes
-the
+a
 .Fa flags
 argument, which is a bitwise-inclusive OR of the following flags:
-.Bl -tag -width "KQUEUE_CLOEXEC"
-.It Fa KQUEUE_CLOEXEC
+.Bl -tag -width "KQUEUE_CPONFORK"
+.It Dv KQUEUE_CLOEXEC
+The returned file descriptor is automatically closed on
+.Xr execve 2
+.It Dv KQUEUE_CPONFORK
+When this flag is set, the created kqueue is copied into
+the child process on
+.Xr fork 2
+calls.
+The kqueue descriptor index of the new kqueue will be inherited by the child,
+that is, the numeric value of the descriptor will remain the same.
+.Pp
+Copying is deep, that is, each registered event in the original kqueue is
+copied (and not shared) into the new kqueue.
+This is contrary to how other descriptor types are handled upon
+.Xr fork 2 ,
+where the copied file descriptor references the same file object
+as the source descriptor (shallow copy).
+.Pp
+By default, in other words, when the flag is not set, kqueues from
+the parent are not copied on fork to the child process.
+The corresponding file descriptor indeces are unused in the child.
+.Pp
+Registered events that reference file descriptors which are not
+duplicated on fork, are not copied into the new kqueue.
+For instance, if the event references a file descriptor opened with the
+.Dv O_CLOEXEC
+flag set, it is not copied.
+Similarly, if event references a kqueue opened without the
+.Dv KQUEUE_CPONFORK
+flag, the event is not copied.
+.El
+.Pp
+The
+.Fn kqueue
+system call is equivalent to calling
+.Fn kqueuex
+with
+.Fa flags
+set to 0.
+.Pp
+The
+.Fn kqueue1
+function exists for compatibility with
+.Nx .
+The
+.Fa flags
+argument accepts zero or more of the following values:
+.Bl -tag -width O_CLOEXEC
+.It Dv O_CLOEXEC
 The returned file descriptor is automatically closed on
 .Xr execve 2
 .El
-The
-.Ql fd = kqueue()
-call is equivalent to
-.Ql fd = kqueuex(0) .
-.Pp
-For compatibility with
-.Nx ,
-the
-.Fn kqueue1
-function is provided, which accepts the
-.Dv O_CLOEXEC
-flag with the expected semantic.
 .Pp
 The
 .Fn kevent
@@ -211,24 +249,25 @@ Filter-specific data value.
 Opaque user-defined value passed through the kernel unchanged.
 .It Fa ext
 Extended data passed to and from kernel.
-The
+The meaning of the
 .Fa ext[0]
 and
 .Fa ext[1]
-members use is defined by the filter.
-If the filter does not use them, the members are copied unchanged.
+members is defined by the filter.
+If a filter does not use them,
+these members are passed through the kernel unchanged.
 The
 .Fa ext[2]
 and
 .Fa ext[3]
-members are always passed through the kernel as-is,
-making additional context available to application.
+members are always passed through the kernel unchanged,
+providing additional user-defined values.
 .El
 .Pp
 The
 .Va flags
 field can contain the following values:
-.Bl -tag -width EV_DISPATCH
+.Bl -tag -width EV_KEEPUDATA
 .It Dv EV_ADD
 Adds the event to the kqueue.
 Re-adding an existing event
@@ -270,12 +309,12 @@ to hold the
 .Dv EV_ERROR
 event, then subsequent changes will not get processed.
 .It Dv EV_ONESHOT
-Causes the event to return only the first occurrence of the filter
+Return only the first occurrence of the filter
 being triggered.
 After the user retrieves the event from the kqueue,
 it is deleted.
 .It Dv EV_CLEAR
-After the event is retrieved by the user, its state is reset.
+Reset the state of the event after it is retrieved by the user.
 This is useful for filters which report state transitions
 instead of the current state.
 Note that some filters may automatically
@@ -287,18 +326,16 @@ See
 .Sx RETURN VALUES
 below.
 .It Dv EV_KEEPUDATA
-Causes
-.Fn kevent
-to leave unchanged any
+Preserve the
 .Fa udata
 associated with an existing event.
 This allows other aspects of the event to be modified without requiring the
 caller to know the
 .Fa udata
-value presently associated.
+value previously registered with the event.
 This is especially useful with
 .Dv NOTE_TRIGGER
-or flags like
+or
 .Dv EV_ENABLE .
 This flag may not be used with
 .Dv EV_ADD .
@@ -583,6 +620,64 @@ returns the number of times the signal has occurred since the last call to
 This filter automatically sets the
 .Dv EV_CLEAR
 flag internally.
+.It Dv EVFILT_JAIL
+Takes the jail ID to monitor as the identifier and the events to watch for
+in
+.Va fflags ,
+and returns when the jail performs one or more of the requested events.
+If a process can normally see a jail, it can attach an event to it.
+An identifier of zero will watch the process's own jail.
+The events to monitor are:
+.Bl -tag -width "Dv NOTE_JAIL_ATTACH"
+.It Dv NOTE_JAIL_SET
+The jail has been changed via
+.Xr jail_set 2 .
+.It Dv NOTE_JAIL_ATTACH
+A process has attached to the jail via
+.Xr jail_attach 2
+or a similar call.
+The process ID will be stored in
+.Va data .
+If more than one process has attached since the last call to
+.Fn kevent ,
+.Va data
+will be zero.
+.It Dv NOTE_JAIL_REMOVE
+The jail has been removed.
+.It Dv NOTE_JAIL_CHILD
+A child of the watched jail has been created.
+Its jail ID will be stored in
+.Va data .
+If more than one jail has been created since the last call to
+.Fn kevent ,
+.Va data
+will be zero.
+.El
+.Pp
+On return,
+.Va fflags
+contains the events which triggered the filter.
+It will also contain
+.Dv NOTE_JAIL_MULTI
+if more than one
+.Dv NOTE_JAIL_ATTACH
+or
+.Dv NOTE_JAIL_CHILD
+event has been received since the last call to
+.Fn kevent .
+.It Dv EVFILT_JAILDESC
+Takes a jail descriptor returned by
+.Xr jail_set 2
+or
+.Xr jail_get 2
+as the identifier and the events to watch for in
+.Va fflags ,
+and returns when the jail performs one or more of the requested events.
+The events to monitor and the resulting
+.Va fflags
+are the same as those listed in
+.Dv EVFILT_JAIL ,
+above.
 .It Dv EVFILT_TIMER
 Establishes an arbitrary timer identified by
 .Va ident .
@@ -872,10 +967,17 @@ and
 .Fn kevent
 system calls first appeared in
 .Fx 4.1 .
+The
+.Fn kqueuex
+system call
+and
+.Fn kqueue1
+function first appeared in
+.Fx 14.0 .
 .Sh AUTHORS
 The
-.Fn kqueue
-system and this manual page were written by
+.Em kqueue
+subsystem and this manual page were written by
 .An Jonathan Lemon Aq Mt jlemon@FreeBSD.org .
 .Sh BUGS
 .Pp

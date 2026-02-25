@@ -27,8 +27,11 @@
 #ifndef _LIBSECUREBOOT_H_
 #define _LIBSECUREBOOT_H_
 
+#undef MIN	/* Conflicts with EDK2 */
+#undef MAX
 #include <sys/param.h>
 #ifdef _STANDALONE
+#define _DEBUG_LEVEL_VAR DebugVe
 #include <stand.h>
 #else
 #include <sys/types.h>

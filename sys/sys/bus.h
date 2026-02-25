@@ -78,7 +78,7 @@ typedef enum device_property_type {
  * The strings are placed one after the other, separated by NUL characters.
  * Fields should be added after the last one and order maintained for compatibility
  */
-#define BUS_USER_BUFFER		(3*1024)
+#define BUS_USER_BUFFER		(3 * 1024)
 struct u_device {
 	uintptr_t	dv_handle;
 	uintptr_t	dv_parent;
@@ -159,6 +159,7 @@ struct devreq {
 /* Flags for DEV_RESET */
 #define	DEVF_RESET_DETACH	0x0000001	/* Detach drivers vs suspend
 						   device */
+#define DEVICE_UNIT_ANY		(-1)
 
 #ifdef _KERNEL
 
@@ -246,8 +247,8 @@ typedef struct devclass		*devclass_t;
  * and may use regular mutexes.  However, it is prohibited from
  * sleeping on a sleep queue.
  */
-typedef int driver_filter_t(void*);
-typedef void driver_intr_t(void*);
+typedef int driver_filter_t(void *);
+typedef void driver_intr_t(void *);
 
 /**
  * @brief Interrupt type bits.
@@ -276,6 +277,7 @@ enum intr_type {
 	INTR_EXCL = 256,		/* exclusive interrupt */
 	INTR_MPSAFE = 512,		/* this interrupt is SMP safe */
 	INTR_ENTROPY = 1024,		/* this interrupt provides entropy */
+	INTR_SLEEPABLE = 2048,		/* this interrupt handler can sleep */
 	INTR_MD1 = 4096,		/* flag reserved for MD use */
 	INTR_MD2 = 8192,		/* flag reserved for MD use */
 	INTR_MD3 = 16384,		/* flag reserved for MD use */
@@ -296,6 +298,21 @@ enum intr_polarity {
 };
 
 /**
+ * Bus drivers may maintain a set of bus-specific instance variables
+ * for each child device.  The BUS_READ_IVAR/BUS_WRITE_IVAR API can be
+ * used to access these variables using an index value.  Some index
+ * values are private to a single bus and should be defined in the
+ * private range.  Other index values are shared by multiple busses
+ * and must have the same meaning in all bus drivers.
+ */
+
+#define	BUS_IVARS_PRIVATE	0x0	/* private variables */
+#define	BUS_IVARS_ACPI		0x100
+#define	BUS_IVARS_GIC		0x200
+#define	BUS_IVARS_GPIOBUS	0x300
+#define	BUS_IVARS_SUPERIO	0x400
+
+/**
  * CPU sets supported by bus_get_cpus().  Note that not all sets may be
  * supported for a given device.  If a request is not supported by a
  * device (or its parents), then bus_get_cpus() will fail with EINVAL.
@@ -303,18 +320,6 @@ enum intr_polarity {
 enum cpu_sets {
 	LOCAL_CPUS = 0,
 	INTR_CPUS
-};
-
-typedef int (*devop_t)(void);
-
-/**
- * @brief This structure is deprecated.
- *
- * Use the kobj(9) macro DEFINE_CLASS to
- * declare classes which implement device drivers.
- */
-struct driver {
-	KOBJ_CLASS_FIELDS;
 };
 
 struct resource;
@@ -391,7 +396,7 @@ void	resource_list_delete(struct resource_list *rl,
 struct resource *
 	resource_list_alloc(struct resource_list *rl,
 			    device_t bus, device_t child,
-			    int type, int *rid,
+			    int type, int rid,
 			    rman_res_t start, rman_res_t end,
 			    rman_res_t count, u_int flags);
 int	resource_list_release(struct resource_list *rl,
@@ -403,7 +408,7 @@ int	resource_list_release_active(struct resource_list *rl,
 struct resource *
 	resource_list_reserve(struct resource_list *rl,
 			      device_t bus, device_t child,
-			      int type, int *rid,
+			      int type, int rid,
 			      rman_res_t start, rman_res_t end,
 			      rman_res_t count, u_int flags);
 int	resource_list_unreserve(struct resource_list *rl,
@@ -437,11 +442,12 @@ int	bus_generic_adjust_resource(device_t bus, device_t child,
 				    rman_res_t end);
 struct resource *
 	bus_generic_alloc_resource(device_t bus, device_t child, int type,
-				   int *rid, rman_res_t start, rman_res_t end,
+				   int rid, rman_res_t start, rman_res_t end,
 				   rman_res_t count, u_int flags);
 int	bus_generic_translate_resource(device_t dev, int type, rman_res_t start,
 			      rman_res_t *newstart);
-int	bus_generic_attach(device_t dev);
+int	bus_generic_attach(device_t dev)
+	__deprecated1("Use bus_attach_children instead");
 int	bus_generic_bind_intr(device_t dev, device_t child,
 			      struct resource *irq, int cpu);
 int	bus_generic_child_location(device_t dev, device_t child, struct sbuf *sb);
@@ -466,8 +472,6 @@ int	bus_generic_get_domain(device_t dev, device_t child, int *domain);
 ssize_t	bus_generic_get_property(device_t dev, device_t child,
 				 const char *propname, void *propvalue,
 				 size_t size, device_property_type_t type);
-struct resource_list *
-	bus_generic_get_resource_list(device_t, device_t);
 int	bus_generic_map_resource(device_t dev, device_t child,
 				 struct resource *r,
 				 struct resource_map_request *args,
@@ -477,7 +481,8 @@ int	bus_print_child_header(device_t dev, device_t child);
 int	bus_print_child_domain(device_t dev, device_t child);
 int	bus_print_child_footer(device_t dev, device_t child);
 int	bus_generic_print_child(device_t dev, device_t child);
-int	bus_generic_probe(device_t dev);
+int	bus_generic_probe(device_t dev)
+	__deprecated1("Use bus_identify_children instead");
 int	bus_generic_read_ivar(device_t dev, device_t child, int which,
 			      uintptr_t *result);
 int	bus_generic_release_resource(device_t bus, device_t child,
@@ -486,21 +491,21 @@ int	bus_generic_resume(device_t dev);
 int	bus_generic_resume_child(device_t dev, device_t child);
 int	bus_generic_setup_intr(device_t dev, device_t child,
 			       struct resource *irq, int flags,
-			       driver_filter_t *filter, driver_intr_t *intr, 
+			       driver_filter_t *filter, driver_intr_t *intr,
 			       void *arg, void **cookiep);
 
 struct resource *
-	bus_generic_rl_alloc_resource (device_t, device_t, int, int *,
-				       rman_res_t, rman_res_t, rman_res_t, u_int);
-void	bus_generic_rl_delete_resource (device_t, device_t, int, int);
-int	bus_generic_rl_get_resource (device_t, device_t, int, int, rman_res_t *,
-				     rman_res_t *);
-int	bus_generic_rl_set_resource (device_t, device_t, int, int, rman_res_t,
-				     rman_res_t);
-int	bus_generic_rl_release_resource (device_t, device_t, struct resource *);
+	bus_generic_rl_alloc_resource(device_t, device_t, int, int,
+				      rman_res_t, rman_res_t, rman_res_t, u_int);
+void	bus_generic_rl_delete_resource(device_t, device_t, int, int);
+int	bus_generic_rl_get_resource(device_t, device_t, int, int, rman_res_t *,
+				    rman_res_t *);
+int	bus_generic_rl_set_resource(device_t, device_t, int, int, rman_res_t,
+				    rman_res_t);
+int	bus_generic_rl_release_resource(device_t, device_t, struct resource *);
 struct resource *
 	bus_generic_rman_alloc_resource(device_t dev, device_t child, int type,
-					int *rid, rman_res_t start,
+					int rid, rman_res_t start,
 					rman_res_t end, rman_res_t count,
 					u_int flags);
 int	bus_generic_rman_adjust_resource(device_t dev, device_t child,
@@ -554,7 +559,7 @@ int	bus_adjust_resource(device_t child, struct resource *r,
 			    rman_res_t start, rman_res_t end);
 int	bus_translate_resource(device_t child, int type, rman_res_t start,
 			       rman_res_t *newstart);
-struct	resource *bus_alloc_resource(device_t dev, int type, int *rid,
+struct	resource *bus_alloc_resource(device_t dev, int type, int rid,
 				     rman_res_t start, rman_res_t end,
 				     rman_res_t count, u_int flags);
 int	bus_activate_resource(device_t dev, struct resource *r);
@@ -572,7 +577,7 @@ int	bus_get_domain(device_t dev, int *domain);
 int	bus_release_resource(device_t dev, struct resource *r);
 int	bus_free_resource(device_t dev, int type, struct resource *r);
 int	bus_setup_intr(device_t dev, struct resource *r, int flags,
-		       driver_filter_t filter, driver_intr_t handler, 
+		       driver_filter_t filter, driver_intr_t handler,
 		       void *arg, void **cookiep);
 int	bus_teardown_intr(device_t dev, struct resource *r, void *cookie);
 int	bus_suspend_intr(device_t dev, struct resource *r);
@@ -590,21 +595,67 @@ void	bus_delete_resource(device_t dev, int type, int rid);
 int	bus_child_present(device_t child);
 int	bus_child_pnpinfo(device_t child, struct sbuf *sb);
 int	bus_child_location(device_t child, struct sbuf *sb);
+
+void	bus_attach_children(device_t dev);
+void	bus_delayed_attach_children(device_t bus);
+int	bus_detach_children(device_t dev);
 void	bus_enumerate_hinted_children(device_t bus);
-int	bus_delayed_attach_children(device_t bus);
+void	bus_identify_children(device_t dev);
 
 static __inline struct resource *
-bus_alloc_resource_any(device_t dev, int type, int *rid, u_int flags)
+bus_alloc_resource_any(device_t dev, int type, int rid, u_int flags)
 {
 	return (bus_alloc_resource(dev, type, rid, 0, ~0, 1, flags));
 }
 
 static __inline struct resource *
-bus_alloc_resource_anywhere(device_t dev, int type, int *rid,
+bus_alloc_resource_anywhere(device_t dev, int type, int rid,
     rman_res_t count, u_int flags)
 {
 	return (bus_alloc_resource(dev, type, rid, 0, ~0, count, flags));
 }
+
+/* Compat shims for bus_alloc_resource API. */
+static __inline struct resource *
+bus_alloc_resource_var(device_t dev, int type, int *rid, rman_res_t start,
+    rman_res_t end, rman_res_t count, u_int flags)
+{
+	return (bus_alloc_resource(dev, type, *rid, start, end, count, flags));
+}
+
+static __inline struct resource *
+bus_alloc_resource_any_var(device_t dev, int type, int *rid, u_int flags)
+{
+	return (bus_alloc_resource(dev, type, *rid, 0, ~0, 1, flags));
+}
+
+static __inline struct resource *
+bus_alloc_resource_anywhere_var(device_t dev, int type, int *rid,
+    rman_res_t count, u_int flags)
+{
+	return (bus_alloc_resource(dev, type, *rid, 0, ~0, count, flags));
+}
+
+#define	bus_alloc_resource(dev, type, rid, start, end, count, flags)	\
+	_Generic((rid),							\
+	    int *: bus_alloc_resource_var,				\
+	    unsigned int *: bus_alloc_resource_var,			\
+	    default: bus_alloc_resource)				\
+	((dev), (type), (rid), (start), (end), (count), (flags))
+
+#define	bus_alloc_resource_any(dev, type, rid, flags)			\
+	_Generic((rid),							\
+	    int *: bus_alloc_resource_any_var,				\
+	    unsigned int *: bus_alloc_resource_any_var,			\
+	    default: bus_alloc_resource_any)				\
+	((dev), (type), (rid), (flags))
+
+#define	bus_alloc_resource_anywhere(dev, type, rid, count, flags)	\
+	_Generic((rid),							\
+	    int *: bus_alloc_resource_anywhere_var,			\
+	    unsigned int *: bus_alloc_resource_anywhere_var,		\
+	    default: bus_alloc_resource_anywhere)			\
+	((dev), (type), (rid), (count), (flags))
 
 /* Compat shims for simpler bus resource API. */
 int	bus_adjust_resource_old(device_t child, int type, struct resource *r,
@@ -677,6 +728,7 @@ device_state_t	device_get_state(device_t dev);
 int	device_get_unit(device_t dev);
 struct sysctl_ctx_list *device_get_sysctl_ctx(device_t dev);
 struct sysctl_oid *device_get_sysctl_tree(device_t dev);
+bool	device_has_children(device_t dev);
 int	device_has_quiet_children(device_t dev);
 int	device_is_alive(device_t dev);	/* did probe succeed? */
 int	device_is_attached(device_t dev);	/* did attach succeed? */
@@ -693,9 +745,9 @@ int	device_probe_child(device_t bus, device_t dev);
 int	device_quiesce(device_t dev);
 void	device_quiet(device_t dev);
 void	device_quiet_children(device_t dev);
-void	device_set_desc(device_t dev, const char* desc);
-void	device_set_descf(device_t dev, const char* fmt, ...) __printflike(2, 3);
-void	device_set_desc_copy(device_t dev, const char* desc);
+void	device_set_desc(device_t dev, const char *desc);
+void	device_set_descf(device_t dev, const char *fmt, ...) __printflike(2, 3);
+void	device_set_desc_copy(device_t dev, const char *desc);
 int	device_set_devclass(device_t dev, const char *classname);
 int	device_set_devclass_fixed(device_t dev, const char *classname);
 bool	device_is_devclass_fixed(device_t dev);
@@ -710,7 +762,7 @@ void	device_unbusy(device_t dev);
 void	device_verbose(device_t dev);
 ssize_t	device_get_property(device_t dev, const char *prop, void *val,
     size_t sz, device_property_type_t type);
-bool device_has_property(device_t dev, const char *prop);
+bool	device_has_property(device_t dev, const char *prop);
 
 /*
  * Access functions for devclass.
@@ -817,18 +869,16 @@ void	bus_data_generation_update(void);
 #define BUS_LOCATOR_UEFI	"UEFI"
 #define BUS_LOCATOR_OFW		"OFW"
 
-extern int bus_current_pass;
-
-void	bus_set_pass(int pass);
+int	bus_get_pass(void);
 
 /**
  * Routines to lock / unlock the newbus lock.
  * Must be taken out to interact with newbus.
  */
-void bus_topo_lock(void);
-void bus_topo_unlock(void);
+void	bus_topo_lock(void);
+void	bus_topo_unlock(void);
 struct mtx * bus_topo_mtx(void);
-void bus_topo_assert(void);
+void	bus_topo_assert(void);
 
 /**
  * Shorthands for constructing method tables.
@@ -858,24 +908,25 @@ struct driver_module_data {
 	int		dmd_pass;
 };
 
-#define	EARLY_DRIVER_MODULE_ORDERED(name, busname, driver, evh, arg,	 \
+#define	EARLY_DRIVER_MODULE_ORDERED(_name, busname, driver, evh, arg,	\
     order, pass)							\
 									\
-static struct driver_module_data name##_##busname##_driver_mod = {	\
-	evh, arg,							\
-	#busname,							\
-	(kobj_class_t) &driver,						\
-	NULL,								\
-	pass								\
+static struct driver_module_data _name##_##busname##_driver_mod = {	\
+	.dmd_chainevh = evh,						\
+	.dmd_chainarg = arg,						\
+	.dmd_busname =  #busname,					\
+	.dmd_driver =   (kobj_class_t)&driver,				\
+	.dmd_devclass = NULL,						\
+	.dmd_pass =     pass,						\
 };									\
 									\
-static moduledata_t name##_##busname##_mod = {				\
-	#busname "/" #name,						\
-	driver_module_handler,						\
-	&name##_##busname##_driver_mod					\
+static moduledata_t _name##_##busname##_mod = {				\
+	.name =	  #busname "/" #_name ,					\
+	.evhand = driver_module_handler,				\
+	.priv =	  &_name##_##busname##_driver_mod,			\
 };									\
-DECLARE_MODULE(name##_##busname, name##_##busname##_mod,		\
-	       SI_SUB_DRIVERS, order)
+DECLARE_MODULE(_name##_##busname, _name##_##busname##_mod,		\
+   SI_SUB_DRIVERS, order)
 
 #define	EARLY_DRIVER_MODULE(name, busname, driver, evh, arg, pass)	\
 	EARLY_DRIVER_MODULE_ORDERED(name, busname, driver, evh, arg,	\
@@ -892,21 +943,21 @@ DECLARE_MODULE(name##_##busname, name##_##busname##_mod,		\
 /**
  * Generic ivar accessor generation macros for bus drivers
  */
-#define __BUS_ACCESSOR(varp, var, ivarp, ivar, type)			\
+#define __BUS_ACCESSOR_COMMON(varp, var, ivarp, ivar, type)		\
 									\
-static __inline type varp ## _get_ ## var(device_t dev)			\
+static __inline bool							\
+varp ## _has_ ## var(device_t dev)					\
 {									\
-	uintptr_t v;							\
-	int e __diagused;						\
+	uintptr_t v = 0;						\
+	int e;								\
+									\
 	e = BUS_READ_IVAR(device_get_parent(dev), dev,			\
 	    ivarp ## _IVAR_ ## ivar, &v);				\
-	KASSERT(e == 0, ("%s failed for %s on bus %s, error = %d",	\
-	    __func__, device_get_nameunit(dev),				\
-	    device_get_nameunit(device_get_parent(dev)), e));		\
-	return ((type) v);						\
+	return (e == 0);						\
 }									\
 									\
-static __inline void varp ## _set_ ## var(device_t dev, type t)		\
+static __inline void							\
+varp ## _set_ ## var(device_t dev, type t)				\
 {									\
 	uintptr_t v = (uintptr_t) t;					\
 	int e __diagused;						\
@@ -917,12 +968,51 @@ static __inline void varp ## _set_ ## var(device_t dev, type t)		\
 	    device_get_nameunit(device_get_parent(dev)), e));		\
 }
 
+#define __BUS_ACCESSOR(varp, var, ivarp, ivar, type)			\
+	__BUS_ACCESSOR_COMMON(varp, var, ivarp, ivar, type)		\
+									\
+static __inline type							\
+varp ## _get_ ## var(device_t dev)					\
+{									\
+	uintptr_t v = 0;						\
+	int e __diagused;						\
+									\
+	e = BUS_READ_IVAR(device_get_parent(dev), dev,			\
+	    ivarp ## _IVAR_ ## ivar, &v);				\
+	KASSERT(e == 0, ("%s failed for %s on bus %s, error = %d",	\
+	    __func__, device_get_nameunit(dev),				\
+	    device_get_nameunit(device_get_parent(dev)), e));		\
+	return ((type) v);						\
+}
+
+#define __BUS_ACCESSOR_DEFAULT(varp, var, ivarp, ivar, type, default)	\
+	__BUS_ACCESSOR_COMMON(varp, var, ivarp, ivar, type)		\
+									\
+static __inline type							\
+varp ## _get_ ## var(device_t dev)					\
+{									\
+	uintptr_t v = 0;						\
+	int e;								\
+									\
+	e = BUS_READ_IVAR(device_get_parent(dev), dev,			\
+	    ivarp ## _IVAR_ ## ivar, &v);				\
+	return (e == 0 ? (type) v : (default));				\
+}
+
 struct device_location_cache;
 typedef struct device_location_cache device_location_cache_t;
 device_location_cache_t *dev_wired_cache_init(void);
-void dev_wired_cache_fini(device_location_cache_t *dcp);
-bool dev_wired_cache_match(device_location_cache_t *dcp, device_t dev, const char *at);
+void	dev_wired_cache_fini(device_location_cache_t *dcp);
+bool	dev_wired_cache_match(device_location_cache_t *dcp, device_t dev, const char *at);
 
+#define	DEV_PROP_NAME_IOMMU	"iommu-unit"
+typedef void (*device_prop_dtr_t)(device_t dev, const char *name, void *val,
+    void *dtr_ctx);
+int	device_set_prop(device_t dev, const char *name, void *val,
+    device_prop_dtr_t dtr, void *dtr_ctx);
+int	device_get_prop(device_t dev, const char *name, void **valp);
+int	device_clear_prop(device_t dev, const char *name);
+void	device_clear_prop_alldev(const char *name);
 
 /**
  * Shorthand macros, taking resource argument

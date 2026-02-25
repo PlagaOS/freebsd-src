@@ -227,7 +227,7 @@ memac_mdio_acpi_probe_child(ACPI_HANDLE h, device_t *dev, int level, void *arg)
 	if ((ad = malloc(sizeof(*ad), M_DEVBUF, M_NOWAIT | M_ZERO)) == NULL)
 		return (AE_OK);
 
-	child = device_add_child(ctx->dev, "memacphy_acpi", -1);
+	child = device_add_child(ctx->dev, "memacphy_acpi", DEVICE_UNIT_ANY);
 	if (child == NULL) {
 		free(ad, M_DEVBUF);
 		return (AE_OK);
@@ -262,8 +262,8 @@ memac_mdio_acpi_attach(device_t dev)
 	ACPI_SCAN_CHILDREN(device_get_parent(dev), dev, 1,
 	    memac_mdio_acpi_probe_child, &ctx);
 	if (ctx.countok > 0) {
-		bus_generic_probe(dev);
-		bus_generic_attach(dev);
+		bus_identify_children(dev);
+		bus_attach_children(dev);
 	}
 
 	return (0);

@@ -292,8 +292,10 @@ nfs_statfs(struct mount *mp, struct statfs *sbp)
 	int error = 0, attrflag, gotfsinfo = 0, ret;
 	struct nfsnode *np;
 	char *fakefh;
+	uint32_t clone_blksize;
 
 	td = curthread;
+	clone_blksize = 0;
 
 	error = vfs_busy(mp, MBF_NOWAIT);
 	if (error)
@@ -337,8 +339,8 @@ nfs_statfs(struct mount *mp, struct statfs *sbp)
 	} else
 		mtx_unlock(&nmp->nm_mtx);
 	if (!error)
-		error = nfsrpc_statfs(vp, &sb, &fs, NULL, td->td_ucred, td,
-		    &nfsva, &attrflag);
+		error = nfsrpc_statfs(vp, &sb, &fs, NULL, &clone_blksize,
+		    td->td_ucred, td, &nfsva, &attrflag);
 	if ((nmp->nm_privflag & NFSMNTP_FAKEROOTFH) != 0 &&
 	    error == NFSERR_WRONGSEC) {
 		/* Cannot get new stats, so return what is in mnt_stat. */
@@ -375,7 +377,7 @@ nfs_statfs(struct mount *mp, struct statfs *sbp)
 	if (!error) {
 	    mtx_lock(&nmp->nm_mtx);
 	    if (gotfsinfo || (nmp->nm_flag & NFSMNT_NFSV4))
-		nfscl_loadfsinfo(nmp, &fs);
+		nfscl_loadfsinfo(nmp, &fs, clone_blksize);
 	    nfscl_loadsbinfo(nmp, &sb, sbp);
 	    sbp->f_iosize = newnfs_iosize(nmp);
 	    mtx_unlock(&nmp->nm_mtx);
@@ -408,14 +410,14 @@ ncl_fsinfo(struct nfsmount *nmp, struct vnode *vp, struct ucred *cred,
 		if (attrflag)
 			(void) nfscl_loadattrcache(&vp, &nfsva, NULL, 0, 1);
 		mtx_lock(&nmp->nm_mtx);
-		nfscl_loadfsinfo(nmp, &fs);
+		nfscl_loadfsinfo(nmp, &fs, 0);
 		mtx_unlock(&nmp->nm_mtx);
 	}
 	return (error);
 }
 
 /*
- * Mount a remote root fs via. nfs. This depends on the info in the
+ * Mount a remote root fs via nfs. This depends on the info in the
  * nfs_diskless structure that has been filled in properly by some primary
  * bootstrap.
  * It goes something like this:
@@ -925,7 +927,7 @@ nfs_mount(struct mount *mp)
 	struct vnode *vp;
 	struct thread *td;
 	char *hst;
-	u_char nfh[NFSX_FHMAX], krbname[100], dirpath[100], srvkrbname[100];
+	u_char nfh[NFSX_FHMAX], krbname[100], *dirpath, srvkrbname[100];
 	char *cp, *opt, *name, *secname, *tlscertname;
 	int nametimeo = NFS_DEFAULT_NAMETIMEO;
 	int negnametimeo = NFS_DEFAULT_NEGNAMETIMEO;
@@ -941,6 +943,7 @@ nfs_mount(struct mount *mp)
 	newflag = 0;
 	tlscertname = NULL;
 	hst = malloc(MNAMELEN, M_TEMP, M_WAITOK);
+	dirpath = malloc(MNAMELEN, M_TEMP, M_WAITOK);
 	if (vfs_filteropt(mp->mnt_optnew, nfs_opts)) {
 		error = EINVAL;
 		goto out;
@@ -1327,7 +1330,7 @@ nfs_mount(struct mount *mp)
 			goto out;
 	} else if (nfs_mount_parse_from(mp->mnt_optnew,
 	    &args.hostname, (struct sockaddr_in **)&nam, dirpath,
-	    sizeof(dirpath), &dirlen) == 0) {
+	    MNAMELEN, &dirlen) == 0) {
 		has_nfs_from_opt = 1;
 		bcopy(args.hostname, hst, MNAMELEN);
 		hst[MNAMELEN - 1] = '\0';
@@ -1385,7 +1388,7 @@ nfs_mount(struct mount *mp)
 	if (has_nfs_from_opt == 0) {
 		if (vfs_getopt(mp->mnt_optnew,
 		    "dirpath", (void **)&name, NULL) == 0)
-			strlcpy(dirpath, name, sizeof (dirpath));
+			strlcpy(dirpath, name, MNAMELEN);
 		else
 			dirpath[0] = '\0';
 		dirlen = strlen(dirpath);
@@ -1470,6 +1473,7 @@ out:
 		MNT_IUNLOCK(mp);
 	}
 	free(hst, M_TEMP);
+	free(dirpath, M_TEMP);
 	return (error);
 }
 
@@ -1524,12 +1528,14 @@ mountnfs(struct nfs_args *argp, struct mount *mp, struct sockaddr *nam,
 #endif
 
 	NFSCL_DEBUG(3, "in mnt\n");
+	CURVNET_SET(CRED_TO_VNET(cred));
 	clp = NULL;
 	if (mp->mnt_flag & MNT_UPDATE) {
 		nmp = VFSTONFS(mp);
 		printf("%s: MNT_UPDATE is no longer handled here\n", __func__);
 		free(nam, M_SONAME);
 		free(tlscertname, M_NEWNFSMNT);
+		CURVNET_RESTORE();
 		return (0);
 	} else {
 		/* NFS-over-TLS requires that rpctls be functioning. */
@@ -1544,6 +1550,7 @@ mountnfs(struct nfs_args *argp, struct mount *mp, struct sockaddr *nam,
 			if (error != 0) {
 				free(nam, M_SONAME);
 				free(tlscertname, M_NEWNFSMNT);
+				CURVNET_RESTORE();
 				return (error);
 			}
 		}
@@ -1798,12 +1805,18 @@ mountnfs(struct nfs_args *argp, struct mount *mp, struct sockaddr *nam,
 		if (argp->flags & NFSMNT_NFSV3)
 			ncl_fsinfo(nmp, *vpp, cred, td);
 
-		/* Mark if the mount point supports NFSv4 ACLs. */
-		if ((argp->flags & NFSMNT_NFSV4) != 0 && nfsrv_useacl != 0 &&
-		    ret == 0 &&
-		    NFSISSET_ATTRBIT(&nfsva.na_suppattr, NFSATTRBIT_ACL)) {
+		/*
+		 * Mark if the mount point supports NFSv4 ACLs and
+		 * named attributes.
+		 */
+		if ((argp->flags & NFSMNT_NFSV4) != 0) {
 			MNT_ILOCK(mp);
-			mp->mnt_flag |= MNT_NFS4ACLS;
+			if (ret == 0 && nfsrv_useacl != 0 &&
+			    NFSISSET_ATTRBIT(&nfsva.na_suppattr,
+			    NFSATTRBIT_ACL))
+				mp->mnt_flag |= MNT_NFS4ACLS;
+			if (nmp->nm_minorvers > 0)
+				mp->mnt_flag |= MNT_NAMEDATTR;
 			MNT_IUNLOCK(mp);
 		}
 
@@ -1816,6 +1829,7 @@ mountnfs(struct nfs_args *argp, struct mount *mp, struct sockaddr *nam,
 		 */
 		NFSVOPUNLOCK(*vpp);
 		vfs_cache_root_set(mp, *vpp);
+		CURVNET_RESTORE();
 		return (0);
 	}
 	error = EIO;
@@ -1844,6 +1858,7 @@ bad:
 	free(nmp->nm_tlscertname, M_NEWNFSMNT);
 	free(nmp, M_NEWNFSMNT);
 	free(nam, M_SONAME);
+	CURVNET_RESTORE();
 	return (error);
 }
 

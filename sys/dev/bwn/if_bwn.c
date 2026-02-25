@@ -774,6 +774,7 @@ bwn_attach_post(struct bwn_softc *sc)
 		;
 
 	ic->ic_flags_ext |= IEEE80211_FEXT_SWBMISS;	/* s/w bmiss */
+	ic->ic_flags_ext |= IEEE80211_FEXT_SEQNO_OFFLOAD;
 
 	/* Determine the NVRAM variable containing our MAC address */
 	core_unit = bhnd_get_core_unit(sc->sc_dev);
@@ -999,6 +1000,7 @@ bwn_start(struct bwn_softc *sc)
 			continue;
 		}
 		wh = mtod(m, struct ieee80211_frame *);
+		ieee80211_output_seqno_assign(ni, -1, m);
 		if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
 			k = ieee80211_crypto_encap(ni, m);
 			if (k == NULL) {
@@ -2987,11 +2989,7 @@ bwn_dma_ringsetup(struct bwn_mac *mac, int controller_index,
 	return (dr);
 
 fail2:
-	if (dr->dr_txhdr_cache != NULL) {
-		contigfree(dr->dr_txhdr_cache,
-		    (dr->dr_numslots / BWN_TX_SLOTS_PER_FRAME) *
-		    BWN_MAXTXHDRSIZE, M_DEVBUF);
-	}
+	free(dr->dr_txhdr_cache, M_DEVBUF);
 fail1:
 	free(dr->dr_meta, M_DEVBUF);
 fail0:
@@ -3009,11 +3007,7 @@ bwn_dma_ringfree(struct bwn_dma_ring **dr)
 	bwn_dma_free_descbufs(*dr);
 	bwn_dma_free_ringmemory(*dr);
 
-	if ((*dr)->dr_txhdr_cache != NULL) {
-		contigfree((*dr)->dr_txhdr_cache,
-		    ((*dr)->dr_numslots / BWN_TX_SLOTS_PER_FRAME) *
-		    BWN_MAXTXHDRSIZE, M_DEVBUF);
-	}
+	free((*dr)->dr_txhdr_cache, M_DEVBUF);
 	free((*dr)->dr_meta, M_DEVBUF);
 	free(*dr, M_DEVBUF);
 
@@ -6402,7 +6396,7 @@ bwn_set_txhdr(struct bwn_mac *mac, struct ieee80211_node *ni,
 	uint8_t *prot_ptr;
 	unsigned int len;
 	uint32_t macctl = 0;
-	int rts_rate, rts_rate_fb, ismcast, isshort, rix, type;
+	int rts_rate, rts_rate_fb, ismcast, isshort, type;
 	uint16_t phyctl = 0;
 	uint8_t rate, rate_fb;
 	int fill_phy_ctl1 = 0;
@@ -6428,14 +6422,10 @@ bwn_set_txhdr(struct bwn_mac *mac, struct ieee80211_node *ni,
 	else if (tp->ucastrate != IEEE80211_FIXED_RATE_NONE)
 		rate = rate_fb = tp->ucastrate;
 	else {
-		rix = ieee80211_ratectl_rate(ni, NULL, 0);
-		rate = ni->ni_txrate;
-
-		if (rix > 0)
-			rate_fb = ni->ni_rates.rs_rates[rix - 1] &
-			    IEEE80211_RATE_VAL;
-		else
-			rate_fb = rate;
+		ieee80211_ratectl_rate(ni, NULL, 0);
+		rate = ieee80211_node_get_txrate_dot11rate(ni);
+		/* TODO: assign rate_fb the previous rate, if available */
+		rate_fb = rate;
 	}
 
 	sc->sc_tx_rate = rate;

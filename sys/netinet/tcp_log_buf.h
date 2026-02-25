@@ -60,14 +60,6 @@ struct tcp_log_verbose
 	uint8_t		_pad[4];
 } ALIGN_TCP_LOG;
 
-/* Internal RACK state variables. */
-struct tcp_log_rack
-{
-	uint32_t	tlr_rack_rtt;		/* rc_rack_rtt */
-	uint8_t		tlr_state;		/* Internal RACK state */
-	uint8_t		_pad[3];		/* Padding */
-};
-
 struct tcp_log_bbr {
 	uint64_t cur_del_rate;
 	uint64_t delRate;
@@ -126,7 +118,6 @@ struct tcp_log_sendfile {
  */
 union tcp_log_stackspecific
 {
-	struct tcp_log_rack u_rack;
 	struct tcp_log_bbr u_bbr;
 	struct tcp_log_sendfile u_sf;
 	struct tcp_log_raw u_raw;	/* "raw" log access */
@@ -185,7 +176,6 @@ struct tcp_log_buffer
 	uint8_t		_pad[3];	/* Padding */
 	/* Per-stack info */
 	union tcp_log_stackspecific tlb_stackinfo;
-#define	tlb_rack	tlb_stackinfo.u_rack
 
 	/* The packet */
 	uint32_t	tlb_len;	/* The packet's data length */
@@ -201,14 +191,14 @@ enum tcp_log_events {
 	TCP_LOG_OUT,		/* Transmit (without other event)    2 */
 	TCP_LOG_RTO,		/* Retransmit timeout                3 */
 	TCP_LOG_SB_WAKE,	/* Awaken socket buffer              4 */
-	TCP_LOG_BAD_RETRAN,	/* Detected bad retransmission       5 */
+	TCP_UNUSED_5,		/* Detected bad retransmission       5 */
 	TCP_LOG_PRR,		/* Doing PRR                         6 */
-	TCP_LOG_REORDER,	/* Detected reorder                  7 */
+	TCP_UNUSED_7,		/* Detected reorder                  7 */
 	TCP_LOG_HPTS,		/* Hpts sending a packet             8 */
 	BBR_LOG_BBRUPD,		/* We updated BBR info               9 */
 	BBR_LOG_BBRSND,		/* We did a slot calculation and sending is done 10 */
 	BBR_LOG_ACKCLEAR,	/* A ack clears all outstanding     11 */
-	BBR_LOG_INQUEUE,	/* The tcb had a packet input to it 12 */
+	TCP_UNUSED_12,		/* The tcb had a packet input to it 12 */
 	BBR_LOG_TIMERSTAR,	/* Start a timer                    13 */
 	BBR_LOG_TIMERCANC,	/* Cancel a timer                   14 */
 	BBR_LOG_ENTREC,		/* Entered recovery                 15 */
@@ -219,18 +209,18 @@ enum tcp_log_events {
 	BBR_LOG_BBRRTT,		/* BBR RTT is updated               20 */
 	BBR_LOG_JUSTRET,	/* We just returned out of output   21 */
 	BBR_LOG_STATE,		/* A BBR state change occurred      22 */
-	BBR_LOG_PKT_EPOCH,      /* A BBR packet epoch occurred      23 */
-	BBR_LOG_PERSIST,        /* BBR changed to/from a persists   24 */
-	TCP_LOG_FLOWEND,        /* End of a flow                    25 */
-	BBR_LOG_RTO,            /* BBR's timeout includes BBR info  26 */
-	BBR_LOG_DOSEG_DONE,     /* hpts do_segment completes        27 */
-	BBR_LOG_EXIT_GAIN,      /* hpts do_segment completes        28 */
-	BBR_LOG_THRESH_CALC,    /* Doing threshold calculation      29 */
+	BBR_LOG_PKT_EPOCH,	/* A BBR packet epoch occurred      23 */
+	BBR_LOG_PERSIST,	/* BBR changed to/from a persists   24 */
+	TCP_LOG_FLOWEND,	/* End of a flow                    25 */
+	BBR_LOG_RTO,		/* BBR's timeout includes BBR info  26 */
+	BBR_LOG_DOSEG_DONE,	/* hpts do_segment completes        27 */
+	BBR_LOG_EXIT_GAIN,	/* hpts do_segment completes        28 */
+	BBR_LOG_THRESH_CALC,	/* Doing threshold calculation      29 */
 	TCP_LOG_MAPCHG,		/* Map Changes to the sendmap       30 */
-	TCP_LOG_USERSEND, 	/* User level sends data            31 */
+	TCP_LOG_USERSEND,	/* User level sends data            31 */
 	BBR_RSM_CLEARED,	/* RSM cleared of ACK flags         32 */
-	BBR_LOG_STATE_TARGET, 	/* Log of target at state           33 */
-	BBR_LOG_TIME_EPOCH, 	/* A timed based Epoch occurred     34 */
+	BBR_LOG_STATE_TARGET,	/* Log of target at state           33 */
+	BBR_LOG_TIME_EPOCH,	/* A timed based Epoch occurred     34 */
 	BBR_LOG_TO_PROCESS,	/* A to was processed               35 */
 	BBR_LOG_BBRTSO,		/* TSO update                       36 */
 	BBR_LOG_HPTSDIAG,	/* Hpts diag insert                 37 */
@@ -245,7 +235,7 @@ enum tcp_log_events {
 	BBR_LOG_REDUCE,		/* old bbr log reduce for 4.1 and earlier 46*/
 	TCP_LOG_RTT,		/* A rtt (in useconds) is being sampled and applied to the srtt algo 47 */
 	BBR_LOG_SETTINGS_CHG,	/* Settings changed for loss response 48 */
-	BBR_LOG_SRTT_GAIN_EVENT, /* SRTT gaining -- now not used    49 */
+	TCP_UNUSED_49,		/* SRTT gaining -- now not used    49 */
 	TCP_LOG_REASS,		/* Reassembly buffer logging        50 */
 	TCP_HDWR_PACE_SIZE,	/*  TCP pacing size set (rl and rack uses this)  51 */
 	BBR_LOG_HDWR_PACE,	/* TCP Hardware pacing log          52 */
@@ -253,23 +243,23 @@ enum tcp_log_events {
 	TCP_LOG_CONNEND,	/* End of connection                54 */
 	TCP_LOG_LRO,		/* LRO entry                        55 */
 	TCP_SACK_FILTER_RES,	/* Results of SACK Filter           56 */
-	TCP_SAD_DETECT,		/* Sack Attack Detection            57 */
+	TCP_UNUSED_57,		/* Sack Attack Detection            57 */
 	TCP_TIMELY_WORK,	/* Logs regarding Timely CC tweaks  58 */
-	TCP_LOG_USER_EVENT,	/* User space event data            59 */
+	TCP_UNUSED_59,		/* User space event data            59 */
 	TCP_LOG_SENDFILE,	/* sendfile() logging for TCP connections 60 */
-	TCP_LOG_REQ_T,		/* logging of request tracking 61 */
-	TCP_LOG_ACCOUNTING,	/* Log of TCP Accounting data 62 */
-	TCP_LOG_FSB,		/* FSB information 63 */
+	TCP_LOG_REQ_T,		/* logging of request tracking      61 */
+	TCP_LOG_ACCOUNTING,	/* Log of TCP Accounting data       62 */
+	TCP_LOG_FSB,		/* FSB information                  63 */
 	RACK_DSACK_HANDLING,	/* Handling of DSACK in rack for reordering window 64 */
-	TCP_HYSTART,		/* TCP Hystart logging 65 */
-	TCP_CHG_QUERY,		/* Change query during fnc_init() 66 */
-	TCP_RACK_LOG_COLLAPSE,	/* Window collapse by peer 67 */
-	TCP_RACK_TP_TRIGGERED,	/* A rack tracepoint is triggered 68 */
-	TCP_HYBRID_PACING_LOG,	/* Hybrid pacing log 69 */
+	TCP_HYSTART,		/* TCP Hystart logging              65 */
+	TCP_CHG_QUERY,		/* Change query during fnc_init()   66 */
+	TCP_RACK_LOG_COLLAPSE,	/* Window collapse by peer          67 */
+	TCP_RACK_TP_TRIGGERED,	/* A rack tracepoint is triggered   68 */
+	TCP_HYBRID_PACING_LOG,	/* Hybrid pacing log                69 */
 	TCP_LOG_PRU,		/* TCP protocol user request        70 */
-	TCP_POLICER_DET,	/* TCP Policer detectionn 71 */
-	TCP_PCM_MEASURE,	/* TCP Path Capacity Measurement 72 */
-	TCP_LOG_END		/* End (keep at end)                72 */
+	TCP_UNUSED_71,		/* old TCP Policer detectionn, not used 71 */
+	TCP_PCM_MEASURE,	/* TCP Path Capacity Measurement    72 */
+	TCP_LOG_END		/* End (keep at end)                73 */
 };
 
 enum tcp_log_states {
@@ -387,12 +377,12 @@ extern int32_t tcp_trace_point_count;
 
 /*
  * Returns true if any sort of BB logging is enabled,
- * commonly used throughout the codebase. 
+ * commonly used throughout the codebase.
  */
 static inline int
 tcp_bblogging_on(struct tcpcb *tp)
 {
-	if (tp->_t_logstate <= TCP_LOG_STATE_OFF) 
+	if (tp->_t_logstate <= TCP_LOG_STATE_OFF)
 		return (0);
 	if (tp->_t_logstate == TCP_LOG_VIA_BBPOINTS)
 		return (0);
@@ -421,7 +411,7 @@ static inline void
 tcp_set_bblog_state(struct tcpcb *tp, uint8_t ls, uint8_t bbpoint)
 {
 	if ((ls == TCP_LOG_VIA_BBPOINTS) &&
-	    (tp->_t_logstate <= TCP_LOG_STATE_OFF)){
+	    (tp->_t_logstate == TCP_LOG_STATE_OFF)){
 		/*
 		 * We don't allow a BBPOINTS set to override
 		 * other types of BB logging set by other means such
@@ -431,15 +421,13 @@ tcp_set_bblog_state(struct tcpcb *tp, uint8_t ls, uint8_t bbpoint)
 		 */
 		tp->_t_logpoint = bbpoint;
 		tp->_t_logstate = ls;
-	} else if (ls != TCP_LOG_VIA_BBPOINTS) {
-		tp->_t_logpoint = 0;
-		if ((ls >= TCP_LOG_STATE_OFF) &&
-		    (ls < TCP_LOG_VIA_BBPOINTS))
-			tp->_t_logstate = ls;
+	} else if (ls < TCP_LOG_VIA_BBPOINTS) {
+		tp->_t_logpoint = TCP_BBPOINT_NONE;
+		tp->_t_logstate = ls;
 	}
 }
 
-static inline uint32_t 
+static inline uint32_t
 tcp_get_bblog_state(struct tcpcb *tp)
 {
 	return (tp->_t_logstate);
@@ -551,12 +539,12 @@ struct tcpcb;
 			    NULL, NULL, 0, NULL);			\
 	} while (0)
 #endif /* TCP_LOG_FORCEVERBOSE */
+/* Assumes/requires the caller has already checked tcp_bblogging_on(tp). */
 #define	TCP_LOG_EVENTP(tp, th, rxbuf, txbuf, eventid, errornum, len, stackinfo, th_hostorder, tv) \
 	do {								\
-		if (tcp_bblogging_on(tp))				\
-			tcp_log_event(tp, th, rxbuf, txbuf, eventid,	\
-			    errornum, len, stackinfo, th_hostorder,	\
-			    NULL, NULL, 0, tv);				\
+		KASSERT(tcp_bblogging_on(tp), ("bblogging is off")); \
+		tcp_log_event(tp, th, rxbuf, txbuf, eventid, errornum, len,	\
+			stackinfo, th_hostorder, NULL, NULL, 0, tv); \
 	} while (0)
 
 #ifdef TCP_BLACKBOX
@@ -582,6 +570,9 @@ void tcp_log_flowend(struct tcpcb *tp);
 void tcp_log_sendfile(struct socket *so, off_t offset, size_t nbytes,
     int flags);
 int tcp_log_apply_ratio(struct tcpcb *tp, int ratio);
+#ifdef DDB
+void db_print_bblog_entries(struct tcp_log_stailq *log_entries, int indent);
+#endif
 #else /* !TCP_BLACKBOX */
 #define tcp_log_verbose	(false)
 

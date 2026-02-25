@@ -323,6 +323,8 @@ rt2860_attach(device_t dev, int id)
 		| IEEE80211_C_WME		/* 802.11e */
 		;
 
+	ic->ic_flags_ext |= IEEE80211_FEXT_SEQNO_OFFLOAD;
+
 	rt2860_getradiocaps(ic, IEEE80211_CHAN_MAX, &ic->ic_nchans,
 	    ic->ic_channels);
 
@@ -1471,6 +1473,7 @@ rt2860_tx(struct rt2860_softc *sc, struct mbuf *m, struct ieee80211_node *ni)
 
 	wh = mtod(m, struct ieee80211_frame *);
 
+	ieee80211_output_seqno_assign(ni, -1, m);
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
 		k = ieee80211_crypto_encap(ni, m);
 		if (k == NULL) {
@@ -1493,7 +1496,7 @@ rt2860_tx(struct rt2860_softc *sc, struct mbuf *m, struct ieee80211_node *ni)
 		rate = tp->ucastrate;
 	} else {
 		(void) ieee80211_ratectl_rate(ni, NULL, 0);
-		rate = ni->ni_txrate;
+		rate = ieee80211_node_get_txrate_dot11rate(ni);
 	}
 	rate &= IEEE80211_RATE_VAL;
 
@@ -1559,9 +1562,7 @@ rt2860_tx(struct rt2860_softc *sc, struct mbuf *m, struct ieee80211_node *ni)
 		*(uint16_t *)wh->i_dur = htole16(dur);
 	}
 	/* ask MAC to insert timestamp into probe responses */
-	if ((wh->i_fc[0] &
-	     (IEEE80211_FC0_TYPE_MASK | IEEE80211_FC0_SUBTYPE_MASK)) ==
-	     (IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_PROBE_RESP))
+	if (IEEE80211_IS_MGMT_PROBE_RESP(wh))
 	    /* NOTE: beacons do not pass through tx_data() */
 		txwi->flags |= RT2860_TX_TS;
 
@@ -1802,9 +1803,7 @@ rt2860_tx_raw(struct rt2860_softc *sc, struct mbuf *m,
 		*(uint16_t *)wh->i_dur = htole16(dur);
 	}
 	/* ask MAC to insert timestamp into probe responses */
-	if ((wh->i_fc[0] &
-	     (IEEE80211_FC0_TYPE_MASK | IEEE80211_FC0_SUBTYPE_MASK)) ==
-	     (IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_PROBE_RESP))
+	if (IEEE80211_IS_MGMT_PROBE_RESP(wh))
 	    /* NOTE: beacons do not pass through tx_data() */
 		txwi->flags |= RT2860_TX_TS;
 

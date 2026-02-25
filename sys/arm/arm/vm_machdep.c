@@ -129,7 +129,7 @@ cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 	pcb2->pcb_regs.sf_r4 = (register_t)fork_return;
 	pcb2->pcb_regs.sf_r5 = (register_t)td2;
 	pcb2->pcb_regs.sf_lr = (register_t)fork_trampoline;
-	pcb2->pcb_regs.sf_sp = STACKALIGN(td2->td_frame);
+	pcb2->pcb_regs.sf_sp = (register_t)STACKALIGN(td2->td_frame);
 	pcb2->pcb_regs.sf_tpidrurw = (register_t)get_tls();
 
 #ifdef VFP
@@ -144,16 +144,6 @@ cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 	/* Setup to release spin count in fork_exit(). */
 	td2->td_md.md_spinlock_count = 1;
 	td2->td_md.md_saved_cspr = PSR_SVC32_MODE;
-}
-
-void
-cpu_thread_swapin(struct thread *td)
-{
-}
-
-void
-cpu_thread_swapout(struct thread *td)
-{
 }
 
 void
@@ -172,11 +162,9 @@ cpu_set_syscall_retval(struct thread *td, int error)
 		/*
 		 * Reconstruct the pc to point at the swi.
 		 */
-#if __ARM_ARCH >= 7
 		if ((frame->tf_spsr & PSR_T) != 0)
 			frame->tf_pc -= THUMB_INSN_SIZE;
 		else
-#endif
 			frame->tf_pc -= INSN_SIZE;
 		break;
 	case EJUSTRETURN:
@@ -206,7 +194,7 @@ cpu_copy_thread(struct thread *td, struct thread *td0)
 	td->td_pcb->pcb_regs.sf_r4 = (register_t)fork_return;
 	td->td_pcb->pcb_regs.sf_r5 = (register_t)td;
 	td->td_pcb->pcb_regs.sf_lr = (register_t)fork_trampoline;
-	td->td_pcb->pcb_regs.sf_sp = STACKALIGN(td->td_frame);
+	td->td_pcb->pcb_regs.sf_sp = (register_t)STACKALIGN(td->td_frame);
 
 	td->td_frame->tf_spsr &= ~PSR_C;
 	td->td_frame->tf_r0 = 0;
@@ -240,7 +228,7 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 }
 
 int
-cpu_set_user_tls(struct thread *td, void *tls_base)
+cpu_set_user_tls(struct thread *td, void *tls_base, int thr_flags __unused)
 {
 
 	td->td_pcb->pcb_regs.sf_tpidrurw = (register_t)tls_base;
@@ -288,6 +276,13 @@ cpu_fork_kthread_handler(struct thread *td, void (*func)(void *), void *arg)
 {
 	td->td_pcb->pcb_regs.sf_r4 = (register_t)func;	/* function */
 	td->td_pcb->pcb_regs.sf_r5 = (register_t)arg;	/* first arg */
+}
+
+void
+cpu_update_pcb(struct thread *td)
+{
+	MPASS(td == curthread);
+	td->td_pcb->pcb_regs.sf_tpidrurw = (register_t)get_tls();
 }
 
 void

@@ -72,6 +72,8 @@ struct mbuf;
 struct mount;
 struct msg;
 struct msqid_kernel;
+struct pipepair;
+struct prison;
 struct proc;
 struct semid_kernel;
 struct shmfd;
@@ -80,11 +82,11 @@ struct sockaddr;
 struct socket;
 struct sysctl_oid;
 struct sysctl_req;
-struct pipepair;
 struct thread;
 struct timespec;
 struct ucred;
 struct vattr;
+struct vfsoptlist;
 struct vnode;
 struct vop_setlabel_args;
 
@@ -115,6 +117,10 @@ int	mac_cred_check_setaudit(struct ucred *cred, struct auditinfo *ai);
 int	mac_cred_check_setaudit_addr(struct ucred *cred,
 	    struct auditinfo_addr *aia);
 int	mac_cred_check_setauid(struct ucred *cred, uid_t auid);
+void	mac_cred_setcred_enter(void);
+int	mac_cred_check_setcred(u_int flags, const struct ucred *old_cred,
+	    struct ucred *new_cred);
+void	mac_cred_setcred_exit(void);
 int	mac_cred_check_setegid(struct ucred *cred, gid_t egid);
 int	mac_cred_check_seteuid(struct ucred *cred, uid_t euid);
 int	mac_cred_check_setgid(struct ucred *cred, gid_t gid);
@@ -130,7 +136,7 @@ int	mac_cred_check_setuid(struct ucred *cred, uid_t uid);
 int	mac_cred_check_visible(struct ucred *cr1, struct ucred *cr2);
 void	mac_cred_copy(struct ucred *cr1, struct ucred *cr2);
 void	mac_cred_create_init(struct ucred *cred);
-void	mac_cred_create_swapper(struct ucred *cred);
+void	mac_cred_create_kproc0(struct ucred *cred);
 void	mac_cred_destroy(struct ucred *);
 void	mac_cred_init(struct ucred *);
 
@@ -342,6 +348,22 @@ void 	mac_posixshm_create(struct ucred *cred, struct shmfd *shmfd);
 void	mac_posixshm_destroy(struct shmfd *);
 void	mac_posixshm_init(struct shmfd *);
 
+int	mac_prison_init(struct prison *pr, int flag);
+void	mac_prison_relabel(struct ucred *cred, struct prison *pr,
+	    struct label *newlabel);
+void	mac_prison_destroy(struct prison *pr);
+int	mac_prison_check_attach(struct ucred *cred, struct prison *pr);
+int	mac_prison_check_create(struct ucred *cred, struct vfsoptlist *opts,
+	    int flags);
+int	mac_prison_check_get(struct ucred *cred, struct prison *pr,
+	    struct vfsoptlist *opts, int flags);
+int	mac_prison_check_set(struct ucred *cred, struct prison *pr,
+	    struct vfsoptlist *opts, int flags);
+int	mac_prison_check_remove(struct ucred *cred, struct prison *pr);
+void	mac_prison_created(struct ucred *cred, struct prison *pr);
+void	mac_prison_attached(struct ucred *cred, struct prison *pr,
+	    struct proc *p);
+
 int	mac_priv_check_impl(struct ucred *cred, int priv);
 #ifdef MAC
 extern bool mac_priv_check_fp_flag;
@@ -484,7 +506,7 @@ void	mac_sysvshm_init(struct shmid_kernel *);
 
 void	mac_thread_userret(struct thread *td);
 
-#if defined(MAC) && defined(DEBUG_VFS_LOCKS)
+#if defined(MAC) && defined(INVARIANTS)
 void	mac_vnode_assert_locked(struct vnode *vp, const char *func);
 #else
 #define mac_vnode_assert_locked(vp, func) do { } while (0)

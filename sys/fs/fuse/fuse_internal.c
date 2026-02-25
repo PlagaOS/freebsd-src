@@ -282,12 +282,12 @@ fuse_internal_cache_attrs(struct vnode *vp, struct fuse_attr *attr,
 			 * dirty writes!  That's a server bug.
 			 */
 			if (fuse_libabi_geq(data, 7, 23)) {
-				msg = "writeback cache incoherent!."
+				msg = "writeback cache incoherent!  "
 				    "To prevent data corruption, disable "
 				    "the writeback cache according to your "
 				    "FUSE server's documentation.";
 			} else {
-				msg = "writeback cache incoherent!."
+				msg = "writeback cache incoherent!  "
 				    "To prevent data corruption, disable "
 				    "the writeback cache by setting "
 				    "vfs.fusefs.data_cache_mode to 0 or 1.";
@@ -979,6 +979,9 @@ fuse_internal_init_callback(struct fuse_ticket *tick, struct uio *uio)
 	struct fuse_data *data = tick->tk_data;
 	struct fuse_init_out *fiio = NULL;
 
+	if (fdata_get_dead(data))
+		goto out;
+
 	if ((err = tick->tk_aw_ohead.error)) {
 		goto out;
 	}
@@ -1010,10 +1013,6 @@ fuse_internal_init_callback(struct fuse_ticket *tick, struct uio *uio)
 				data->dataflags |= FSESS_POSIX_LOCKS;
 			if (fiio->flags & FUSE_EXPORT_SUPPORT)
 				data->dataflags |= FSESS_EXPORT_SUPPORT;
-			if (fiio->flags & FUSE_NO_OPEN_SUPPORT)
-				data->dataflags |= FSESS_NO_OPEN_SUPPORT;
-			if (fiio->flags & FUSE_NO_OPENDIR_SUPPORT)
-				data->dataflags |= FSESS_NO_OPENDIR_SUPPORT;
 			/* 
 			 * Don't bother to check FUSE_BIG_WRITES, because it's
 			 * redundant with max_write
@@ -1064,6 +1063,8 @@ fuse_internal_init_callback(struct fuse_ticket *tick, struct uio *uio)
 	if (!fuse_libabi_geq(data, 7, 28))
 		fsess_set_notimpl(data->mp, FUSE_COPY_FILE_RANGE);
 
+	if (fuse_libabi_geq(data, 7, 33) && (fiio->flags & FUSE_SETXATTR_EXT))
+		data->dataflags |= FSESS_SETXATTR_EXT;
 out:
 	if (err) {
 		fdata_set_dead(data);
@@ -1102,7 +1103,6 @@ fuse_internal_send_init(struct fuse_data *data, struct thread *td)
 	 * FUSE_SPLICE_WRITE, FUSE_SPLICE_MOVE, FUSE_SPLICE_READ: FreeBSD
 	 *	doesn't have splice(2).
 	 * FUSE_FLOCK_LOCKS: not yet implemented
-	 * FUSE_HAS_IOCTL_DIR: not yet implemented
 	 * FUSE_AUTO_INVAL_DATA: not yet implemented
 	 * FUSE_DO_READDIRPLUS: not yet implemented
 	 * FUSE_READDIRPLUS_AUTO: not yet implemented
@@ -1115,8 +1115,9 @@ fuse_internal_send_init(struct fuse_data *data, struct thread *td)
 	 * FUSE_MAX_PAGES: not yet implemented
 	 */
 	fiii->flags = FUSE_ASYNC_READ | FUSE_POSIX_LOCKS | FUSE_EXPORT_SUPPORT
-		| FUSE_BIG_WRITES | FUSE_WRITEBACK_CACHE
-		| FUSE_NO_OPEN_SUPPORT | FUSE_NO_OPENDIR_SUPPORT;
+		| FUSE_BIG_WRITES | FUSE_HAS_IOCTL_DIR | FUSE_WRITEBACK_CACHE
+		| FUSE_NO_OPEN_SUPPORT | FUSE_NO_OPENDIR_SUPPORT
+		| FUSE_SETXATTR_EXT;
 
 	fuse_insert_callback(fdi.tick, fuse_internal_init_callback);
 	fuse_insert_message(fdi.tick, false);

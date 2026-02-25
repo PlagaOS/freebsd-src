@@ -1,5 +1,4 @@
 FBSD_1.0 {
-	rfork_thread;
 	amd64_get_fsbase;
 	amd64_get_gsbase;
 	amd64_set_fsbase;
@@ -11,6 +10,10 @@ FBSD_1.6 {
 	 x86_pkru_set_perm;
 	 x86_pkru_protect_range;
 	 x86_pkru_unprotect_range;
+};
+
+FBSD_1.8 {
+	amd64_set_tlsbase;
 };
 
 FBSDprivate_1.0 {

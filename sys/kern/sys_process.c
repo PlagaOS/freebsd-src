@@ -36,8 +36,10 @@
 #include <sys/ktr.h>
 #include <sys/limits.h>
 #include <sys/lock.h>
+#include <sys/mman.h>
 #include <sys/mutex.h>
 #include <sys/reg.h>
+#include <sys/sleepqueue.h>
 #include <sys/syscallsubr.h>
 #include <sys/sysent.h>
 #include <sys/sysproto.h>
@@ -71,7 +73,7 @@
 #define	PROC_ASSERT_TRACEREQ(p)	MPASS(((p)->p_flag2 & P2_PTRACEREQ) != 0)
 
 /*
- * Functions implemented using PROC_ACTION():
+ * Functions implemented below:
  *
  * proc_read_regs(proc, regs)
  *	Get the current user-visible register set from the process
@@ -96,43 +98,32 @@
  *	Arrange for the process to trap after executing a single instruction.
  */
 
-#define	PROC_ACTION(action) do {					\
-	int error;							\
-									\
-	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);			\
-	if ((td->td_proc->p_flag & P_INMEM) == 0)			\
-		error = EIO;						\
-	else								\
-		error = (action);					\
-	return (error);							\
-} while (0)
-
 int
 proc_read_regs(struct thread *td, struct reg *regs)
 {
-
-	PROC_ACTION(fill_regs(td, regs));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (fill_regs(td, regs));
 }
 
 int
 proc_write_regs(struct thread *td, struct reg *regs)
 {
-
-	PROC_ACTION(set_regs(td, regs));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (set_regs(td, regs));
 }
 
 int
 proc_read_dbregs(struct thread *td, struct dbreg *dbregs)
 {
-
-	PROC_ACTION(fill_dbregs(td, dbregs));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (fill_dbregs(td, dbregs));
 }
 
 int
 proc_write_dbregs(struct thread *td, struct dbreg *dbregs)
 {
-
-	PROC_ACTION(set_dbregs(td, dbregs));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (set_dbregs(td, dbregs));
 }
 
 /*
@@ -142,15 +133,15 @@ proc_write_dbregs(struct thread *td, struct dbreg *dbregs)
 int
 proc_read_fpregs(struct thread *td, struct fpreg *fpregs)
 {
-
-	PROC_ACTION(fill_fpregs(td, fpregs));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (fill_fpregs(td, fpregs));
 }
 
 int
 proc_write_fpregs(struct thread *td, struct fpreg *fpregs)
 {
-
-	PROC_ACTION(set_fpregs(td, fpregs));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (set_fpregs(td, fpregs));
 }
 
 static struct regset *
@@ -295,51 +286,51 @@ proc_write_regset(struct thread *td, int note, struct iovec *iov)
 int
 proc_read_regs32(struct thread *td, struct reg32 *regs32)
 {
-
-	PROC_ACTION(fill_regs32(td, regs32));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (fill_regs32(td, regs32));
 }
 
 int
 proc_write_regs32(struct thread *td, struct reg32 *regs32)
 {
-
-	PROC_ACTION(set_regs32(td, regs32));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (set_regs32(td, regs32));
 }
 
 int
 proc_read_dbregs32(struct thread *td, struct dbreg32 *dbregs32)
 {
-
-	PROC_ACTION(fill_dbregs32(td, dbregs32));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (fill_dbregs32(td, dbregs32));
 }
 
 int
 proc_write_dbregs32(struct thread *td, struct dbreg32 *dbregs32)
 {
-
-	PROC_ACTION(set_dbregs32(td, dbregs32));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (set_dbregs32(td, dbregs32));
 }
 
 int
 proc_read_fpregs32(struct thread *td, struct fpreg32 *fpregs32)
 {
-
-	PROC_ACTION(fill_fpregs32(td, fpregs32));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (fill_fpregs32(td, fpregs32));
 }
 
 int
 proc_write_fpregs32(struct thread *td, struct fpreg32 *fpregs32)
 {
-
-	PROC_ACTION(set_fpregs32(td, fpregs32));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (set_fpregs32(td, fpregs32));
 }
 #endif
 
 int
 proc_sstep(struct thread *td)
 {
-
-	PROC_ACTION(ptrace_single_step(td));
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	return (ptrace_single_step(td));
 }
 
 int
@@ -365,11 +356,17 @@ proc_rwmem(struct proc *p, struct uio *uio)
 	/*
 	 * If we are writing, then we request vm_fault() to create a private
 	 * copy of each page.  Since these copies will not be writeable by the
-	 * process, we must explicity request that they be dirtied.
+	 * process, we must explicitly request that they be dirtied.
 	 */
 	writing = uio->uio_rw == UIO_WRITE;
 	reqprot = writing ? VM_PROT_COPY | VM_PROT_READ : VM_PROT_READ;
 	fault_flags = writing ? VM_FAULT_DIRTY : VM_FAULT_NORMAL;
+
+	if (writing) {
+		error = priv_check_cred(p->p_ucred, PRIV_PROC_MEM_WRITE);
+		if (error)
+			return (error);
+	}
 
 	/*
 	 * Only map in one page at a time.  We don't have to, but it
@@ -391,7 +388,7 @@ proc_rwmem(struct proc *p, struct uio *uio)
 		/*
 		 * How many bytes to copy
 		 */
-		len = min(PAGE_SIZE - page_offset, uio->uio_resid);
+		len = MIN(PAGE_SIZE - page_offset, uio->uio_resid);
 
 		/*
 		 * Fault and hold the page on behalf of the process.
@@ -516,7 +513,8 @@ ptrace_vm_entry(struct thread *td, struct proc *p, struct ptrace_vm_entry *pve)
 		pve->pve_start = entry->start;
 		pve->pve_end = entry->end - 1;
 		pve->pve_offset = entry->offset;
-		pve->pve_prot = entry->protection;
+		pve->pve_prot = entry->protection |
+		    PROT_MAX(entry->max_protection);
 
 		/* Backing object's path needed? */
 		if (pve->pve_pathlen == 0)
@@ -691,6 +689,9 @@ sys_ptrace(struct thread *td, struct ptrace_args *uap)
 		if (error != 0)
 			break;
 		r.sr.pscr_args = pscr_args;
+		break;
+	case PTINTERNAL_FIRST ... PTINTERNAL_LAST:
+		error = EINVAL;
 		break;
 	default:
 		addr = uap->addr;
@@ -933,12 +934,10 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 	}
 
 	if (tid == 0) {
-		if ((p->p_flag & P_STOPPED_TRACE) != 0) {
-			KASSERT(p->p_xthread != NULL, ("NULL p_xthread"));
+		if ((p->p_flag & P_STOPPED_TRACE) != 0)
 			td2 = p->p_xthread;
-		} else {
+		if (td2 == NULL)
 			td2 = FIRST_THREAD_IN_PROC(p);
-		}
 		tid = td2->td_tid;
 	}
 
@@ -1170,8 +1169,11 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 		break;
 
 	case PT_GET_SC_ARGS:
-		CTR1(KTR_PTRACE, "PT_GET_SC_ARGS: pid %d", p->p_pid);
-		if ((td2->td_dbgflags & (TDB_SCE | TDB_SCX)) == 0
+	case PTLINUX_GET_SC_ARGS:
+		CTR2(KTR_PTRACE, "%s: pid %d", req == PT_GET_SC_ARGS ?
+		    "PT_GET_SC_ARGS" : "PT_LINUX_GET_SC_ARGS", p->p_pid);
+		if (((td2->td_dbgflags & (TDB_SCE | TDB_SCX)) == 0 &&
+		     td2->td_sa.code == 0)
 #ifdef COMPAT_FREEBSD32
 		    || (wrap32 && !safe)
 #endif
@@ -1179,11 +1181,21 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 			error = EINVAL;
 			break;
 		}
-		bzero(addr, sizeof(td2->td_sa.args));
-		/* See the explanation in linux_ptrace_get_syscall_info(). */
-		bcopy(td2->td_sa.args, addr, SV_PROC_ABI(td->td_proc) ==
-		    SV_ABI_LINUX ? sizeof(td2->td_sa.args) :
-		    td2->td_sa.callp->sy_narg * sizeof(syscallarg_t));
+		if (req == PT_GET_SC_ARGS) {
+			bzero(addr, sizeof(td2->td_sa.args));
+			bcopy(td2->td_sa.args, addr, td2->td_sa.callp->sy_narg *
+			    sizeof(syscallarg_t));
+		} else {
+			/*
+			 * Emulate a Linux bug which which strace(1) depends on:
+			 * at initialization it tests whether ptrace works by
+			 * calling close(2), or some other single-argument
+			 * syscall, _with six arguments_, and then verifies
+			 * whether it can fetch them all using this API;
+			 * otherwise it bails out.
+			 */
+			bcopy(td2->td_sa.args, addr, 6 * sizeof(syscallarg_t));
+		}
 		break;
 
 	case PT_GET_SC_RET:
@@ -1237,6 +1249,7 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 				    (u_long)(uintfptr_t)addr);
 				if (error)
 					goto out;
+				td2->td_dbgflags |= TDB_USERWR;
 			}
 			switch (req) {
 			case PT_TO_SCE:
@@ -1311,8 +1324,15 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 				p->p_flag2 &= ~P2_PTRACE_FSTP;
 			}
 
-			/* should we send SIGCHLD? */
-			/* childproc_continued(p); */
+			/*
+			 * Send SIGCHLD and wakeup the parent as needed.  It
+			 * may be the case that they had stopped the child
+			 * before it got ptraced, and now they're in the middle
+			 * of a wait(2) for it to continue.
+			 */
+			PROC_LOCK(p->p_pptr);
+			childproc_continued(p);
+			PROC_UNLOCK(p->p_pptr);
 			break;
 		}
 
@@ -1324,16 +1344,19 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 
 		/*
 		 * Clear the pending event for the thread that just
-		 * reported its event (p_xthread).  This may not be
-		 * the thread passed to PT_CONTINUE, PT_STEP, etc. if
-		 * the debugger is resuming a different thread.
+		 * reported its event (p_xthread), if any.  This may
+		 * not be the thread passed to PT_CONTINUE, PT_STEP,
+		 * etc. if the debugger is resuming a different
+		 * thread.  There might be no reporting thread if
+		 * the process was just attached.
 		 *
 		 * Deliver any pending signal via the reporting thread.
 		 */
-		MPASS(p->p_xthread != NULL);
-		p->p_xthread->td_dbgflags &= ~TDB_XSIG;
-		p->p_xthread->td_xsig = data;
-		p->p_xthread = NULL;
+		if (p->p_xthread != NULL) {
+			p->p_xthread->td_dbgflags &= ~TDB_XSIG;
+			p->p_xthread->td_xsig = data;
+			p->p_xthread = NULL;
+		}
 		p->p_xsig = data;
 
 		/*
@@ -1345,6 +1368,27 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 		 */
 		if (data == SIGKILL)
 			proc_wkilled(p);
+
+		/*
+		 * If the PT_CONTINUE-like operation is attempted on
+		 * the thread on sleepq, this is possible only after
+		 * the transparent PT_ATTACH.  In this case, if the
+		 * caller modified the thread state, e.g. by writing
+		 * register file or specifying the pc, make the thread
+		 * xstopped by waking it up.
+		 */
+		if ((td2->td_dbgflags & TDB_USERWR) != 0) {
+			if (pt_attach_transparent) {
+				thread_lock(td2);
+				if (TD_ON_SLEEPQ(td2) &&
+				    (td2->td_flags & TDF_SINTR) != 0) {
+					sleepq_abort(td2, EINTR);
+				} else {
+					thread_unlock(td2);
+				}
+			}
+			td2->td_dbgflags &= ~TDB_USERWR;
+		}
 
 		/*
 		 * Unsuspend all threads.  To leave a thread
@@ -1384,6 +1428,10 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 
 	case PT_IO:
 		piod = addr;
+		if (piod->piod_len > SSIZE_MAX) {
+			error = EINVAL;
+			goto out;
+		}
 		iov.iov_base = piod->piod_addr;
 		iov.iov_len = piod->piod_len;
 		uio.uio_offset = (off_t)(uintptr_t)piod->piod_offs;
@@ -1514,12 +1562,9 @@ kern_ptrace(struct thread *td, int req, pid_t pid, void *addr, int data)
 		pl->pl_sigmask = td2->td_sigmask;
 		pl->pl_siglist = td2->td_siglist;
 		strcpy(pl->pl_tdname, td2->td_name);
-		if ((td2->td_dbgflags & (TDB_SCE | TDB_SCX)) != 0) {
+		if (td2->td_sa.code != 0) {
 			pl->pl_syscall_code = td2->td_sa.code;
 			pl->pl_syscall_narg = td2->td_sa.callp->sy_narg;
-		} else {
-			pl->pl_syscall_code = 0;
-			pl->pl_syscall_narg = 0;
 		}
 		CTR6(KTR_PTRACE,
     "PT_LWPINFO: tid %d (pid %d) event %d flags %#x child pid %d syscall %d",

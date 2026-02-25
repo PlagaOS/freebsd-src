@@ -27,6 +27,7 @@ SRCS=	\
 	config.c		\
 	console.c		\
 	crc16.c			\
+	ctl_nvme_all.c		\
 	ctl_scsi_all.c		\
 	ctl_util.c		\
 	hda_codec.c		\
@@ -37,10 +38,14 @@ SRCS=	\
 	net_backend_slirp.c	\
 	net_backends.c		\
 	net_utils.c		\
+	pci_ahci.c		\
+	pci_e82545.c		\
 	pci_emul.c		\
+	pci_hda.c		\
 	pci_hostbridge.c	\
+	pci_irq.c		\
 	pci_nvme.c		\
-	pci_passthru.c		\
+	pci_uart.c		\
 	pci_virtio_9p.c		\
 	pci_virtio_block.c	\
 	pci_virtio_console.c	\
@@ -48,12 +53,14 @@ SRCS=	\
 	pci_virtio_net.c	\
 	pci_virtio_rnd.c	\
 	pci_virtio_scsi.c	\
+	pci_xhci.c		\
 	qemu_fwcfg.c		\
 	qemu_loader.c		\
 	smbiostbl.c		\
 	sockstream.c		\
 	tpm_device.c		\
 	tpm_emul_passthru.c	\
+	tpm_emul_swtpm.c	\
 	tpm_intf_crb.c		\
 	tpm_ppi_qemu.c		\
 	uart_backend.c		\
@@ -70,6 +77,13 @@ SRCS+=	snapshot.c
 
 .include "${MACHINE_CPUARCH}/Makefile.inc"
 
+SUBDIR+= slirp
+
+.if defined(BHYVE_FDT_SUPPORT)
+LIBADD+= fdt
+CFLAGS+= -I${SRCTOP}/sys/contrib/libfdt
+.endif
+
 .if defined(BHYVE_GDB_SUPPORT)
 SRCS+=	gdb.c
 CFLAGS+= -DBHYVE_GDB
@@ -83,7 +97,7 @@ CFLAGS+=-I${.CURDIR}		\
 	-I${.CURDIR}/../../contrib/lib9p \
 	-I${SRCTOP}/sys
 
-LIBADD=	vmmapi md nv pthread z util sbuf cam 9p
+LIBADD+= vmmapi md nv uvmem pthread z util sbuf cam 9p
 
 .if ${MK_BHYVE_SNAPSHOT} != "no"
 LIBADD+= ucl xo

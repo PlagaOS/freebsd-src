@@ -1,4 +1,3 @@
-
 PACKAGE=	kerberos
 
 PROG=	kcm
@@ -25,7 +24,7 @@ CFLAGS+="-DKRB5_DEPRECATED_FUNCTION(X)="
 LIBADD=	krb5 roken heimntlm heimipcs crypto
 DPADD=	${LDAPDPADD}
 LDADD=	${LIBVERS} ${LDAPLDADD}
-LDFLAGS=${LDAPLDFLAGS}
+LDFLAGS+=${LDAPLDFLAGS}
 
 .include <bsd.prog.mk>
 

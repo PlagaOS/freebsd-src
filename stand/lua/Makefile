@@ -1,4 +1,3 @@
-
 .include <bsd.init.mk>
 
 MAN=	loader.conf.lua.5 \
@@ -25,6 +24,7 @@ FILES=	cli.lua \
 	gfx-beastie.lua \
 	gfx-beastiebw.lua \
 	gfx-fbsdbw.lua \
+	gfx-install.lua \
 	gfx-orb.lua \
 	gfx-orbbw.lua \
 	menu.lua \

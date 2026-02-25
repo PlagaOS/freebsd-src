@@ -70,6 +70,7 @@
 
 typedef struct {
 	void		*addr;
+	void		*origaddr; /* Used by debuggers. */
 	Elf_Off		size;
 	int		flags;	/* Section flags. */
 	int		sec;	/* Original section number. */
@@ -365,11 +366,8 @@ link_elf_link_preload(linker_class_t cls, const char *filename,
 	    MODINFOMD_ELFHDR);
 	shdr = (Elf_Shdr *)preload_search_info(modptr, MODINFO_METADATA |
 	    MODINFOMD_SHDR);
-	if (type == NULL || (strcmp(type, "elf" __XSTRING(__ELF_WORD_SIZE)
-	    " obj module") != 0 &&
-	    strcmp(type, "elf obj module") != 0)) {
+	if (type == NULL || strcmp(type, preload_modtype_obj) != 0)
 		return (EFTYPE);
-	}
 	if (baseptr == NULL || sizeptr == NULL || hdr == NULL ||
 	    shdr == NULL)
 		return (EINVAL);
@@ -495,7 +493,8 @@ link_elf_link_preload(linker_class_t cls, const char *filename,
 		case SHT_FINI_ARRAY:
 			if (shdr[i].sh_addr == 0)
 				break;
-			ef->progtab[pb].addr = (void *)shdr[i].sh_addr;
+			ef->progtab[pb].addr = ef->progtab[pb].origaddr =
+			    (void *)shdr[i].sh_addr;
 			if (shdr[i].sh_type == SHT_PROGBITS)
 				ef->progtab[pb].name = "<<PROGBITS>>";
 #ifdef __amd64__
@@ -658,6 +657,30 @@ link_elf_invoke_cbs(caddr_t addr, size_t size)
 	}
 }
 
+static void
+link_elf_invoke_ctors(linker_file_t lf)
+{
+	KASSERT(lf->ctors_invoked == LF_NONE,
+	    ("%s: file %s ctor state %d",
+	    __func__, lf->filename, lf->ctors_invoked));
+
+	link_elf_invoke_cbs(lf->ctors_addr, lf->ctors_size);
+	lf->ctors_invoked = LF_CTORS;
+}
+
+static void
+link_elf_invoke_dtors(linker_file_t lf)
+{
+	KASSERT(lf->ctors_invoked != LF_DTORS,
+	    ("%s: file %s ctor state %d",
+	    __func__, lf->filename, lf->ctors_invoked));
+
+	if (lf->ctors_invoked == LF_CTORS) {
+		link_elf_invoke_cbs(lf->dtors_addr, lf->dtors_size);
+		lf->ctors_invoked = LF_DTORS;
+	}
+}
+
 static int
 link_elf_link_preload_finish(linker_file_t lf)
 {
@@ -684,7 +707,7 @@ link_elf_link_preload_finish(linker_file_t lf)
 	/* Apply protections now that relocation processing is complete. */
 	link_elf_protect(ef);
 
-	link_elf_invoke_cbs(lf->ctors_addr, lf->ctors_size);
+	link_elf_invoke_ctors(lf);
 	return (0);
 }
 
@@ -1067,6 +1090,8 @@ link_elf_load_file(linker_class_t cls, const char *filename,
 				ef->progtab[pb].name = "<<NOBITS>>";
 			if (ef->progtab[pb].name != NULL && 
 			    !strcmp(ef->progtab[pb].name, DPCPU_SETNAME)) {
+				ef->progtab[pb].origaddr =
+				    (void *)(uintptr_t)mapbase;
 				ef->progtab[pb].addr =
 				    dpcpu_alloc(shdr[i].sh_size);
 				if (ef->progtab[pb].addr == NULL) {
@@ -1080,6 +1105,8 @@ link_elf_load_file(linker_class_t cls, const char *filename,
 #ifdef VIMAGE
 			else if (ef->progtab[pb].name != NULL &&
 			    !strcmp(ef->progtab[pb].name, VNET_SETNAME)) {
+				ef->progtab[pb].origaddr =
+				    (void *)(uintptr_t)mapbase;
 				ef->progtab[pb].addr =
 				    vnet_data_alloc(shdr[i].sh_size);
 				if (ef->progtab[pb].addr == NULL) {
@@ -1239,7 +1266,7 @@ link_elf_load_file(linker_class_t cls, const char *filename,
 #endif
 
 	link_elf_protect(ef);
-	link_elf_invoke_cbs(lf->ctors_addr, lf->ctors_size);
+	link_elf_invoke_ctors(lf);
 	*result = lf;
 
 out:
@@ -1259,7 +1286,7 @@ link_elf_unload_file(linker_file_t file)
 	elf_file_t ef = (elf_file_t) file;
 	u_int i;
 
-	link_elf_invoke_cbs(file->dtors_addr, file->dtors_size);
+	link_elf_invoke_dtors(file);
 
 	/* Notify MD code that a module is being unloaded. */
 	elf_cpu_unload_file(file);
@@ -1278,6 +1305,20 @@ link_elf_unload_file(linker_file_t file)
 				vnet_data_free(ef->progtab[i].addr,
 				    ef->progtab[i].size);
 #endif
+			else if (ef->preloaded) {
+				vm_offset_t start, end;
+
+				start = (vm_offset_t)ef->progtab[i].addr;
+				end = start + ef->progtab[i].size;
+
+				/*
+				 * Reset mapping protections to their original
+				 * state.  This affects the direct map alias of
+				 * the module mapping as well.
+				 */
+				link_elf_protect_range(ef, trunc_page(start),
+				    round_page(end), VM_PROT_RW);
+			}
 		}
 	}
 	if (ef->preloaded) {
@@ -1489,6 +1530,28 @@ link_elf_lookup_debug_symbol_ctf(linker_file_t lf, const char *name,
 	return (link_elf_ctf_get_ddb(lf, lc));
 }
 
+static void
+link_elf_ifunc_symbol_value(linker_file_t lf, caddr_t *valp, size_t *sizep)
+{
+	c_linker_sym_t sym;
+	const Elf_Sym *es;
+	caddr_t val;
+	long off;
+
+	val = *valp;
+
+	/* Provide the value and size of the target symbol, if available. */
+	val = ((caddr_t (*)(void))val)();
+	if (link_elf_search_symbol(lf, val, &sym, &off) == 0 && off == 0) {
+		es = (const Elf_Sym *)sym;
+		*valp = (caddr_t)es->st_value;
+		*sizep = es->st_size;
+	} else {
+		*valp = val;
+		*sizep = 0;
+	}
+}
+
 static int
 link_elf_symbol_values1(linker_file_t lf, c_linker_sym_t sym,
     linker_symval_t *symval, bool see_local)
@@ -1496,6 +1559,7 @@ link_elf_symbol_values1(linker_file_t lf, c_linker_sym_t sym,
 	elf_file_t ef;
 	const Elf_Sym *es;
 	caddr_t val;
+	size_t size;
 
 	ef = (elf_file_t) lf;
 	es = (const Elf_Sym*) sym;
@@ -1506,9 +1570,11 @@ link_elf_symbol_values1(linker_file_t lf, c_linker_sym_t sym,
 		symval->name = ef->ddbstrtab + es->st_name;
 		val = (caddr_t)es->st_value;
 		if (ELF_ST_TYPE(es->st_info) == STT_GNU_IFUNC)
-			val = ((caddr_t (*)(void))val)();
+			link_elf_ifunc_symbol_value(lf, &val, &size);
+		else
+			size = es->st_size;
 		symval->value = val;
-		symval->size = es->st_size;
+		symval->size = size;
 		return (0);
 	}
 	return (ENOENT);
@@ -1650,7 +1716,7 @@ elf_obj_cleanup_globals_cache(elf_file_t ef)
 
 	for (i = 0; i < ef->ddbsymcnt; i++) {
 		sym = ef->ddbsymtab + i;
-		if (sym->st_shndx == SHN_FBSD_CACHED) {
+		if (sym->st_shndx == SHN_FREEBSD_CACHED) {
 			sym->st_shndx = SHN_UNDEF;
 			sym->st_value = 0;
 		}
@@ -1719,7 +1785,7 @@ elf_obj_lookup(linker_file_t lf, Elf_Size symidx, int deps, Elf_Addr *res)
 		 * above.
 		 */
 		if (res1 != 0) {
-			sym->st_shndx = SHN_FBSD_CACHED;
+			sym->st_shndx = SHN_FREEBSD_CACHED;
 			sym->st_value = res1;
 			*res = res1;
 			return (0);

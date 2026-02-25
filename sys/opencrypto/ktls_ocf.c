@@ -224,7 +224,6 @@ ktls_ocf_dispatch(struct ktls_ocf_session *os, struct cryptop *crp)
 		}
 
 		crp->crp_etype = 0;
-		crp->crp_flags &= ~CRYPTO_F_DONE;
 		oo.done = false;
 		counter_u64_add(ocf_retries, 1);
 	}
@@ -240,7 +239,6 @@ ktls_ocf_dispatch_async_cb(struct cryptop *crp)
 	state = crp->crp_opaque;
 	if (crp->crp_etype == EAGAIN) {
 		crp->crp_etype = 0;
-		crp->crp_flags &= ~CRYPTO_F_DONE;
 		counter_u64_add(ocf_retries, 1);
 		error = crypto_dispatch(crp);
 		if (error != 0) {
@@ -982,7 +980,7 @@ ktls_ocf_free(struct ktls_session *tls)
 }
 
 int
-ktls_ocf_try(struct socket *so, struct ktls_session *tls, int direction)
+ktls_ocf_try(struct ktls_session *tls, int direction)
 {
 	struct crypto_session_params csp, mac_csp, recrypt_csp;
 	struct ktls_ocf_session *os;

@@ -34,8 +34,6 @@
 #include <stdarg.h>
 #include "libc_private.h"
 
-__weak_reference(__sys_open, __open);
-
 #pragma weak open
 int
 open(const char *path, int flags, ...)
@@ -50,7 +48,5 @@ open(const char *path, int flags, ...)
 	} else {
 		mode = 0;
 	}
-	return (((int (*)(int, const char *, int, ...))
-	    *(__libc_interposing_slot(INTERPOS_openat)))
-	    (AT_FDCWD, path, flags, mode));
+	return (INTERPOS_SYS(openat, AT_FDCWD, path, flags, mode));
 }

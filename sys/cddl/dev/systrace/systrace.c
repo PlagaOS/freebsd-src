@@ -47,14 +47,13 @@
 #include <sys/proc.h>
 #include <sys/selinfo.h>
 #include <sys/smp.h>
+#include <sys/stdarg.h>
 #include <sys/sysent.h>
 #include <sys/sysproto.h>
 #include <sys/uio.h>
 #include <sys/unistd.h>
 
 #include <cddl/dev/dtrace/dtrace_cddl.h>
-
-#include <machine/stdarg.h>
 
 #ifdef LINUX_SYSTRACE
 #if defined(__amd64__)
@@ -92,7 +91,7 @@ extern struct sysent linux32_sysent[];
 #elif defined(FREEBSD32_SYSTRACE)
 /*
  * The syscall arguments are processed into a DTrace argument array
- * using a generated function. See sys/tools/makesyscalls.lua.
+ * using a generated function. See sys/tools/syscalls/README.md.
  */
 #include <compat/freebsd32/freebsd32_proto.h>
 #include <compat/freebsd32/freebsd32_util.h>
@@ -106,7 +105,7 @@ extern const char *freebsd32_syscallnames[];
 #else
 /*
  * The syscall arguments are processed into a DTrace argument array
- * using a generated function. See sys/tools/makesyscalls.lua.
+ * using a generated function. See sys/tools/syscalls/README.md.
  */
 #include <sys/syscall.h>
 #include <kern/systrace_args.c>

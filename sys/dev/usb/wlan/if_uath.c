@@ -50,7 +50,6 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/cdefs.h>
 /*-
  * Driver for Atheros AR5523 USB parts.
  *
@@ -183,6 +182,7 @@ static const STRUCT_USB_HOST_ID uath_devs[] = {
 	UATH_DEV(UMEDIA,		AR5523_2),
 	UATH_DEV(WISTRONNEWEB,		AR5523_1),
 	UATH_DEV(WISTRONNEWEB,		AR5523_2),
+	UATH_DEV(WISTRONNEWEB,		AR5523_2_ALT),
 	UATH_DEV(ZCOM,			AR5523)
 #undef UATH_DEV
 };
@@ -432,6 +432,8 @@ uath_attach(device_t dev)
 	/* put a regulatory domain to reveal informations.  */
 	uath_regdomain = sc->sc_devcap.regDomain;
 
+	ic->ic_flags_ext |= IEEE80211_FEXT_SEQNO_OFFLOAD;
+
 	memset(bands, 0, sizeof(bands));
 	setbit(bands, IEEE80211_MODE_11B);
 	setbit(bands, IEEE80211_MODE_11G);
@@ -441,6 +443,12 @@ uath_attach(device_t dev)
 	ieee80211_init_channels(ic, NULL, bands);
 
 	ieee80211_ifattach(ic);
+
+	/* Note: this has to happen AFTER ieee80211_ifattach() */
+	ieee80211_set_software_ciphers(ic,
+	    IEEE80211_CRYPTO_WEP | IEEE80211_CRYPTO_TKIP |
+	    IEEE80211_CRYPTO_AES_CCM | IEEE80211_CRYPTO_AES_GCM_128);
+
 	ic->ic_raw_xmit = uath_raw_xmit;
 	ic->ic_scan_start = uath_scan_start;
 	ic->ic_scan_end = uath_scan_end;
@@ -1542,6 +1550,8 @@ uath_tx_start(struct uath_softc *sc, struct mbuf *m0, struct ieee80211_node *ni,
 		ieee80211_radiotap_tx(vap, m0);
 	}
 
+	ieee80211_output_seqno_assign(ni, -1, m0);
+
 	wh = mtod(m0, struct ieee80211_frame *);
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
 		k = ieee80211_crypto_encap(ni, m0);
@@ -1830,6 +1840,8 @@ uath_set_channel(struct ieee80211com *ic)
 		UATH_UNLOCK(sc);
 		return;
 	}
+	/* flush data & control requests into the target  */
+	(void)uath_flush(sc);
 	(void)uath_switch_channel(sc, ic->ic_curchan);
 	UATH_UNLOCK(sc);
 }
@@ -2014,6 +2026,8 @@ uath_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 		break;
 
 	case IEEE80211_S_AUTH:
+		/* flush data & control requests into the target  */
+		(void)uath_flush(sc);
 		/* XXX good place?  set RTS threshold  */
 		uath_config(sc, CFG_USER_RTS_THRESHOLD, vap->iv_rtsthreshold);
 		/* XXX bad place  */
@@ -2053,7 +2067,8 @@ uath_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 		 * Tx rate is controlled by firmware, report the maximum
 		 * negotiated rate in ifconfig output.
 		 */
-		ni->ni_txrate = ni->ni_rates.rs_rates[ni->ni_rates.rs_nrates-1];
+		ieee80211_node_set_txrate_dot11rate(ni,
+		    ni->ni_rates.rs_rates[ni->ni_rates.rs_nrates-1]);
 
 		if (uath_write_associd(sc) != 0) {
 			device_printf(sc->sc_dev,
@@ -2303,10 +2318,12 @@ uath_cmdeof(struct uath_softc *sc, struct uath_cmd *cmd)
 			    __func__, dlen, sizeof(uint32_t));
 			return;
 		}
-		/* XXX have submitter do this */
-		/* copy answer into caller's supplied buffer */
-		bcopy(hdr+1, cmd->odata, sizeof(uint32_t));
-		cmd->olen = sizeof(uint32_t);
+		if (cmd->odata != NULL) {
+			/* XXX have submitter do this */
+			/* copy answer into caller's supplied buffer */
+			bcopy(hdr+1, cmd->odata, sizeof(uint32_t));
+			cmd->olen = sizeof(uint32_t);
+		}
 		wakeup_one(cmd);		/* wake up caller */
 		break;
 

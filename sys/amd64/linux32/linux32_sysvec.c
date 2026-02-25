@@ -580,6 +580,10 @@ linux_exec_setregs(struct thread *td, struct image_params *imgp,
 	if (td->td_proc->p_md.md_ldt != NULL)
 		user_ldt_free(td);
 
+	/* Do full restore on return so that we can change to a different %cs */
+	set_pcb_flags(pcb, PCB_32BIT | PCB_FULL_IRET);
+	clear_pcb_flags(pcb, PCB_TLSBASE);
+
 	critical_enter();
 	wrmsr(MSR_FSBASE, 0);
 	wrmsr(MSR_KGSBASE, 0);	/* User value while we're in the kernel */
@@ -605,9 +609,6 @@ linux_exec_setregs(struct thread *td, struct image_params *imgp,
 	x86_clear_dbregs(pcb);
 
 	fpstate_drop(td);
-
-	/* Do full restore on return so that we can change to a different %cs */
-	set_pcb_flags(pcb, PCB_32BIT | PCB_FULL_IRET);
 }
 
 /*
@@ -798,7 +799,7 @@ struct sysentvec elf_linux_sysvec = {
 	.sv_setregs	= linux_exec_setregs,
 	.sv_fixlimit	= linux32_fixlimit,
 	.sv_maxssiz	= &linux32_maxssiz,
-	.sv_flags	= SV_ABI_LINUX | SV_ILP32 | SV_IA32 | SV_SHP |
+	.sv_flags	= SV_ABI_LINUX | SV_ILP32 | SV_SHP |
 	    SV_SIG_DISCIGN | SV_SIG_WAITNDQ | SV_TIMEKEEP,
 	.sv_set_syscall_retval = linux32_set_syscall_retval,
 	.sv_fetch_syscall_args = linux32_fetch_syscall_args,
@@ -810,6 +811,8 @@ struct sysentvec elf_linux_sysvec = {
 	.sv_trap	= NULL,
 	.sv_hwcap	= NULL,
 	.sv_hwcap2	= NULL,
+	.sv_hwcap3	= NULL,
+	.sv_hwcap4	= NULL,
 	.sv_onexec	= linux_on_exec_vmspace,
 	.sv_onexit	= linux_on_exit,
 	.sv_ontdexit	= linux_thread_dtor,
@@ -951,7 +954,7 @@ linux_vdso_reloc(char *mapping, Elf_Addr offset)
 	}
 }
 
-static Elf_Brandnote linux32_brandnote = {
+static const Elf_Brandnote linux32_brandnote = {
 	.hdr.n_namesz	= sizeof(GNU_ABI_VENDOR),
 	.hdr.n_descsz	= 16,	/* XXX at least 16 */
 	.hdr.n_type	= 1,
@@ -960,7 +963,7 @@ static Elf_Brandnote linux32_brandnote = {
 	.trans_osrel	= linux_trans_osrel
 };
 
-static Elf32_Brandinfo linux_brand = {
+static const Elf32_Brandinfo linux_brand = {
 	.brand		= ELFOSABI_LINUX,
 	.machine	= EM_386,
 	.compat_3_brand	= "Linux",
@@ -971,7 +974,7 @@ static Elf32_Brandinfo linux_brand = {
 	.flags		= BI_CAN_EXEC_DYN | BI_BRAND_NOTE
 };
 
-static Elf32_Brandinfo linux_glibc2brand = {
+static const Elf32_Brandinfo linux_glibc2brand = {
 	.brand		= ELFOSABI_LINUX,
 	.machine	= EM_386,
 	.compat_3_brand	= "Linux",
@@ -982,7 +985,7 @@ static Elf32_Brandinfo linux_glibc2brand = {
 	.flags		= BI_CAN_EXEC_DYN | BI_BRAND_NOTE
 };
 
-static Elf32_Brandinfo linux_muslbrand = {
+static const Elf32_Brandinfo linux_muslbrand = {
 	.brand		= ELFOSABI_LINUX,
 	.machine	= EM_386,
 	.compat_3_brand	= "Linux",
@@ -994,7 +997,7 @@ static Elf32_Brandinfo linux_muslbrand = {
 			    LINUX_BI_FUTEX_REQUEUE
 };
 
-static Elf32_Brandinfo *linux_brandlist[] = {
+static const Elf32_Brandinfo *linux_brandlist[] = {
 	&linux_brand,
 	&linux_glibc2brand,
 	&linux_muslbrand,
@@ -1004,7 +1007,7 @@ static Elf32_Brandinfo *linux_brandlist[] = {
 static int
 linux_elf_modevent(module_t mod, int type, void *data)
 {
-	Elf32_Brandinfo **brandinfo;
+	const Elf32_Brandinfo **brandinfo;
 	int error;
 	struct linux_ioctl_handler **lihp;
 

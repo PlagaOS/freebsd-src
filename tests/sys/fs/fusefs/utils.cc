@@ -124,29 +124,21 @@ bool is_unsafe_aio_enabled(void) {
 
 class FuseEnv: public Environment {
 	virtual void SetUp() {
+		check_environment();
 	}
 };
 
 void FuseTest::SetUp() {
 	const char *maxbcachebuf_node = "vfs.maxbcachebuf";
 	const char *maxphys_node = "kern.maxphys";
-	int val = 0;
-	size_t size = sizeof(val);
+	size_t size;
 
-	/*
-	 * XXX check_environment should be called from FuseEnv::SetUp, but
-	 * can't due to https://github.com/google/googletest/issues/2189
-	 */
-	check_environment();
-	if (IsSkipped())
-		return;
-
-	ASSERT_EQ(0, sysctlbyname(maxbcachebuf_node, &val, &size, NULL, 0))
+	size = sizeof(m_maxbcachebuf);
+	ASSERT_EQ(0, sysctlbyname(maxbcachebuf_node, &m_maxbcachebuf, &size,
+		NULL, 0)) << strerror(errno);
+	size = sizeof(m_maxphys);
+	ASSERT_EQ(0, sysctlbyname(maxphys_node, &m_maxphys, &size, NULL, 0))
 		<< strerror(errno);
-	m_maxbcachebuf = val;
-	ASSERT_EQ(0, sysctlbyname(maxphys_node, &val, &size, NULL, 0))
-		<< strerror(errno);
-	m_maxphys = val;
 	/*
 	 * Set the default max_write to a distinct value from MAXPHYS to catch
 	 * bugs that confuse the two.
@@ -155,11 +147,12 @@ void FuseTest::SetUp() {
 		m_maxwrite = MIN(libfuse_max_write, (uint32_t)m_maxphys / 2);
 
 	try {
-		m_mock = new MockFS(m_maxreadahead, m_allow_other,
+		m_mock = new MockFS(m_maxread, m_maxreadahead, m_allow_other,
 			m_default_permissions, m_push_symlinks_in, m_ro,
 			m_pm, m_init_flags, m_kernel_minor_version,
 			m_maxwrite, m_async, m_noclusterr, m_time_gran,
-			m_nointr, m_noatime, m_fsname, m_subtype);
+			m_nointr, m_noatime, m_fsname, m_subtype,
+			m_no_auto_init, m_auto_unmount);
 		/* 
 		 * FUSE_ACCESS is called almost universally.  Expecting it in
 		 * each test case would be super-annoying.  Instead, set a
@@ -576,6 +569,12 @@ get_unprivileged_id(uid_t *uid, gid_t *gid)
 		GTEST_SKIP() << "Test requires an unprivileged group";
 	*uid = pw->pw_uid;
 	*gid = gr->gr_gid;
+}
+
+int
+FuseTest::dup_dev_fuse()
+{
+	return (m_mock->dup_dev_fuse());
 }
 
 void

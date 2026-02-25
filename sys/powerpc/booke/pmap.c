@@ -107,6 +107,7 @@
 #include <vm/vm_pager.h>
 #include <vm/vm_phys.h>
 #include <vm/vm_pagequeue.h>
+#include <vm/vm_radix.h>
 #include <vm/vm_dumpset.h>
 #include <vm/uma.h>
 
@@ -239,7 +240,6 @@ static __inline uint32_t tlb_calc_wimg(vm_paddr_t pa, vm_memattr_t ma);
 
 static vm_size_t tsize2size(unsigned int);
 static unsigned int size2tsize(vm_size_t);
-static unsigned long ilog2(unsigned long);
 
 static void set_mas4_defaults(void);
 
@@ -749,6 +749,11 @@ mmu_booke_bootstrap(vm_offset_t start, vm_offset_t kernelend)
 	debugf("ptbl_buf_pool_vabase = 0x%"PRI0ptrX" end = 0x%"PRI0ptrX"\n",
 	    ptbl_buf_pool_vabase, virtual_avail);
 #endif
+#ifdef	__powerpc64__
+	/* Allocate KVA space for crashdumpmap. */
+	crashdumpmap = (caddr_t)virtual_avail;
+	virtual_avail += MAXDUMPPGS * PAGE_SIZE;
+#endif
 
 	/* Calculate corresponding physical addresses for the kernel region. */
 	phys_kernelend = kernload + kernsize;
@@ -1050,8 +1055,9 @@ mmu_booke_kextract(vm_offset_t va)
 
 /*
  * Initialize the pmap module.
- * Called by vm_init, to initialize any structures that the pmap
- * system needs to map virtual memory.
+ *
+ * Called by vm_mem_init(), to initialize any structures that the pmap system
+ * needs to map virtual memory.
  */
 static void
 mmu_booke_init(void)
@@ -1452,20 +1458,23 @@ static void
 mmu_booke_enter_object(pmap_t pmap, vm_offset_t start,
     vm_offset_t end, vm_page_t m_start, vm_prot_t prot)
 {
+	struct pctrie_iter pages;
+	vm_offset_t va;
 	vm_page_t m;
-	vm_pindex_t diff, psize;
 
 	VM_OBJECT_ASSERT_LOCKED(m_start->object);
 
-	psize = atop(end - start);
-	m = m_start;
+	vm_page_iter_limit_init(&pages, m_start->object,
+	    m_start->pindex + atop(end - start));
+	m = vm_radix_iter_lookup(&pages, m_start->pindex);
 	rw_wlock(&pvh_global_lock);
 	PMAP_LOCK(pmap);
-	while (m != NULL && (diff = m->pindex - m_start->pindex) < psize) {
-		mmu_booke_enter_locked(pmap, start + ptoa(diff), m,
+	while (m != NULL) {
+		va = start + ptoa(m->pindex - m_start->pindex);
+		mmu_booke_enter_locked(pmap, va, m,
 		    prot & (VM_PROT_READ | VM_PROT_EXECUTE),
 		    PMAP_ENTER_NOSLEEP | PMAP_ENTER_QUICK_LOCKED, 0);
-		m = TAILQ_NEXT(m, listq);
+		m = vm_radix_iter_step(&pages);
 	}
 	PMAP_UNLOCK(pmap);
 	rw_wunlock(&pvh_global_lock);

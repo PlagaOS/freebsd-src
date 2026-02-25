@@ -11,19 +11,52 @@ unlist_interface()
 	sed -i "" /^$1\$/d created_interfaces.lst
 }
 
+_vnet_check_req()
+{
+	type=$1
+
+	if kldstat -q -m if_${type}; then
+		return
+	fi
+
+	if ! kldload -n -q if_${type}; then
+		atf_skip "if_${type}.ko is required to run this test."
+		return
+	fi
+}
+
 vnet_init()
 {
 	if [ "`sysctl -i -n kern.features.vimage`" != 1 ]; then
 		atf_skip "This test requires VIMAGE"
 	fi
+
+	# Check if we can create if_epair or if_bridge interfaces.
+	# We may be running in a jail already, unable to load modules.
+	# If so, skip this test because it very likely (but not certainly)
+	# wants at least one of those
+	_vnet_check_req epair
+	_vnet_check_req bridge
 }
 
 vnet_mkepair()
 {
 	ifname=$(ifconfig epair create)
+	# When transmit checksum offloading is enabled, if_epair does not
+	# compute checksums, it just marks packets that this computation still
+	# needs to be done. However, some test cases verify the checksum.
+	# Therefore disable this for IPv4 and IPv6.
+	ifconfig ${ifname} -txcsum -txcsum6
 	list_interface $ifname
 	list_interface ${ifname%a}b
 	echo ${ifname%a}
+}
+
+vnet_init_bridge()
+{
+	if ! kldstat -q -m if_bridge; then
+		atf_skip "This test requires if_bridge"
+	fi
 }
 
 vnet_mkbridge()

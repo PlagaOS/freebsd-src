@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2021-2023 Alfonso Sabato Siciliano
+ * Copyright (c) 2021-2025 Alfonso Sabato Siciliano
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -85,7 +85,7 @@ enum OPTS {
 	LEFT3_BUTTON,
 	LEFT3_EXIT_CODE,
 	LOAD_THEME,
-	MAX_INPUT,
+	MAX_INPUT_FORM,
 	NO_CANCEL,
 	NO_DESCRIPTIONS,
 	NO_LINES,
@@ -143,7 +143,8 @@ enum OPTS {
 	TEXTBOX,
 	TIMEBOX,
 	TREEVIEW,
-	YESNO
+	YESNO,
+	SLIDER,
 };
 
 /* options descriptor */
@@ -202,7 +203,7 @@ static struct option longopts[] = {
 	{"left3-button",      required_argument, NULL, LEFT3_BUTTON},
 	{"left3-exit-code",   required_argument, NULL, LEFT3_EXIT_CODE},
 	{"load-theme",        required_argument, NULL, LOAD_THEME},
-	{"max-input",         required_argument, NULL, MAX_INPUT},
+	{"max-input",         required_argument, NULL, MAX_INPUT_FORM},
 	{"no-cancel",         no_argument,       NULL, NO_CANCEL},
 	{"nocancel",          no_argument,       NULL, NO_CANCEL},
 	{"no-descriptions",   no_argument,       NULL, NO_DESCRIPTIONS},
@@ -264,6 +265,7 @@ static struct option longopts[] = {
 	{"pause",        no_argument, NULL, PAUSE},
 	{"radiolist",    no_argument, NULL, RADIOLIST},
 	{"rangebox",     no_argument, NULL, RANGEBOX},
+	{"slider",       no_argument, NULL, SLIDER},
 	{"textbox",      no_argument, NULL, TEXTBOX},
 	{"timebox",      no_argument, NULL, TIMEBOX},
 	{"treeview",     no_argument, NULL, TREEVIEW},
@@ -546,7 +548,7 @@ parseargs(int argc, char **argv, struct bsddialog_conf *conf,
 		case LOAD_THEME:
 			opt->loadthemefile = optarg;
 			break;
-		case MAX_INPUT:
+		case MAX_INPUT_FORM:
 			opt->max_input_form = (u_int)strtoul(optarg, NULL, 10);
 			break;
 		case NO_CANCEL:
@@ -800,6 +802,13 @@ parseargs(int argc, char **argv, struct bsddialog_conf *conf,
 				    "--and-dialog", opt->name);
 			opt->name = "--rangebox";
 			opt->dialogbuilder = rangebox_builder;
+			break;
+		case SLIDER:
+			if (opt->dialogbuilder != NULL)
+				exit_error(true, "%s and --slider without "
+				    "--and-dialog", opt->name);
+			opt->name = "--slider";
+			opt->dialogbuilder = slider_builder;
 			break;
 		case TEXTBOX:
 			if (opt->dialogbuilder != NULL)

@@ -135,9 +135,9 @@ ppi_identify(driver_t *driver, device_t parent)
 
 	device_t dev;
 
-	dev = device_find_child(parent, "ppi", -1);
+	dev = device_find_child(parent, "ppi", DEVICE_UNIT_ANY);
 	if (!dev)
-		BUS_ADD_CHILD(parent, 0, "ppi", -1);
+		BUS_ADD_CHILD(parent, 0, "ppi", DEVICE_UNIT_ANY);
 }
 
 /*
@@ -605,7 +605,7 @@ static device_method_t ppi_methods[] = {
 	DEVMETHOD(device_probe,		ppi_probe),
 	DEVMETHOD(device_attach,	ppi_attach),
 	DEVMETHOD(device_detach,	ppi_detach),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t ppi_driver = {

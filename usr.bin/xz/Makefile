@@ -1,5 +1,7 @@
 .include <src.opts.mk>
 
+PACKAGE=xz
+
 PROG=	xz
 
 LINKS=	${BINDIR}/xz ${BINDIR}/unxz
@@ -36,17 +38,15 @@ SRCS+=	tuklib_open_stdxxx.c \
 	tuklib_exit.c \
 	tuklib_cpucores.c \
 	tuklib_mbstr_width.c \
-	tuklib_mbstr_fw.c
+	tuklib_mbstr_fw.c \
+	tuklib_mbstr_nonprint.c \
+	tuklib_mbstr_wrap.c
 
 WARNS?=	3
 
 CFLAGS+=	-DHAVE_CONFIG_H \
 		-I${LZMALIBDIR} \
 		-I${XZDIR}/common
-
-.if ${MK_CAPSICUM} == "no"
-CFLAGS+=	-DWITHOUT_CAPSICUM
-.endif
 
 LIBADD=	lzma
 

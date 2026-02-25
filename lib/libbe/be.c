@@ -1,28 +1,7 @@
-/*-
- * SPDX-License-Identifier: BSD-2-Clause
- *
+/*
  * Copyright (c) 2017 Kyle J. Kneitinger <kyle@kneit.in>
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
- * SUCH DAMAGE.
+ * SPDX-License-Identifier: BSD-2-Clause
  */
 
 #include <sys/param.h>
@@ -680,8 +659,20 @@ be_deep_clone_prop(int prop, void *cb)
 
 	dccb = cb;
 	/* Skip some properties we don't want to touch */
-	if (prop == ZFS_PROP_CANMOUNT)
+	switch (prop) {
+		/*
+		 * libzfs insists on these being naturally inherited in the
+		 * cloning process.
+		 */
+	case ZFS_PROP_KEYFORMAT:
+	case ZFS_PROP_KEYLOCATION:
+	case ZFS_PROP_ENCRYPTION:
+	case ZFS_PROP_PBKDF2_ITERS:
+
+		/* FALLTHROUGH */
+	case ZFS_PROP_CANMOUNT:		/* Forced by libbe */
 		return (ZPROP_CONT);
+	}
 
 	/* Don't copy readonly properties */
 	if (zfs_prop_readonly(prop))
@@ -897,6 +888,54 @@ be_create_from_existing(libbe_handle_t *lbh, const char *bename, const char *old
 
         err = be_clone(lbh, bename, snap, -1);
 
+	return (set_error(lbh, err));
+}
+
+/*
+ * Create a zfs dataset and map the return to libbe error.
+ */
+static int
+be_zfs_create(libzfs_handle_t *lzh, const char *buf, zfs_type_t t,
+    nvlist_t *props)
+{
+	int err;
+
+	if ((err = zfs_create(lzh, buf, t, props)) != 0) {
+		switch (err) {
+		case EZFS_EXISTS:
+			return (BE_ERR_EXISTS);
+		case EZFS_NOENT:
+			return (BE_ERR_NOENT);
+		case EZFS_BADTYPE:
+		case EZFS_BADVERSION:
+			return (BE_ERR_NOPOOL);
+		case EZFS_BADPROP:
+		default:
+			/* We set something up wrong, probably... */
+			return (BE_ERR_UNKNOWN);
+		}
+	}
+
+	return (BE_ERR_SUCCESS);
+}
+
+
+/*
+ * Create an empty boot environment.
+ */
+int
+be_create_empty(libbe_handle_t *lbh, const char *bename)
+{
+	char buf[BE_MAXPATHLEN];
+	int err;
+
+	if ((err = be_validate_name(lbh, bename)) != 0)
+		return (set_error(lbh, err));
+
+	if ((err = be_root_concat(lbh, bename, buf)) != 0)
+		return (set_error(lbh, err));
+
+	err = be_zfs_create(lbh->lzh, buf, ZFS_TYPE_FILESYSTEM, NULL);
 	return (set_error(lbh, err));
 }
 
@@ -1127,21 +1166,9 @@ be_create_child_noent(libbe_handle_t *lbh, const char *active,
 	nvlist_add_string(props, "mountpoint", child_path);
 
 	/* Create */
-	if ((err = zfs_create(lbh->lzh, active, ZFS_TYPE_DATASET,
+	if ((err = be_zfs_create(lbh->lzh, active, ZFS_TYPE_DATASET,
 	    props)) != 0) {
-		switch (err) {
-		case EZFS_EXISTS:
-			return (set_error(lbh, BE_ERR_EXISTS));
-		case EZFS_NOENT:
-			return (set_error(lbh, BE_ERR_NOENT));
-		case EZFS_BADTYPE:
-		case EZFS_BADVERSION:
-			return (set_error(lbh, BE_ERR_NOPOOL));
-		case EZFS_BADPROP:
-		default:
-			/* We set something up wrong, probably... */
-			return (set_error(lbh, BE_ERR_UNKNOWN));
-		}
+		return (set_error(lbh, err));
 	}
 	nvlist_free(props);
 
@@ -1349,6 +1376,18 @@ be_activate(libbe_handle_t *lbh, const char *bootenv, bool temporary)
 		if (err)
 			return (-1);
 	}
+
+	return (BE_ERR_SUCCESS);
+}
+
+int
+be_log_history(libbe_handle_t *lbh, const char *message)
+{
+	int err;
+
+	err = zpool_log_history(lbh->lzh, message);
+	if (err)
+		return (set_error(lbh, BE_ERR_UNKNOWN));
 
 	return (BE_ERR_SUCCESS);
 }

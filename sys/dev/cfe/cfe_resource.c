@@ -81,7 +81,7 @@ cferes_identify(driver_t* driver, device_t parent)
 	struct cferes_softc	*sc;
 	uint64_t		 addr, len, type;
 
-	child = BUS_ADD_CHILD(parent, 100, "cferes", -1);
+	child = BUS_ADD_CHILD(parent, 100, "cferes", DEVICE_UNIT_ANY);
 	device_set_driver(child, driver);
 	sc = device_get_softc(child);
 
@@ -144,7 +144,7 @@ static device_method_t cferes_methods[] = {
 	DEVMETHOD(device_shutdown,	bus_generic_shutdown),
 	DEVMETHOD(device_suspend,	bus_generic_suspend),
 	DEVMETHOD(device_resume,	bus_generic_resume),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t cferes_driver = {

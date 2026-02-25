@@ -91,16 +91,20 @@
 #define		TXFIFO0LR_MASK		0x3f
 #define	I2S_DMACR	0x0010
 #define		I2S_DMACR_RDE_ENABLE	(1 << 24)
-#define		I2S_DMACR_RDL(n)	((n) << 16)
+#define		I2S_DMACR_RDL(n)	(((n) - 1) << 16)
 #define		I2S_DMACR_TDE_ENABLE	(1 << 8)
 #define		I2S_DMACR_TDL(n)	((n) << 0)
 #define	I2S_INTCR	0x0014
 #define		I2S_INTCR_RFT(n)	(((n) - 1) << 20)
-#define		I2S_INTCR_TFT(n)	(((n) - 1) << 4)
+#define		I2S_INTCR_TFT(n)	((n) << 4)
+#define		I2S_INTCR_RXOIC		(1 << 18)
+#define		I2S_INTCR_RXOIE		(1 << 17)
 #define		I2S_INTCR_RXFIE		(1 << 16)
 #define		I2S_INTCR_TXUIC		(1 << 2)
+#define		I2S_INTCR_TXUIE		(1 << 1)
 #define		I2S_INTCR_TXEIE		(1 << 0)
 #define	I2S_INTSR	0x0018
+#define		I2S_INTSR_RXOI		(1 << 17)
 #define		I2S_INTSR_RXFI		(1 << 16)
 #define		I2S_INTSR_TXUI		(1 << 1)
 #define		I2S_INTSR_TXEI		(1 << 0)
@@ -399,10 +403,10 @@ rk_i2s_dai_intr(device_t dev, struct snd_dbuf *play_buf, struct snd_dbuf *rec_bu
 		count = sndbuf_getready(play_buf);
 		if (count > FIFO_SIZE - 1)
 			count = FIFO_SIZE - 1;
-		size = sndbuf_getsize(play_buf);
+		size = play_buf->bufsize;
 		readyptr = sndbuf_getreadyptr(play_buf);
 
-		samples = (uint8_t*)sndbuf_getbuf(play_buf);
+		samples = play_buf->buf;
 		written = 0;
 		for (; level < count; level++) {
 			val  = (samples[readyptr++ % size] << 0);
@@ -422,9 +426,9 @@ rk_i2s_dai_intr(device_t dev, struct snd_dbuf *play_buf, struct snd_dbuf *rec_bu
 		uint8_t *samples;
 		uint32_t count, size, freeptr, recorded;
 		count = sndbuf_getfree(rec_buf);
-		size = sndbuf_getsize(rec_buf);
+		size = rec_buf->bufsize;
 		freeptr = sndbuf_getfreeptr(rec_buf);
-		samples = (uint8_t*)sndbuf_getbuf(rec_buf);
+		samples = rec_buf->buf;
 		recorded = 0;
 		if (level > count / 4)
 			level = count / 4;

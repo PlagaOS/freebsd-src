@@ -85,12 +85,12 @@ lkpi_iic_attach(device_t dev)
 	struct lkpi_iic_softc *sc;
 
 	sc = device_get_softc(dev);
-	sc->iicbus = device_add_child(dev, "iicbus", -1);
+	sc->iicbus = device_add_child(dev, "iicbus", DEVICE_UNIT_ANY);
 	if (sc->iicbus == NULL) {
 		device_printf(dev, "Couldn't add iicbus child, aborting\n");
 		return (ENXIO);
 	}
-	bus_generic_attach(dev);
+	bus_attach_children(dev);
 	return (0);
 }
 
@@ -316,7 +316,6 @@ int
 lkpi_i2c_add_adapter(struct i2c_adapter *adapter)
 {
 	device_t lkpi_iic;
-	int error;
 
 	if (adapter->name[0] == '\0')
 		return (-EINVAL);
@@ -324,7 +323,8 @@ lkpi_i2c_add_adapter(struct i2c_adapter *adapter)
 		device_printf(adapter->dev.parent->bsddev,
 		    "Adding i2c adapter %s\n", adapter->name);
 	sx_xlock(&lkpi_sx_i2c);
-	lkpi_iic = device_add_child(adapter->dev.parent->bsddev, "lkpi_iic", -1);
+	lkpi_iic = device_add_child(adapter->dev.parent->bsddev, "lkpi_iic",
+	    DEVICE_UNIT_ANY);
 	if (lkpi_iic == NULL) {
 		device_printf(adapter->dev.parent->bsddev, "Couldn't add lkpi_iic\n");
 		sx_xunlock(&lkpi_sx_i2c);
@@ -332,14 +332,8 @@ lkpi_i2c_add_adapter(struct i2c_adapter *adapter)
 	}
 
 	bus_topo_lock();
-	error = bus_generic_attach(adapter->dev.parent->bsddev);
+	bus_attach_children(adapter->dev.parent->bsddev);
 	bus_topo_unlock();
-	if (error) {
-		device_printf(adapter->dev.parent->bsddev,
-		  "failed to attach child: error %d\n", error);
-		sx_xunlock(&lkpi_sx_i2c);
-		return (ENXIO);
-	}
 	LKPI_IIC_ADD_ADAPTER(lkpi_iic, adapter);
 	sx_xunlock(&lkpi_sx_i2c);
 	return (0);

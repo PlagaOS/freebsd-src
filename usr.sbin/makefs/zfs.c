@@ -38,6 +38,7 @@
 #include <stdalign.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -85,14 +86,18 @@ zfs_prep_opts(fsinfo_t *fsopts)
 		  0, 0, "Bootable dataset" },
 		{ '\0', "mssize", &zfs->mssize, OPT_INT64,
 		  MINMSSIZE, MAXMSSIZE, "Metaslab size" },
+		{ '\0', "poolguid", &zfs->poolguid, OPT_INT64,
+		  0, INT64_MAX, "ZFS pool GUID" },
 		{ '\0', "poolname", &zfs->poolname, OPT_STRPTR,
 		  0, 0, "ZFS pool name" },
 		{ '\0', "rootpath", &zfs->rootpath, OPT_STRPTR,
 		  0, 0, "Prefix for all dataset mount points" },
 		{ '\0', "ashift", &zfs->ashift, OPT_INT32,
 		  MINBLOCKSHIFT, MAXBLOCKSHIFT, "ZFS pool ashift" },
+		{ '\0', "verify-txgs", &zfs->verify_txgs, OPT_BOOL,
+		  0, 0, "Make OpenZFS verify data upon import" },
 		{ '\0', "nowarn", &zfs->nowarn, OPT_BOOL,
-		  0, 0, "Suppress warning about experimental ZFS support" },
+		  0, 0, "Provided for backwards compatibility, ignored" },
 		{ .name = NULL }
 	};
 
@@ -545,7 +550,8 @@ pool_init(zfs_opt_t *zfs)
 {
 	uint64_t dnid;
 
-	zfs->poolguid = randomguid();
+	if (zfs->poolguid == 0)
+		zfs->poolguid = randomguid();
 	zfs->vdevguid = randomguid();
 
 	zfs->mos = objset_alloc(zfs, DMU_OST_META);
@@ -590,11 +596,22 @@ pool_labels_write(zfs_opt_t *zfs)
 	 * checksum is calculated in vdev_label_write().
 	 */
 	for (size_t uoff = 0; uoff < sizeof(label->vl_uberblock);
-	    uoff += (1 << zfs->ashift)) {
+	    uoff += ASHIFT_UBERBLOCK_SIZE(zfs->ashift)) {
 		ub = (uberblock_t *)(&label->vl_uberblock[0] + uoff);
 		ub->ub_magic = UBERBLOCK_MAGIC;
 		ub->ub_version = SPA_VERSION;
+
+		/*
+		 * Upon import, OpenZFS will perform metadata verification of
+		 * the last TXG by default.  If all data is written in the same
+		 * TXG, it'll all get verified, which can be painfully slow in
+		 * some cases, e.g., initial boot in a cloud environment with
+		 * slow storage.  So, fabricate additional TXGs to avoid this
+		 * overhead, unless the user requests otherwise.
+		 */
 		ub->ub_txg = TXG;
+		if (!zfs->verify_txgs)
+			ub->ub_txg += TXG_SIZE;
 		ub->ub_guid_sum = zfs->poolguid + zfs->vdevguid;
 		ub->ub_timestamp = 0;
 
@@ -778,12 +795,6 @@ zfs_makefs(const char *image, const char *dir, fsnode *root, fsinfo_t *fsopts)
 	srandom(1729);
 
 	zfs_check_opts(fsopts);
-
-	if (!zfs->nowarn) {
-		fprintf(stderr,
-		    "ZFS support is currently considered experimental. "
-		    "Do not use it for anything critical.\n");
-	}
 
 	dirfd = open(dir, O_DIRECTORY | O_RDONLY);
 	if (dirfd < 0)

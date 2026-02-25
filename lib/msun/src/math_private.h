@@ -405,7 +405,7 @@ do {								\
  * any extra precision into the type of 'a' -- 'a' should have type float_t,
  * double_t or long double.  b's type should be no larger than 'a's type.
  * Callers should use these types with scopes as large as possible, to
- * reduce their own extra-precision and efficiciency problems.  In
+ * reduce their own extra-precision and efficiency problems.  In
  * particular, they shouldn't convert back and forth just to call here.
  */
 #ifdef DEBUG
@@ -738,6 +738,41 @@ irintl(long double x)
 	(ai) = u.e;					\
 	(ar) = (x) - (ai);				\
 } while (0)
+
+/*
+ * For a subnormal double entity split into high and low parts, compute ilogb.
+ */
+static inline int32_t
+subnormal_ilogb(int32_t hi, int32_t lo)
+{
+	int32_t j;
+	uint32_t i;
+
+	j = -1022;
+	if (hi == 0) {
+	    j -= 21;
+	    i = (uint32_t)lo;
+	} else
+	    i = (uint32_t)hi << 11;
+
+	for (; i < 0x7fffffff; i <<= 1) j -= 1;
+
+	return (j);
+}
+
+/*
+ * For a subnormal float entity represented as an int32_t, compute ilogb.
+ */
+static inline int32_t
+subnormal_ilogbf(int32_t hx)
+{
+	int32_t j;
+	uint32_t i;
+	i = (uint32_t) hx << 8;
+	for (j = -126; i < 0x7fffffff; i <<= 1) j -=1;
+
+	return (j);
+}
 
 #ifdef DEBUG
 #if defined(__amd64__) || defined(__i386__)

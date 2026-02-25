@@ -313,10 +313,6 @@ smc_attach(device_t dev)
 	sc->smc_dev = dev;
 
 	ifp = sc->smc_ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		error = ENOSPC;
-		goto done;
-	}
 
 	mtx_init(&sc->smc_mtx, device_get_nameunit(dev), NULL, MTX_DEF);
 
@@ -454,10 +450,7 @@ smc_detach(device_t dev)
 		if_free(sc->smc_ifp);
 	}
 
-	if (sc->smc_miibus != NULL) {
-		device_delete_child(sc->smc_dev, sc->smc_miibus);
-		bus_generic_detach(sc->smc_dev);
-	}
+	bus_generic_detach(sc->smc_dev);
 
 	if (sc->smc_reg != NULL) {
 		type = SYS_RES_IOPORT;
@@ -487,7 +480,7 @@ static device_method_t smc_methods[] = {
 	DEVMETHOD(miibus_readreg,	smc_miibus_readreg),
 	DEVMETHOD(miibus_writereg,	smc_miibus_writereg),
 	DEVMETHOD(miibus_statchg,	smc_miibus_statchg),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 driver_t smc_driver = {

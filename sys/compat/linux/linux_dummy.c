@@ -74,9 +74,6 @@ DUMMY(kexec_load);
 DUMMY(add_key);
 DUMMY(request_key);
 DUMMY(keyctl);
-/* Linux 2.6.13: */
-DUMMY(inotify_add_watch);
-DUMMY(inotify_rm_watch);
 /* Linux 2.6.16: */
 DUMMY(migrate_pages);
 DUMMY(unshare);
@@ -87,7 +84,6 @@ DUMMY(vmsplice);
 DUMMY(move_pages);
 /* Linux 2.6.27: */
 DUMMY(signalfd4);
-DUMMY(inotify_init1);
 /* Linux 2.6.31: */
 DUMMY(perf_event_open);
 /* Linux 2.6.36: */
@@ -100,8 +96,6 @@ DUMMY(setns);
 /* Linux 3.2: */
 DUMMY(process_vm_readv);
 DUMMY(process_vm_writev);
-/* Linux 3.5: */
-DUMMY(kcmp);
 /* Linux 3.8: */
 DUMMY(finit_module);
 DUMMY(sched_setattr);

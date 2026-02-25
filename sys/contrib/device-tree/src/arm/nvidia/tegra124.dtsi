@@ -165,6 +165,22 @@
 			status = "disabled";
 		};
 
+		dsia: dsi@54300000 {
+			compatible = "nvidia,tegra124-dsi";
+			reg = <0x0 0x54300000 0x0 0x00040000>;
+			clocks = <&tegra_car TEGRA124_CLK_DSIA>,
+				 <&tegra_car TEGRA124_CLK_DSIALP>,
+				 <&tegra_car TEGRA124_CLK_PLL_D_OUT0>;
+			clock-names = "dsi", "lp", "parent";
+			resets = <&tegra_car 48>;
+			reset-names = "dsi";
+			nvidia,mipi-calibrate = <&mipi 0x060>; /* DSIA & DSIB pads */
+			status = "disabled";
+
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
 		vic@54340000 {
 			compatible = "nvidia,tegra124-vic";
 			reg = <0x0 0x54340000 0x0 0x00040000>;
@@ -175,6 +191,22 @@
 			reset-names = "vic";
 
 			iommus = <&mc TEGRA_SWGROUP_VIC>;
+		};
+
+		dsib: dsi@54400000 {
+			compatible = "nvidia,tegra124-dsi";
+			reg = <0x0 0x54400000 0x0 0x00040000>;
+			clocks = <&tegra_car TEGRA124_CLK_DSIB>,
+				 <&tegra_car TEGRA124_CLK_DSIBLP>,
+				 <&tegra_car TEGRA124_CLK_PLL_D_OUT0>;
+			clock-names = "dsi", "lp", "parent";
+			resets = <&tegra_car 82>;
+			reset-names = "dsi";
+			nvidia,mipi-calibrate = <&mipi 0x180>; /* DSIC & DSID pads */
+			status = "disabled";
+
+			#address-cells = <1>;
+			#size-cells = <0>;
 		};
 
 		sor@54540000 {
@@ -380,7 +412,6 @@
 		interrupts = <GIC_SPI 36 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&tegra_car TEGRA124_CLK_UARTA>;
 		resets = <&tegra_car 6>;
-		reset-names = "serial";
 		dmas = <&apbdma 8>, <&apbdma 8>;
 		dma-names = "rx", "tx";
 		status = "disabled";
@@ -393,7 +424,6 @@
 		interrupts = <GIC_SPI 37 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&tegra_car TEGRA124_CLK_UARTB>;
 		resets = <&tegra_car 7>;
-		reset-names = "serial";
 		dmas = <&apbdma 9>, <&apbdma 9>;
 		dma-names = "rx", "tx";
 		status = "disabled";
@@ -406,7 +436,6 @@
 		interrupts = <GIC_SPI 46 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&tegra_car TEGRA124_CLK_UARTC>;
 		resets = <&tegra_car 55>;
-		reset-names = "serial";
 		dmas = <&apbdma 10>, <&apbdma 10>;
 		dma-names = "rx", "tx";
 		status = "disabled";
@@ -419,7 +448,6 @@
 		interrupts = <GIC_SPI 90 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&tegra_car TEGRA124_CLK_UARTD>;
 		resets = <&tegra_car 65>;
-		reset-names = "serial";
 		dmas = <&apbdma 19>, <&apbdma 19>;
 		dma-names = "rx", "tx";
 		status = "disabled";
@@ -940,6 +968,14 @@
 				#cooling-cells = <2>;
 			};
 		};
+	};
+
+	mipi: mipi@700e3000 {
+		compatible = "nvidia,tegra124-mipi";
+		reg = <0x0 0x700e3000 0x0 0x100>;
+		clocks = <&tegra_car TEGRA124_CLK_MIPI_CAL>;
+		clock-names = "mipi-cal";
+		#nvidia,mipi-calibrate-cells = <1>;
 	};
 
 	dfll: clock@70110000 {

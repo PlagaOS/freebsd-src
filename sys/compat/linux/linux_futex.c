@@ -251,7 +251,7 @@ linux_futex(struct thread *td, struct linux_futex_args *args)
 		 * set LINUX_BI_FUTEX_REQUEUE bit of Brandinfo flags.
 		 */
 		p = td->td_proc;
-		Elf_Brandinfo *bi = p->p_elf_brandinfo;
+		const Elf_Brandinfo *bi = p->p_elf_brandinfo;
 		if (bi == NULL || ((bi->flags & LINUX_BI_FUTEX_REQUEUE)) == 0)
 			return (EINVAL);
 		args->val3_compare = false;
@@ -501,9 +501,7 @@ linux_futex_lock_pi(struct thread *td, bool try, struct linux_futex_args *args)
 		if (error != 0)
 			break;
 
-		umtxq_lock(&uq->uq_key);
-		umtxq_busy(&uq->uq_key);
-		umtxq_unlock(&uq->uq_key);
+		umtxq_busy_unlocked(&uq->uq_key);
 
 		/*
 		 * Set the contested bit so that a release in user space knows
@@ -642,9 +640,7 @@ linux_futex_wakeop(struct thread *td, struct linux_futex_args *args)
 		umtx_key_release(&key);
 		return (error);
 	}
-	umtxq_lock(&key);
-	umtxq_busy(&key);
-	umtxq_unlock(&key);
+	umtxq_busy_unlocked(&key);
 	error = futex_atomic_op(td, args->val3, args->uaddr2, &op_ret);
 	umtxq_lock(&key);
 	umtxq_unbusy(&key);
@@ -701,9 +697,7 @@ linux_futex_requeue(struct thread *td, struct linux_futex_args *args)
 		umtx_key_release(&key);
 		return (error);
 	}
-	umtxq_lock(&key);
-	umtxq_busy(&key);
-	umtxq_unlock(&key);
+	umtxq_busy_unlocked(&key);
 	error = fueword32(args->uaddr, &uval);
 	if (error != 0)
 		error = EFAULT;

@@ -72,7 +72,7 @@ static int  unin_chip_attach(device_t);
 static int  unin_chip_print_child(device_t dev, device_t child);
 static void unin_chip_probe_nomatch(device_t, device_t);
 static struct rman *unin_chip_get_rman(device_t, int, u_int);
-static struct resource *unin_chip_alloc_resource(device_t, device_t, int, int *,
+static struct resource *unin_chip_alloc_resource(device_t, device_t, int, int,
 						 rman_res_t, rman_res_t,
 						 rman_res_t, u_int);
 static int  unin_chip_adjust_resource(device_t, device_t,
@@ -374,7 +374,7 @@ unin_chip_attach(device_t dev)
 
 		unin_chip_add_reg(child, dinfo);
 
-		cdev = device_add_child(dev, NULL, -1);
+		cdev = device_add_child(dev, NULL, DEVICE_UNIT_ANY);
 		if (cdev == NULL) {
 			device_printf(dev, "<%s>: device_add_child failed\n",
 				      dinfo->udi_obdinfo.obd_name);
@@ -418,7 +418,8 @@ unin_chip_attach(device_t dev)
 	if (strcmp(compat, "gmac") == 0)
 		unin_enable_gmac(dev);
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 }
 
 static int
@@ -477,7 +478,7 @@ unin_chip_get_rman(device_t bus, int type, u_int flags)
 }
 
 static struct resource *
-unin_chip_alloc_resource(device_t bus, device_t child, int type, int *rid,
+unin_chip_alloc_resource(device_t bus, device_t child, int type, int rid,
 			 rman_res_t start, rman_res_t end, rman_res_t count,
 			 u_int flags)
 {
@@ -491,10 +492,10 @@ unin_chip_alloc_resource(device_t bus, device_t child, int type, int *rid,
 	case SYS_RES_MEMORY:
 	case SYS_RES_IOPORT:
 		rle = resource_list_find(&dinfo->udi_resources, SYS_RES_MEMORY,
-					 *rid);
+					 rid);
 		if (rle == NULL) {
 			device_printf(bus, "no rle for %s memory %d\n",
-				      device_get_nameunit(child), *rid);
+				      device_get_nameunit(child), rid);
 			return (NULL);
 		}
 
@@ -526,7 +527,7 @@ unin_chip_alloc_resource(device_t bus, device_t child, int type, int *rid,
 						  flags);
 
 		rle = resource_list_find(&dinfo->udi_resources, SYS_RES_IRQ,
-		    *rid);
+		    rid);
 		if (rle == NULL) {
 			if (dinfo->udi_ninterrupts >= 6) {
 				device_printf(bus,

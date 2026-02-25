@@ -1,3 +1,5 @@
+zstream_CPPFLAGS = $(AM_CPPFLAGS) $(LIBZPOOL_CPPFLAGS)
+
 sbin_PROGRAMS   += zstream
 CPPCHECKTARGETS += zstream
 
@@ -16,6 +18,7 @@ zstream_LDADD = \
 	libzpool.la \
 	libnvpair.la
 
-PHONY += install-exec-hook
-install-exec-hook:
+cmd-zstream-install-exec-hook:
 	cd $(DESTDIR)$(sbindir) && $(LN_S) -f zstream zstreamdump
+
+INSTALL_EXEC_HOOKS += cmd-zstream-install-exec-hook

@@ -28,10 +28,12 @@
  */
 
 #include <sys/types.h>
+
 #include <machine/vmm.h>
 #include <machine/vmm_snapshot.h>
 
 #include <err.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,7 +48,6 @@
 #include "pci_emul.h"
 #include "pci_irq.h"
 #include "pci_lpc.h"
-#include "pci_passthru.h"
 #include "pctestdev.h"
 #include "tpm_device.h"
 #include "uart_emul.h"
@@ -104,7 +105,7 @@ lpc_device_parse(const char *opts)
 			if (romfile == NULL) {
 				errx(4, "invalid bootrom option \"%s\"", opts);
 			}
-			set_config_value("lpc.bootrom", romfile);
+			set_config_value("bootrom", romfile);
 
 			varfile = strsep(&str, ",");
 			if (varfile == NULL) {
@@ -112,7 +113,7 @@ lpc_device_parse(const char *opts)
 				goto done;
 			}
 			if (strchr(varfile, '=') == NULL) {
-				set_config_value("lpc.bootvars", varfile);
+				set_config_value("bootvars", varfile);
 			} else {
 				/* varfile doesn't exist, it's another config
 				 * option */
@@ -183,13 +184,6 @@ lpc_print_supported_devices(void)
 }
 
 const char *
-lpc_bootrom(void)
-{
-
-	return (get_config_value("lpc.bootrom"));
-}
-
-const char *
 lpc_fwcfg(void)
 {
 	return (get_config_value("lpc.fwcfg"));
@@ -256,14 +250,6 @@ lpc_init(struct vmctx *ctx)
 	const char *backend, *name;
 	char *node_name;
 	int unit, error;
-	const nvlist_t *nvl;
-
-	nvl = find_config_node("lpc");
-	if (nvl != NULL && nvlist_exists(nvl, "bootrom")) {
-		error = bootrom_loadrom(ctx, nvl);
-		if (error)
-			return (error);
-	}
 
 	/* COM1 and COM2 */
 	for (unit = 0; unit < LPC_UART_NUM; unit++) {
@@ -475,34 +461,48 @@ pci_lpc_read(struct pci_devinst *pi __unused, int baridx __unused,
 #define LPC_SUBDEV_0	0x0000
 
 static int
-pci_lpc_get_sel(struct pcisel *const sel)
+pci_lpc_get_conf(struct pci_conf *conf)
 {
-	assert(sel != NULL);
+	struct pci_conf_io pcio;
+	struct pci_match_conf pmc;
+	int pcifd;
 
-	memset(sel, 0, sizeof(*sel));
-
-	for (uint8_t slot = 0; slot <= PCI_SLOTMAX; ++slot) {
-		uint8_t max_func = 0;
-
-		sel->pc_dev = slot;
-		sel->pc_func = 0;
-
-		if (pci_host_read_config(sel, PCIR_HDRTYPE, 1) & PCIM_MFDEV)
-			max_func = PCI_FUNCMAX;
-
-		for (uint8_t func = 0; func <= max_func; ++func) {
-			sel->pc_func = func;
-
-			if (pci_host_read_config(sel, PCIR_CLASS, 1) ==
-			    PCIC_BRIDGE &&
-			    pci_host_read_config(sel, PCIR_SUBCLASS, 1) ==
-			    PCIS_BRIDGE_ISA) {
-				return (0);
-			}
-		}
+	pcifd = open("/dev/pci", O_RDONLY);
+	if (pcifd < 0) {
+		warn("%s: Unable to open /dev/pci", __func__);
+		return (-1);
 	}
 
-	warnx("%s: Unable to find host selector of LPC bridge.", __func__);
+restart:
+	memset(&pcio, 0, sizeof(pcio));
+	memset(&pmc, 0, sizeof(pmc));
+	pmc.pc_class = PCIC_BRIDGE;
+	pmc.flags = PCI_GETCONF_MATCH_CLASS;
+	do {
+		pcio.pat_buf_len = sizeof(pmc);
+		pcio.num_patterns = 1;
+		pcio.patterns = &pmc;
+		pcio.match_buf_len = sizeof(*conf);
+		pcio.matches = conf;
+		if (ioctl(pcifd, PCIOCGETCONF, &pcio) == -1) {
+			warn("%s: ioctl(PCIOCGETCONF) failed", __func__);
+			break;
+		}
+		if (pcio.num_matches == 0)
+			break;
+		if (pcio.status == PCI_GETCONF_LIST_CHANGED)
+			goto restart;
+
+		if (conf->pc_class == PCIC_BRIDGE &&
+		    conf->pc_subclass == PCIS_BRIDGE_ISA) {
+			close(pcifd);
+			return (0);
+		}
+	} while (pcio.status == PCI_GETCONF_MORE_DEVS);
+
+	close(pcifd);
+
+	warnx("%s: Unable to find host selector of LPC bridge", __func__);
 
 	return (-1);
 }
@@ -510,8 +510,7 @@ pci_lpc_get_sel(struct pcisel *const sel)
 static int
 pci_lpc_init(struct pci_devinst *pi, nvlist_t *nvl)
 {
-	struct pcisel sel = { 0 };
-	struct pcisel *selp = NULL;
+	struct pci_conf conf, *confp;
 	uint16_t device, subdevice, subvendor, vendor;
 	uint8_t revid;
 
@@ -536,15 +535,16 @@ pci_lpc_init(struct pci_devinst *pi, nvlist_t *nvl)
 	if (lpc_init(pi->pi_vmctx) != 0)
 		return (-1);
 
-	if (pci_lpc_get_sel(&sel) == 0)
-		selp = &sel;
+	confp = NULL;
+	if (pci_lpc_get_conf(&conf) == 0)
+		confp = &conf;
 
-	vendor = pci_config_read_reg(selp, nvl, PCIR_VENDOR, 2, LPC_VENDOR);
-	device = pci_config_read_reg(selp, nvl, PCIR_DEVICE, 2, LPC_DEV);
-	revid = pci_config_read_reg(selp, nvl, PCIR_REVID, 1, LPC_REVID);
-	subvendor = pci_config_read_reg(selp, nvl, PCIR_SUBVEND_0, 2,
+	vendor = pci_config_read_reg(confp, nvl, PCIR_VENDOR, 2, LPC_VENDOR);
+	device = pci_config_read_reg(confp, nvl, PCIR_DEVICE, 2, LPC_DEV);
+	revid = pci_config_read_reg(confp, nvl, PCIR_REVID, 1, LPC_REVID);
+	subvendor = pci_config_read_reg(confp, nvl, PCIR_SUBVEND_0, 2,
 	    LPC_SUBVEND_0);
-	subdevice = pci_config_read_reg(selp, nvl, PCIR_SUBDEV_0, 2,
+	subdevice = pci_config_read_reg(confp, nvl, PCIR_SUBDEV_0, 2,
 	    LPC_SUBDEV_0);
 
 	/* initialize config space */

@@ -82,12 +82,19 @@
 #define	EOFFSET	(ELAST+8)	/* relative seek not supported */
 #define	ESALAST	(ELAST+8)	/* */
 
-/* Partial signal emulation for sig_atomic_t */
-#include <machine/signal.h>
+/*
+ * LUA needs sig_atomic_t. This is defined to be long or int on all our
+ * platforms. On all but powerpc, these are all the same thing as long. 64-bit
+ * powerpc defines this as int, but long can also be accessed atomically. It's
+ * also OK because we don't have signal handlers in the boot loader.
+ */
+typedef long sig_atomic_t;
 
 __BEGIN_DECLS
 
 struct open_file;
+
+#define FS_OPS_NO_DEVOPEN 1
 
 /*
  * This structure is used to define file system operations in a file system
@@ -99,6 +106,7 @@ struct open_file;
  */
 struct fs_ops {
     const char	*fs_name;
+    int		fs_flags;
     int		(*fo_open)(const char *path, struct open_file *f);
     int		(*fo_close)(struct open_file *f);
     int		(*fo_read)(struct open_file *f, void *buf,
@@ -270,6 +278,11 @@ static __inline int ispunct(int c)
 	    (c >= '[' && c <= '`') || (c >= '{' && c <= '~');
 }
 
+static __inline int isprint(int c)
+{
+	return (c >= ' ') && (c <= '~');
+}
+
 static __inline int toupper(int c)
 {
     return islower(c) ? c - 'a' + 'A' : c;
@@ -339,6 +352,7 @@ extern int	pager_file(const char *fname);
 #define EV_DYNAMIC	(1<<0)		/* value was dynamically allocated, free if changed/unset */
 #define EV_VOLATILE	(1<<1)		/* value is volatile, make a copy of it */
 #define EV_NOHOOK	(1<<2)		/* don't call hook when setting */
+#define EV_NOKENV	(1<<3)		/* don't add to kenv (loader-only) */
 
 struct env_var;
 typedef char	*(ev_format_t)(struct env_var *ev);
@@ -494,6 +508,9 @@ extern void *reallocf(void *, size_t);
  */
 caddr_t ptov(uintptr_t);
 
+/* dev_net.c */
+bool is_tftp(void);
+
 /* features.c */
 typedef void (feature_iter_fn)(void *, const char *, const char *, bool);
 
@@ -552,5 +569,18 @@ void tslog_setbuf(void * buf, size_t len);
 void tslog_getbuf(void ** buf, size_t * len);
 
 __END_DECLS
+
+/* define _DEBUG_LEVEL n or _DEBUG_LEVEL_VAR before include */
+#ifndef DEBUG_PRINTF
+# if defined(_DEBUG_LEVEL) || defined(_DEBUG_LEVEL_VAR)
+#   ifndef _DEBUG_LEVEL_VAR
+#     define _DEBUG_LEVEL_VAR _debug
+static int _debug = _DEBUG_LEVEL;
+#   endif
+#   define DEBUG_PRINTF(n, args) if (_DEBUG_LEVEL_VAR >= n) printf args
+# else
+#   define DEBUG_PRINTF(n, args)
+# endif
+#endif
 
 #endif	/* STAND_H */

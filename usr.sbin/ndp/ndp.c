@@ -103,7 +103,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <paths.h>
-#include <err.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -122,7 +121,6 @@
 static pid_t pid;
 static int32_t thiszone;	/* time difference with gmt */
 static int s = -1;
-static int repeat = 0;
 
 static char host_buf[NI_MAXHOST];	/* getnameinfo() */
 static char ifix_buf[IFNAMSIZ];		/* if_indextoname() */
@@ -250,8 +248,8 @@ main(int argc, char **argv)
 				/*NOTREACHED*/
 			}
 			mode = 'a';
-			repeat = atoi(optarg);
-			if (repeat < 0) {
+			opts.repeat = atoi(optarg);
+			if (opts.repeat < 0) {
 				usage();
 				/*NOTREACHED*/
 			}
@@ -350,7 +348,8 @@ main(int argc, char **argv)
 		break;
 	}
 	xo_close_container("ndp");
-	xo_finish();
+	if (xo_finish() < 0)
+		xo_err(1, "stdout");
 
 	return (ret);
 }
@@ -633,12 +632,12 @@ dump_rtsock(struct sockaddr_in6 *addr, int cflag)
 	if (!opts.tflag && !cflag) {
 		char xobuf[200];
 		snprintf(xobuf, sizeof(xobuf),
-		    "{T:/%%-%d.%ds} {T:/%%-%d.%ds} {T:/%%%d.%ds} {T:/%%-9.9s} {T:%%1s} {T:%%5s}\n",
+		    "{T:/%%-%d.%ds} {T:/%%-%d.%ds} {T:/%%%d.%ds} {T:/%%-9.9s} {T:/%%1s} {T:/%%5s}\n",
 		    W_ADDR, W_ADDR, W_LL, W_LL, W_IF, W_IF);
 		xo_emit(xobuf, "Neighbor", "Linklayer Address", "Netif", "Expire", "S", "Flags");
 	}
 	xo_open_list("neighbor-cache");
-again:;
+again:
 	mib[0] = CTL_NET;
 	mib[1] = PF_ROUTE;
 	mib[2] = 0;
@@ -828,10 +827,10 @@ again:;
 	if (buf != NULL)
 		free(buf);
 
-	if (repeat) {
+	if (opts.repeat) {
 		xo_emit("\n");
 		xo_flush();
-		sleep(repeat);
+		sleep(opts.repeat);
 		goto again;
 	}
 
@@ -921,16 +920,16 @@ ndp_ether_aton(char *a, u_char *n)
 static void
 usage(void)
 {
-	printf("usage: ndp [-nt] hostname\n");
-	printf("       ndp [-nt] -a | -c | -p | -r | -H | -P | -R\n");
-	printf("       ndp [-nt] -A wait\n");
-	printf("       ndp [-nt] -d hostname\n");
-	printf("       ndp [-nt] -f filename\n");
-	printf("       ndp [-nt] -i interface [flags...]\n");
+	xo_error("usage: ndp [-nt] hostname\n");
+	xo_error("       ndp [-nt] -a | -c | -p | -r | -H | -P | -R\n");
+	xo_error("       ndp [-nt] -A wait\n");
+	xo_error("       ndp [-nt] -d hostname\n");
+	xo_error("       ndp [-nt] -f filename\n");
+	xo_error("       ndp [-nt] -i interface [flags...]\n");
 #ifdef SIOCSDEFIFACE_IN6
-	printf("       ndp [-nt] -I [interface|delete]\n");
+	xo_error("       ndp [-nt] -I [interface|delete]\n");
 #endif
-	printf("       ndp [-nt] -s nodename etheraddr [temp] [proxy]\n");
+	xo_error("       ndp [-nt] -s nodename etheraddr [temp] [proxy]\n");
 	exit(1);
 }
 
@@ -1060,6 +1059,9 @@ ifinfo(char *ifname, int argc, char **argv)
 #ifdef ND6_IFF_NO_PREFER_IFACE
 		SETFLAG("no_prefer_iface", ND6_IFF_NO_PREFER_IFACE);
 #endif
+#ifdef ND6_IFF_STABLEADDR
+		SETFLAG("stableaddr", ND6_IFF_STABLEADDR);
+#endif
 		SETVALUE("basereachable", ND.basereachable);
 		SETVALUE("retrans", ND.retrans);
 		SETVALUE("curhlim", ND.chlim);
@@ -1145,6 +1147,10 @@ ifinfo(char *ifname, int argc, char **argv)
 		if ((ND.flags & ND6_IFF_AUTO_LINKLOCAL))
 			xo_emit("{l:%s} ", "auto_linklocal");
 #endif
+#ifdef ND6_IFF_STABLEADDR
+		if ((ND.flags & ND6_IFF_STABLEADDR))
+			xo_emit("{l:%s} ", "stableaddr");
+#endif
 #ifdef ND6_IFF_NO_PREFER_IFACE
 		if ((ND.flags & ND6_IFF_NO_PREFER_IFACE))
 			xo_emit("{l:%s} ", "no_prefer_iface");
@@ -1171,7 +1177,7 @@ rtrlist(void)
 	size_t l;
 	struct timeval now;
 
-	if (sysctl(mib, sizeof(mib) / sizeof(mib[0]), NULL, &l, NULL, 0) < 0) {
+	if (sysctl(mib, nitems(mib), NULL, &l, NULL, 0) < 0) {
 		xo_err(1, "sysctl(ICMPV6CTL_ND6_DRLIST)");
 		/*NOTREACHED*/
 	}
@@ -1182,7 +1188,7 @@ rtrlist(void)
 		xo_err(1, "malloc");
 		/*NOTREACHED*/
 	}
-	if (sysctl(mib, sizeof(mib) / sizeof(mib[0]), buf, &l, NULL, 0) < 0) {
+	if (sysctl(mib, nitems(mib), buf, &l, NULL, 0) < 0) {
 		xo_err(1, "sysctl(ICMPV6CTL_ND6_DRLIST)");
 		/*NOTREACHED*/
 	}
@@ -1257,7 +1263,7 @@ plist(void)
 	int ninflags = opts.nflag ? NI_NUMERICHOST : 0;
 	char namebuf[NI_MAXHOST];
 
-	if (sysctl(mib, sizeof(mib) / sizeof(mib[0]), NULL, &l, NULL, 0) < 0) {
+	if (sysctl(mib, nitems(mib), NULL, &l, NULL, 0) < 0) {
 		xo_err(1, "sysctl(ICMPV6CTL_ND6_PRLIST)");
 		/*NOTREACHED*/
 	}
@@ -1266,7 +1272,7 @@ plist(void)
 		xo_err(1, "malloc");
 		/*NOTREACHED*/
 	}
-	if (sysctl(mib, sizeof(mib) / sizeof(mib[0]), buf, &l, NULL, 0) < 0) {
+	if (sysctl(mib, nitems(mib), buf, &l, NULL, 0) < 0) {
 		xo_err(1, "sysctl(ICMPV6CTL_ND6_PRLIST)");
 		/*NOTREACHED*/
 	}
@@ -1334,7 +1340,7 @@ plist(void)
 		if (p->expire == 0)
 			xo_emit(", expire=Never{en:permanent/true}");
 		else if (p->expire >= now.tv_sec)
-			xo_emit(", expire=%s{e:expires_sec/%d}",
+			xo_emit(", expire={:expires/%s}{e:expires_sec/%d}",
 			    sec2str(expire_in), expire_in);
 		else
 			xo_emit(", expired{e:expires_sec/%d}", expire_in);

@@ -8,7 +8,11 @@
 # the rest of /usr/src, but they still always process SRCCONF even though
 # the normal mechanisms to prevent that (compiling out of tree) won't
 # work. To ensure they do work, we have to duplicate thee few lines here.
+.if exists(${SRCTOP}/src.conf)
+SRCCONF?=	${SRCTOP}/src.conf
+.else
 SRCCONF?=	/etc/src.conf
+.endif
 .if (exists(${SRCCONF}) || ${SRCCONF} != "/etc/src.conf") && !target(_srcconf_included_)
 .include "${SRCCONF}"
 _srcconf_included_:
@@ -17,6 +21,7 @@ _srcconf_included_:
 .include <bsd.own.mk>
 .include <bsd.compiler.mk>
 .include "kern.opts.mk"
+.-include <local.kern.pre.mk>
 
 # The kernel build always occurs in the object directory which is .CURDIR.
 .if ${.MAKE.MODE:Unormal:Mmeta}
@@ -92,61 +97,10 @@ ASM_CFLAGS= -x assembler-with-cpp -DLOCORE ${CFLAGS} ${ASM_CFLAGS.${.IMPSRC:T}}
 COMPAT_FREEBSD32_ENABLED!= grep COMPAT_FREEBSD32 opt_global.h || true ; echo
 
 KASAN_ENABLED!=	grep KASAN opt_global.h || true ; echo
-.if !empty(KASAN_ENABLED)
-SAN_CFLAGS+=	-DSAN_NEEDS_INTERCEPTORS -DSAN_INTERCEPTOR_PREFIX=kasan \
-		-fsanitize=kernel-address \
-		-mllvm -asan-stack=true \
-		-mllvm -asan-instrument-dynamic-allocas=true \
-		-mllvm -asan-globals=true \
-		-mllvm -asan-use-after-scope=true \
-		-mllvm -asan-instrumentation-with-call-threshold=0 \
-		-mllvm -asan-instrument-byval=false
-
-.if ${MACHINE_CPUARCH} == "aarch64"
-# KASAN/ARM64 TODO: -asan-mapping-offset is calculated from:
-#	   (VM_KERNEL_MIN_ADDRESS >> KASAN_SHADOW_SCALE_SHIFT) + $offset = KASAN_MIN_ADDRESS
-#
-#	This is different than amd64, where we have a different
-#	KASAN_MIN_ADDRESS, and this offset value should eventually be
-#	upstreamed similar to: https://reviews.llvm.org/D98285
-#
-SAN_CFLAGS+=	-mllvm -asan-mapping-offset=0xdfff208000000000
-.endif
-.endif
-
-KCSAN_ENABLED!=	grep KCSAN opt_global.h || true ; echo
-.if !empty(KCSAN_ENABLED)
-SAN_CFLAGS+=	-DSAN_NEEDS_INTERCEPTORS -DSAN_INTERCEPTOR_PREFIX=kcsan \
-		-fsanitize=thread
-.endif
-
+KCSAN_ENABLED!= grep KCSAN opt_global.h || true ; echo
 KMSAN_ENABLED!= grep KMSAN opt_global.h || true ; echo
-.if !empty(KMSAN_ENABLED)
-# Disable -fno-sanitize-memory-param-retval until interceptors have been
-# updated to work properly with it.
-SAN_CFLAGS+=	-DSAN_NEEDS_INTERCEPTORS -DSAN_INTERCEPTOR_PREFIX=kmsan \
-		-fsanitize=kernel-memory
-.if ${COMPILER_TYPE} == "clang" && ${COMPILER_VERSION} >= 160000
-SAN_CFLAGS+=	-fno-sanitize-memory-param-retval
-.endif
-.endif
-
 KUBSAN_ENABLED!=	grep KUBSAN opt_global.h || true ; echo
-.if !empty(KUBSAN_ENABLED)
-SAN_CFLAGS+=	-fsanitize=undefined
-.endif
-
 COVERAGE_ENABLED!=	grep COVERAGE opt_global.h || true ; echo
-.if !empty(COVERAGE_ENABLED)
-.if ${COMPILER_TYPE} == "clang" || \
-    (${COMPILER_TYPE} == "gcc" && ${COMPILER_VERSION} >= 80100)
-SAN_CFLAGS+=	-fsanitize-coverage=trace-pc,trace-cmp
-.else
-SAN_CFLAGS+=	-fsanitize-coverage=trace-pc
-.endif
-.endif
-
-CFLAGS+=	${SAN_CFLAGS}
 
 GCOV_ENABLED!=	grep GCOV opt_global.h || true ; echo
 .if !empty(GCOV_ENABLED)
@@ -165,11 +119,9 @@ CFLAGS+=	${CONF_CFLAGS}
 LDFLAGS+=	--build-id=sha1
 .endif
 
-.if (${MACHINE_CPUARCH} == "aarch64" || ${MACHINE_CPUARCH} == "amd64" || \
-    ${MACHINE_CPUARCH} == "i386" || ${MACHINE} == "powerpc") && \
-    defined(LINKER_FEATURES) && ${LINKER_FEATURES:Mifunc} == "" && \
+.if defined(LINKER_FEATURES) && ${LINKER_FEATURES:Mifunc} == "" && \
     !make(install)
-.error amd64/arm64/i386/ppc* kernel requires linker ifunc support
+.error kernel requires linker ifunc support
 .endif
 .if ${MACHINE_CPUARCH} == "amd64"
 LDFLAGS+=	-z max-page-size=2097152
@@ -206,6 +158,10 @@ NORMAL_FW= uudecode -o ${.TARGET} ${.ALLSRC}
 NORMAL_FWO= ${CC:N${CCACHE_BIN}} -c ${ASM_CFLAGS} ${WERROR} -o ${.TARGET} \
 	$S/kern/firmw.S -DFIRMW_FILE=\""${.ALLSRC:M*.fw}"\" \
 	-DFIRMW_SYMBOL="${.ALLSRC:M*.fw:C/[-.\/]/_/g}"
+
+# Remove sanitizer arguments. Some -fno-sanitize* and -fasan-shadow-offset*
+# arguments become an error if the appropriate sanitizer is not enabled.
+NOSAN_C= ${NORMAL_C:N-fsanitize*:N-fno-sanitize*:N-fasan-shadow-offset*}
 
 # for ZSTD in the kernel (include zstd/lib/freebsd before other CFLAGS)
 ZSTD_C= ${CC} -c -DZSTD_HEAPMODE=1 -I$S/contrib/zstd/lib/freebsd ${CFLAGS} \
@@ -260,11 +216,12 @@ ZFS_CFLAGS+=	-I$S/contrib/openzfs/module/icp/include \
 
 .if ${MACHINE_ARCH} == "amd64"
 ZFS_CFLAGS+= -D__x86_64 -DHAVE_SSE2 -DHAVE_SSSE3 -DHAVE_SSE4_1 -DHAVE_SSE4_2 \
-	-DHAVE_AVX -DHAVE_AVX2 -DHAVE_AVX512F -DHAVE_AVX512VL -DHAVE_AVX512BW
+	-DHAVE_AVX -DHAVE_AVX2 -DHAVE_AVX512F -DHAVE_AVX512VL -DHAVE_AVX512BW \
+	-DHAVE_VAES -DHAVE_VPCLMULQDQ
 .endif
 
 .if ${MACHINE_ARCH} == "i386" || ${MACHINE_ARCH} == "powerpc" || \
-	${MACHINE_ARCH} == "powerpcspe" || ${MACHINE_ARCH} == "arm"
+	${MACHINE_ARCH} == "arm"
 ZFS_CFLAGS+= -DBITS_PER_LONG=32
 .else
 ZFS_CFLAGS+= -DBITS_PER_LONG=64
@@ -313,7 +270,8 @@ NORMAL_CTFCONVERT=	@:
 
 # Linux Kernel Programming Interface C-flags
 LINUXKPI_INCLUDES=	-I$S/compat/linuxkpi/common/include \
-			-I$S/compat/linuxkpi/dummy/include
+			-I$S/compat/linuxkpi/dummy/include \
+			-include $S/compat/linuxkpi/common/include/linux/kconfig.h
 LINUXKPI_C=		${NORMAL_C} ${LINUXKPI_INCLUDES}
 
 # Infiniband C flags.  Correct include paths and omit errors that linux
@@ -330,6 +288,14 @@ MLXFW_C=	${OFED_C_NOIMP} \
 		-I${SRCTOP}/sys/contrib/xz-embedded/freebsd \
 		-I${SRCTOP}/sys/contrib/xz-embedded/linux/lib/xz \
 		${.IMPSRC}
+# BNXT Driver
+BNXT_CFLAGS=	-I$S/dev/bnxt/bnxt_en ${OFEDCFLAGS}
+BNXT_C_NOIMP=	${CC} -c -o ${.TARGET} ${BNXT_CFLAGS} ${WERROR}
+BNXT_C=		${BNXT_C_NOIMP} ${.IMPSRC}
+
+# IP Filter
+IPFILTER_CFLAGS=	-I$S/netpfil/ipfilter
+IPFILTER_C=		${NORMAL_C} ${IPFILTER_CFLAGS}
 
 GEN_CFILES= $S/$M/$M/genassym.c ${MFILES:T:S/.m$/.c/}
 SYSTEM_CFILES= config.c env.c hints.c vnode_if.c
@@ -348,7 +314,7 @@ SYSTEM_OBJS+= embedfs_${MFS_IMAGE:T:R}.o
 .endif
 .endif
 SYSTEM_LD_BASECMD= \
-	${LD} -m ${LD_EMULATION} -Bdynamic -T ${LDSCRIPT} ${_LDFLAGS} \
+	${LD} -m ${LD_EMULATION} -Bdynamic -L $S/conf -T ${LDSCRIPT} ${_LDFLAGS} \
 	--no-warn-mismatch --warn-common --export-dynamic \
 	--dynamic-linker /red/herring -X
 SYSTEM_LD= @${SYSTEM_LD_BASECMD} -o ${.TARGET} ${SYSTEM_OBJS} vers.o

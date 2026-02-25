@@ -9,6 +9,7 @@ GTESTS_CXXFLAGS+= -frtti
 # libgmock's, etc, headers.
 CXXFLAGS+=	-I${DESTDIR}${INCLUDEDIR}/private
 
-CXXSTD?=	c++14
-
 NO_WTHREAD_SAFETY=
+
+# Silence warnings about implicit character conversions in gtest-printers.h
+CXXWARNFLAGS+=	${NO_WCHARACTER_CONVERSION}

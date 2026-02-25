@@ -50,10 +50,12 @@
 
 #include <vm/vm.h>
 #include <vm/pmap.h>
+#include <vm/vm_extern.h>
 #include <vm/vm_map.h>
 #include <vm/vm_object.h>
 #include <vm/vm_page.h>
 #include <vm/vm_pager.h>
+#include <vm/vm_radix.h>
 
 static vm_object_t obj_1t1_pt;
 static vm_pindex_t efi_1t1_idx;
@@ -63,11 +65,13 @@ static uint64_t efi_ttbr0;
 void
 efi_destroy_1t1_map(void)
 {
+	struct pctrie_iter pages;
 	vm_page_t m;
 
 	if (obj_1t1_pt != NULL) {
+		vm_page_iter_init(&pages, obj_1t1_pt);
 		VM_OBJECT_RLOCK(obj_1t1_pt);
-		TAILQ_FOREACH(m, &obj_1t1_pt->memq, listq)
+		VM_RADIX_FOREACH(m, &pages)
 			m->ref_count = VPRC_OBJREF;
 		vm_wire_sub(obj_1t1_pt->resident_page_count);
 		VM_OBJECT_RUNLOCK(obj_1t1_pt);
@@ -102,7 +106,8 @@ efi_1t1_l3(vm_offset_t va)
 	if (*l0 == 0) {
 		m = efi_1t1_page();
 		mphys = VM_PAGE_TO_PHYS(m);
-		*l0 = PHYS_TO_PTE(mphys) | L0_TABLE;
+		*l0 = PHYS_TO_PTE(mphys) | TATTR_UXN_TABLE |
+		    TATTR_AP_TABLE_NO_EL0 | L0_TABLE;
 	} else {
 		mphys = PTE_TO_PHYS(*l0);
 	}
@@ -113,7 +118,8 @@ efi_1t1_l3(vm_offset_t va)
 	if (*l1 == 0) {
 		m = efi_1t1_page();
 		mphys = VM_PAGE_TO_PHYS(m);
-		*l1 = PHYS_TO_PTE(mphys) | L1_TABLE;
+		*l1 = PHYS_TO_PTE(mphys) | TATTR_UXN_TABLE |
+		    TATTR_AP_TABLE_NO_EL0 | L1_TABLE;
 	} else {
 		mphys = PTE_TO_PHYS(*l1);
 	}
@@ -124,7 +130,8 @@ efi_1t1_l3(vm_offset_t va)
 	if (*l2 == 0) {
 		m = efi_1t1_page();
 		mphys = VM_PAGE_TO_PHYS(m);
-		*l2 = PHYS_TO_PTE(mphys) | L2_TABLE;
+		*l2 = PHYS_TO_PTE(mphys) | TATTR_UXN_TABLE |
+		    TATTR_AP_TABLE_NO_EL0 | L2_TABLE;
 	} else {
 		mphys = PTE_TO_PHYS(*l2);
 	}
@@ -144,13 +151,8 @@ efi_1t1_l3(vm_offset_t va)
 vm_offset_t
 efi_phys_to_kva(vm_paddr_t paddr)
 {
-	vm_offset_t vaddr;
-
-	if (PHYS_IN_DMAP(paddr)) {
-		vaddr = PHYS_TO_DMAP(paddr);
-		if (pmap_klookup(vaddr, NULL))
-			return (vaddr);
-	}
+	if (PHYS_IN_DMAP(paddr))
+		return (PHYS_TO_DMAP(paddr));
 
 	/* TODO: Map memory not in the DMAP */
 
@@ -219,8 +221,9 @@ efi_create_1t1_map(struct efi_md *map, int ndesc, int descsz)
 			    p->md_phys, mode, p->md_pages);
 		}
 
-		l3_attr = ATTR_DEFAULT | ATTR_S1_IDX(mode) |
-		    ATTR_S1_AP(ATTR_S1_AP_RW) | ATTR_S1_nG | L3_PAGE;
+		l3_attr = ATTR_S1_UXN | ATTR_AF | pmap_sh_attr |
+		    ATTR_S1_IDX(mode) | ATTR_S1_AP(ATTR_S1_AP_RW) |
+		    ATTR_S1_nG | L3_PAGE;
 		if (mode == VM_MEMATTR_DEVICE || p->md_attr & EFI_MD_ATTR_XP)
 			l3_attr |= ATTR_S1_XN;
 
@@ -242,14 +245,26 @@ fail:
 int
 efi_arch_enter(void)
 {
+	uint64_t tcr;
 
 	CRITICAL_ASSERT(curthread);
+	curthread->td_md.md_efirt_dis_pf = vm_fault_disable_pagefaults();
 
 	/*
 	 * Temporarily switch to EFI's page table.  However, we leave curpmap
 	 * unchanged in order to prevent its ASID from being reclaimed before
 	 * we switch back to its page table in efi_arch_leave().
+	 *
+	 * UEFI sdoesn't care about TBI, so enable it. It's more likely
+	 * userspace will have TBI on as it's only disabled for backwards
+	 * compatibility.
 	 */
+	tcr = READ_SPECIALREG(tcr_el1);
+	if ((tcr & MD_TCR_FIELDS) != TCR_TBI0) {
+		tcr &= ~MD_TCR_FIELDS;
+		tcr |= TCR_TBI0;
+		WRITE_SPECIALREG(tcr_el1, tcr);
+	}
 	set_ttbr0(efi_ttbr0);
 	if (PCPU_GET(bcast_tlbi_workaround) != 0)
 		invalidate_local_icache();
@@ -260,6 +275,7 @@ efi_arch_enter(void)
 void
 efi_arch_leave(void)
 {
+	uint64_t proc_tcr, tcr;
 
 	/*
 	 * Restore the pcpu pointer. Some UEFI implementations trash it and
@@ -271,14 +287,16 @@ efi_arch_leave(void)
 	__asm __volatile(
 	    "mrs x18, tpidr_el1	\n"
 	);
+	proc_tcr = curthread->td_proc->p_md.md_tcr;
+	tcr = READ_SPECIALREG(tcr_el1);
+	if ((tcr & MD_TCR_FIELDS) != proc_tcr) {
+		tcr &= ~MD_TCR_FIELDS;
+		tcr |= proc_tcr;
+		WRITE_SPECIALREG(tcr_el1, tcr);
+	}
 	set_ttbr0(pmap_to_ttbr0(PCPU_GET(curpmap)));
 	if (PCPU_GET(bcast_tlbi_workaround) != 0)
 		invalidate_local_icache();
+	vm_fault_enable_pagefaults(curthread->td_md.md_efirt_dis_pf);
 }
 
-int
-efi_rt_arch_call(struct efirt_callinfo *ec)
-{
-
-	panic("not implemented");
-}

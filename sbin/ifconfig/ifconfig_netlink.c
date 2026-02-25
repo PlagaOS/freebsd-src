@@ -25,6 +25,8 @@
  * SUCH DAMAGE.
  */
 
+#define _WANT_IFCAP_BIT_NAMES
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,33 +78,10 @@ static const char	*IFFBITS[] = {
 	"STATICARP",		/* 19:0x80000 IFF_STATICARP*/
 	"STICKYARP",		/* 20:0x100000 IFF_STICKYARP*/
 	"DYING",		/* 21:0x200000 IFF_DYING*/
-	"RENAMING",		/* 22:0x400000 IFF_RENAMING*/
-	"NOGROUP",		/* 23:0x800000 IFF_NOGROUP*/
+	"",			/* 22:0x400000 */
+	"PALLMULTI",		/* 23:0x800000 IFF_PALLMULTI*/
 	"LOWER_UP",		/* 24:0x1000000 IFF_NETLINK_1*/
 };
-
-static void
-print_bits(const char *btype, uint32_t *v, const int v_count,
-    const char **names, const int n_count)
-{
-	int num = 0;
-
-	for (int i = 0; i < v_count * 32; i++) {
-		bool is_set = v[i / 32] & (1U << (i % 32));
-		if (is_set) {
-			if (num++ == 0)
-				printf("<");
-			if (num != 1)
-				printf(",");
-			if (i < n_count)
-				printf("%s", names[i]);
-			else
-				printf("%s_%d", btype, i);
-		}
-	}
-	if (num > 0)
-		printf(">");
-}
 
 static void
 nl_init_socket(struct snl_state *ss)
@@ -162,7 +141,7 @@ struct ifmap {
  * Memory is allocated using snl temporary buffers
  */
 static struct ifmap *
-prepare_ifmap(struct snl_state *ss)
+prepare_ifmap(struct snl_state *ss, const char *ifname)
 {
 	struct snl_writer nw = {};
 
@@ -170,6 +149,8 @@ prepare_ifmap(struct snl_state *ss)
 	struct nlmsghdr *hdr = snl_create_msg_request(&nw, RTM_GETLINK);
 	hdr->nlmsg_flags |= NLM_F_DUMP;
 	snl_reserve_msg_object(&nw, struct ifinfomsg);
+       if (ifname != NULL)
+               snl_add_msg_attr_string(&nw, IFLA_IFNAME, ifname);
 
 	if (! (hdr = snl_finalize_msg(&nw)) || !snl_send_message(ss, hdr))
 		return (NULL);
@@ -476,7 +457,7 @@ list_interfaces_nl(struct ifconfig_args *args)
 
 	nl_init_socket(&ss);
 
-	struct ifmap *ifmap = prepare_ifmap(&ss);
+       struct ifmap *ifmap = prepare_ifmap(&ss, args->ifname);
 	struct iface **sorted_ifaces = snl_allocz(&ss, ifmap->count * sizeof(void *));
 	for (uint32_t i = 0, num = 0; i < ifmap->size; i++) {
 		if (ifmap->ifaces[i] != NULL) {

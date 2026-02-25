@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2015-2017 Ruslan Bukin <br@bsdpad.com>
+ * Copyright (c) 2015-2025 Ruslan Bukin <br@bsdpad.com>
  * All rights reserved.
  *
  * Portions of this software were developed by SRI International and the
@@ -41,6 +41,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
+#include <sys/intr.h>
 #include <sys/kernel.h>
 #include <sys/module.h>
 #include <sys/rman.h>
@@ -50,7 +51,6 @@
 #include <sys/watchdog.h>
 
 #include <machine/cpufunc.h>
-#include <machine/intr.h>
 #include <machine/md_var.h>
 #include <machine/sbi.h>
 
@@ -143,7 +143,10 @@ riscv_timer_intr(void *arg)
 
 	sc = (struct riscv_timer_softc *)arg;
 
-	csr_clear(sip, SIP_STIP);
+	if (has_sstc)
+		csr_write(stimecmp, -1UL);
+	else
+		sbi_set_timer(-1UL);
 
 	if (sc->et.et_active)
 		sc->et.et_event_cb(&sc->et, sc->et.et_arg);
@@ -193,6 +196,7 @@ riscv_timer_attach(device_t dev)
 	int irq, rid, error;
 	phandle_t iparent;
 	pcell_t cell;
+	device_t rootdev;
 
 	sc = device_get_softc(dev);
 	if (riscv_timer_sc != NULL)
@@ -208,7 +212,8 @@ riscv_timer_attach(device_t dev)
 
 	riscv_timer_sc = sc;
 
-	iparent = OF_xref_from_node(ofw_bus_get_node(intr_irq_root_dev));
+	rootdev = intr_irq_root_device(INTR_ROOT_IRQ);
+	iparent = OF_xref_from_node(ofw_bus_get_node(rootdev));
 	cell = IRQ_TIMER_SUPERVISOR;
 	irq = ofw_bus_map_intr(dev, iparent, 1, &cell);
 	error = bus_set_resource(dev, SYS_RES_IRQ, 0, irq, 1);

@@ -436,16 +436,14 @@ hv_hid_attach(device_t dev)
 		ret = ENODEV;
 		goto out;
 	}
-	child = device_add_child(sc->dev, "hidbus", -1);
+	child = device_add_child(sc->dev, "hidbus", DEVICE_UNIT_ANY);
 	if (child == NULL) {
 		device_printf(sc->dev, "failed to add hidbus\n");
 		ret = ENOMEM;
 		goto out;
 	}
 	device_set_ivars(child, &sc->hdi);
-	ret = bus_generic_attach(dev);
-	if (ret != 0)
-		device_printf(sc->dev, "failed to attach hidbus\n");
+	bus_attach_children(dev);
 out:
 	if (ret != 0)
 		hv_hid_detach(dev);
@@ -459,7 +457,7 @@ hv_hid_detach(device_t dev)
 	int		ret;
 
 	sc = device_get_softc(dev);
-	ret = device_delete_children(dev);
+	ret = bus_generic_detach(dev);
 	if (ret != 0)
 		return (ret);
 	if (sc->hs_xact_ctx != NULL)

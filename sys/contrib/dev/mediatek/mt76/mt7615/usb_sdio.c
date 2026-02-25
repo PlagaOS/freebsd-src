@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /* Copyright (C) 2020 MediaTek Inc.
  *
  * Author: Lorenzo Bianconi <lorenzo@kernel.org>
@@ -343,10 +343,15 @@ int mt7663_usb_sdio_register_device(struct mt7615_dev *dev)
 	mt7615_init_txpower(dev, &dev->mphy.sband_2g.sband);
 	mt7615_init_txpower(dev, &dev->mphy.sband_5g.sband);
 
+#if defined(CONFIG_MT7615_DEBUGFS)
 	return mt7615_init_debugfs(dev);
+#else
+	return 0;
+#endif
 }
 EXPORT_SYMBOL_GPL(mt7663_usb_sdio_register_device);
 
 MODULE_AUTHOR("Lorenzo Bianconi <lorenzo@kernel.org>");
 MODULE_AUTHOR("Sean Wang <sean.wang@mediatek.com>");
+MODULE_DESCRIPTION("MediaTek MT7663 SDIO/USB helpers");
 MODULE_LICENSE("Dual BSD/GPL");

@@ -68,7 +68,8 @@
 #include "printflocal.h"
 
 static int	__sprint(FILE *, struct __suio *, locale_t);
-static int	__sbprintf(FILE *, locale_t, const char *, va_list) __printflike(3, 0)
+static int	__sbprintf(FILE *, locale_t, int, const char *, va_list)
+	__printflike(4, 0)
 	__noinline;
 static char	*__wcsconv(wchar_t *, int);
 
@@ -169,7 +170,7 @@ __sprint(FILE *fp, struct __suio *uio, locale_t locale)
  * worries about ungetc buffers and so forth.
  */
 static int
-__sbprintf(FILE *fp, locale_t locale, const char *fmt, va_list ap)
+__sbprintf(FILE *fp, locale_t locale, int serrno, const char *fmt, va_list ap)
 {
 	int ret;
 	FILE fake = FAKE_FILE;
@@ -193,7 +194,7 @@ __sbprintf(FILE *fp, locale_t locale, const char *fmt, va_list ap)
 	fake._lbfsize = 0;	/* not actually used, but Just In Case */
 
 	/* do the work, then copy any error status */
-	ret = __vfprintf(&fake, locale, fmt, ap);
+	ret = __vfprintf(&fake, locale, serrno, fmt, ap);
 	if (ret >= 0 && __fflush(&fake))
 		ret = EOF;
 	if (fake._flags & __SERR)
@@ -265,8 +266,9 @@ __wcsconv(wchar_t *wcsarg, int prec)
  */
 int
 vfprintf_l(FILE * __restrict fp, locale_t locale, const char * __restrict fmt0,
-		va_list ap)
+    va_list ap)
 {
+	int serrno = errno;
 	int ret;
 	FIX_LOCALE(locale);
 
@@ -274,9 +276,9 @@ vfprintf_l(FILE * __restrict fp, locale_t locale, const char * __restrict fmt0,
 	/* optimise fprintf(stderr) (and other unbuffered Unix files) */
 	if ((fp->_flags & (__SNBF|__SWR|__SRW)) == (__SNBF|__SWR) &&
 	    fp->_file >= 0)
-		ret = __sbprintf(fp, locale, fmt0, ap);
+		ret = __sbprintf(fp, locale, serrno, fmt0, ap);
 	else
-		ret = __vfprintf(fp, locale, fmt0, ap);
+		ret = __vfprintf(fp, locale, serrno, fmt0, ap);
 	FUNLOCKFILE_CANCELSAFE();
 	return (ret);
 }
@@ -289,19 +291,15 @@ vfprintf(FILE * __restrict fp, const char * __restrict fmt0, va_list ap)
 /*
  * The size of the buffer we use as scratch space for integer
  * conversions, among other things.  We need enough space to
- * write a uintmax_t in octal (plus one byte).
+ * write a uintmax_t in binary.
  */
-#if UINTMAX_MAX <= UINT64_MAX
-#define	BUF	32
-#else
-#error "BUF must be large enough to format a uintmax_t"
-#endif
+#define BUF	(sizeof(uintmax_t) * CHAR_BIT)
 
 /*
  * Non-MT-safe version
  */
 int
-__vfprintf(FILE *fp, locale_t locale, const char *fmt0, va_list ap)
+__vfprintf(FILE *fp, locale_t locale, int serrno, const char *fmt0, va_list ap)
 {
 	char *fmt;		/* format string */
 	int ch;			/* character from fmt */
@@ -311,11 +309,11 @@ __vfprintf(FILE *fp, locale_t locale, const char *fmt0, va_list ap)
 	int ret;		/* return value accumulator */
 	int width;		/* width from format (%8d), or 0 */
 	int prec;		/* precision from format; <0 for N/A */
-	int saved_errno;
+	int error;
+	char errnomsg[NL_TEXTMAX];
 	char sign;		/* sign prefix (' ', '+', '-', or \0) */
 	struct grouping_state gs; /* thousands' grouping info */
 
-#ifndef NO_FLOATING_POINT
 	/*
 	 * We can decompose the printed representation of floating
 	 * point numbers into several parts, some of which may be empty:
@@ -344,7 +342,6 @@ __vfprintf(FILE *fp, locale_t locale, const char *fmt0, va_list ap)
 	int ndig;		/* actual number of digits returned by dtoa */
 	char expstr[MAXEXPDIG+2];	/* buffer for exponent string: e+ZZZ */
 	char *dtoaresult;	/* buffer allocated by dtoa */
-#endif
 	u_long	ulval;		/* integer arguments %[diouxX] */
 	uintmax_t ujval;	/* %j, %ll, %q, %t, %z integers */
 	int base;		/* base for [diouxX] conversion */
@@ -447,8 +444,6 @@ __vfprintf(FILE *fp, locale_t locale, const char *fmt0, va_list ap)
 		val = GETARG (int); \
 	}
 
-	if (__use_xprintf == 0 && getenv("USE_XPRINTF"))
-		__use_xprintf = 1;
 	if (__use_xprintf > 0)
 		return (__xvprintf(fp, fmt0, ap));
 
@@ -461,7 +456,6 @@ __vfprintf(FILE *fp, locale_t locale, const char *fmt0, va_list ap)
 	savserr = fp->_flags & __SERR;
 	fp->_flags &= ~__SERR;
 
-	saved_errno = errno;
 	convbuf = NULL;
 	fmt = (char *)fmt0;
 	argtable = NULL;
@@ -469,12 +463,10 @@ __vfprintf(FILE *fp, locale_t locale, const char *fmt0, va_list ap)
 	va_copy(orgap, ap);
 	io_init(&io, fp);
 	ret = 0;
-#ifndef NO_FLOATING_POINT
 	dtoaresult = NULL;
 	decimal_point = localeconv_l(locale)->decimal_point;
 	/* The overwhelmingly common case is decpt_len == 1. */
 	decpt_len = (decimal_point[1] == '\0' ? 1 : strlen(decimal_point));
-#endif
 
 	/*
 	 * Scan the format for conversions (`%' character).
@@ -578,11 +570,9 @@ reswitch:	switch (ch) {
 			}
 			width = n;
 			goto reswitch;
-#ifndef NO_FLOATING_POINT
 		case 'L':
 			flags |= LONGDBL;
 			goto rflag;
-#endif
 		case 'h':
 			if (flags & SHORTINT) {
 				flags &= ~SHORTINT;
@@ -708,7 +698,6 @@ reswitch:	switch (ch) {
 			}
 			base = 10;
 			goto number;
-#ifndef NO_FLOATING_POINT
 		case 'a':
 		case 'A':
 			if (ch == 'a') {
@@ -827,9 +816,10 @@ fp_common:
 					size += grouping_init(&gs, expt, locale);
 			}
 			break;
-#endif /* !NO_FLOATING_POINT */
 		case 'm':
-			cp = strerror(saved_errno);
+			error = __strerror_rl(serrno, errnomsg,
+			    sizeof(errnomsg), locale);
+			cp = error == 0 ? errnomsg : "<strerror failure>";
 			size = (prec >= 0) ? strnlen(cp, prec) : strlen(cp);
 			sign = '\0';
 			break;
@@ -1025,9 +1015,7 @@ invalid:
 			PAD(width - realsz, zeroes);
 
 		/* the string or number proper */
-#ifndef NO_FLOATING_POINT
 		if ((flags & FPT) == 0) {
-#endif
 			/* leading zeroes from decimal precision */
 			PAD(dprec - size, zeroes);
 			if (gs.grouping) {
@@ -1036,7 +1024,6 @@ invalid:
 			} else {
 				PRINT(cp, size);
 			}
-#ifndef NO_FLOATING_POINT
 		} else {	/* glue together f_p fragments */
 			if (!expchar) {	/* %[fF] or sufficiently short %[gG] */
 				if (expt <= 0) {
@@ -1073,7 +1060,6 @@ invalid:
 				PRINT(expstr, expsize);
 			}
 		}
-#endif
 		/* left-adjusting padding (always blank) */
 		if (flags & LADJUST)
 			PAD(width - realsz, blanks);
@@ -1087,10 +1073,8 @@ done:
 	FLUSH();
 error:
 	va_end(orgap);
-#ifndef NO_FLOATING_POINT
 	if (dtoaresult != NULL)
 		freedtoa(dtoaresult);
-#endif
 	if (convbuf != NULL)
 		free(convbuf);
 	if (__sferror(fp))

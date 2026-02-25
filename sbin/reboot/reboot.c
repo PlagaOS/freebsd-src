@@ -40,6 +40,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <paths.h>
 #include <pwd.h>
 #include <signal.h>
 #include <spawn.h>
@@ -58,6 +59,7 @@ extern char **environ;
 static void usage(void) __dead2;
 static uint64_t get_pageins(void);
 
+static bool dofast;
 static bool dohalt;
 static bool donextboot;
 
@@ -111,10 +113,13 @@ zfsbootcfg(const char *pool, bool force)
 }
 
 static void
-write_nextboot(const char *fn, const char *env, bool force)
+write_nextboot(const char *fn, const char *env, bool append, bool force)
 {
+	char tmp[PATH_MAX];
 	FILE *fp;
 	struct statfs sfs;
+	ssize_t ret;
+	int fd, tmpfd;
 	bool supported = false;
 	bool zfs = false;
 
@@ -132,27 +137,61 @@ write_nextboot(const char *fn, const char *env, bool force)
 	if (zfs) {
 		char *slash;
 
-		if ((slash = strchr(sfs.f_mntfromname, '/')) == NULL)
-			E("Can't find ZFS pool name in %s", sfs.f_mntfromname);
-		*slash = '\0';
+		slash = strchr(sfs.f_mntfromname, '/');
+		if (slash != NULL)
+			*slash = '\0';
 		zfsbootcfg(sfs.f_mntfromname, force);
 	}
 
-	fp = fopen(fn, "w");
-	if (fp == NULL)
-		E("Can't create %s", fn);
+	if (strlcpy(tmp, fn, sizeof(tmp)) >= sizeof(tmp))
+		E("Path too long %s", fn);
+	if (strlcat(tmp, ".XXXXXX", sizeof(tmp)) >= sizeof(tmp))
+		E("Path too long %s", fn);
 
-	if (fprintf(fp,"%s%s",
+	tmpfd = mkstemp(tmp);
+	if (tmpfd == -1)
+		E("mkstemp %s", tmp);
+
+	fp = fdopen(tmpfd, "w");
+	if (fp == NULL)
+		E("fdopen %s", tmp);
+
+	if (append) {
+		if ((fd = open(fn, O_RDONLY)) < 0) {
+			if (errno != ENOENT)
+				E("open %s", fn);
+		} else {
+			do {
+				ret = copy_file_range(fd, NULL, tmpfd, NULL,
+				    SSIZE_MAX, 0);
+				if (ret < 0)
+					E("copy %s to %s", fn, tmp);
+			} while (ret > 0);
+			close(fd);
+		}
+	}
+
+	if (fprintf(fp, "%s%s",
 	    supported ? "nextboot_enable=\"YES\"\n" : "",
 	    env != NULL ? env : "") < 0) {
 		int e;
 
 		e = errno;
-		fclose(fp);
-		if (unlink(fn))
-			warn("unlink %s", fn);
+		if (unlink(tmp))
+			warn("unlink %s", tmp);
 		errno = e;
-		E("Can't write %s", fn);
+		E("Can't write %s", tmp);
+	}
+	if (fsync(fileno(fp)) != 0)
+		E("Can't fsync %s", fn);
+	if (rename(tmp, fn) != 0) {
+		int e;
+
+		e = errno;
+		if (unlink(tmp))
+			warn("unlink %s", tmp);
+		errno = e;
+		E("Can't rename %s to %s", tmp, fn);
 	}
 	fclose(fp);
 }
@@ -191,36 +230,64 @@ add_env(char **env, const char *key, const char *value)
 	free(oldenv);
 }
 
+static void
+shutdown(int howto)
+{
+	char sigstr[SIG2STR_MAX];
+	int signo =
+	    howto & RB_POWERCYCLE ? SIGWINCH :
+	    howto & RB_POWEROFF ? SIGUSR2 :
+	    howto & RB_HALT ? SIGUSR1 :
+	    howto & RB_REROOT ? SIGEMT :
+	    SIGINT;
+
+	(void)sig2str(signo, sigstr);
+	BOOTTRACE("SIG%s to init(8)...", sigstr);
+	if (kill(1, signo) == -1)
+		err(1, "SIG%s init", sigstr);
+	exit(0);
+}
+
 /*
  * Different options are valid for different programs.
  */
-#define GETOPT_REBOOT "cDde:k:lNno:pqr"
-#define GETOPT_NEXTBOOT "De:k:o:"
+#define GETOPT_REBOOT "cDde:fk:lNno:pqr"
+#define GETOPT_NEXTBOOT "aDe:fk:o:"
 
 int
 main(int argc, char *argv[])
 {
 	struct utmpx utx;
+	struct stat st;
 	const struct passwd *pw;
-	int ch, howto = 0, i, sverrno;
-	bool Dflag, fflag, lflag, Nflag, nflag, qflag;
-	uint64_t pageins;
-	const char *user, *kernel = NULL, *getopts = GETOPT_REBOOT;
+	const char *progname, *user;
+	const char *kernel = NULL, *getopts = GETOPT_REBOOT;
 	char *env = NULL, *v;
+	uint64_t pageins;
+	int ch, howto = 0, i, sverrno;
+	bool aflag, Dflag, fflag, lflag, Nflag, nflag, qflag;
 
-	if (strstr(getprogname(), "halt") != NULL) {
+	progname = getprogname();
+	if (strncmp(progname, "fast", 4) == 0) {
+		dofast = true;
+		progname += 4;
+	}
+	if (strcmp(progname, "halt") == 0) {
 		dohalt = true;
 		howto = RB_HALT;
-	} else if (strcmp(getprogname(), "nextboot") == 0) {
+	} else if (strcmp(progname, "nextboot") == 0) {
 		donextboot = true;
 		getopts = GETOPT_NEXTBOOT; /* Note: reboot's extra opts return '?' */
 	} else {
 		/* reboot */
 		howto = 0;
 	}
-	Dflag = fflag = lflag = Nflag = nflag = qflag = false;
+	aflag = Dflag = fflag = lflag = Nflag = nflag = qflag = false;
 	while ((ch = getopt(argc, argv, getopts)) != -1) {
 		switch(ch) {
+		case 'a':
+			aflag = true;
+			break;
 		case 'c':
 			howto |= RB_POWERCYCLE;
 			break;
@@ -274,6 +341,11 @@ main(int argc, char *argv[])
 	if (argc != 0)
 		usage();
 
+	if (!donextboot && !fflag && stat(_PATH_NOSHUTDOWN, &st) == 0) {
+		errx(1, "Reboot cannot be done, " _PATH_NOSHUTDOWN
+		    " is present");
+	}
+
 	if (Dflag && ((howto & ~RB_HALT) != 0  || kernel != NULL))
 		errx(1, "cannot delete existing nextboot config and do anything else");
 	if ((howto & (RB_DUMP | RB_HALT)) == (RB_DUMP | RB_HALT))
@@ -284,11 +356,28 @@ main(int argc, char *argv[])
 		errx(1, "-c and -p cannot be used together");
 	if ((howto & RB_REROOT) != 0 && howto != RB_REROOT)
 		errx(1, "-r cannot be used with -c, -d, -n, or -p");
+	if ((howto & RB_REROOT) != 0 && dofast)
+		errx(1, "-r cannot be performed in fast mode");
 	if ((howto & RB_REROOT) != 0 && kernel != NULL)
 		errx(1, "-r and -k cannot be used together, there is no next kernel");
 
 	if (Dflag) {
-		if (unlink(PATH_NEXTBOOT) != 0 && errno != ENOENT)
+		struct stat sb;
+
+		/*
+		 * Break the rule about stat then doing
+		 * something. When we're booting, there's no
+		 * race. When we're a read-only root, though, the
+		 * read-only error takes priority over the file not
+		 * there error in unlink. So stat it first and exit
+		 * with success if it isn't there. Otherwise, let
+		 * unlink sort error reporting. POSIX-1.2024 suggests
+		 * ENOENT should be preferred to EROFS for unlink,
+		 * but FreeBSD historically has preferred EROFS.
+		 */
+		if (stat(PATH_NEXTBOOT, &sb) != 0 && errno == ENOENT)
+			exit(0);
+		if (unlink(PATH_NEXTBOOT) != 0)
 			warn("unlink " PATH_NEXTBOOT);
 		exit(0);
 	}
@@ -321,7 +410,7 @@ main(int argc, char *argv[])
 	}
 
 	if (env != NULL)
-		write_nextboot(PATH_NEXTBOOT, env, fflag);
+		write_nextboot(PATH_NEXTBOOT, env, aflag, fflag);
 	if (donextboot)
 		exit (0);
 
@@ -376,14 +465,10 @@ main(int argc, char *argv[])
 	(void)signal(SIGPIPE, SIG_IGN);
 
 	/*
-	 * Only init(8) can perform rerooting.
+	 * Common case: clean shutdown.
 	 */
-	if (howto & RB_REROOT) {
-		if (kill(1, SIGEMT) == -1)
-			err(1, "SIGEMT init");
-
-		return (0);
-	}
+	if (!dofast)
+		shutdown(howto);
 
 	/* Just stop init -- if we fail, we'll restart it. */
 	BOOTTRACE("SIGTSTP to init(8)...");
@@ -441,10 +526,17 @@ restart:
 static void
 usage(void)
 {
-
-	(void)fprintf(stderr, dohalt ?
-	    "usage: halt [-clNnpq] [-k kernel]\n" :
-	    "usage: reboot [-cdlNnpqr] [-k kernel]\n");
+	if (donextboot) {
+		fprintf(stderr, "usage: nextboot [-aDf] "
+		    "[-e name=value] [-k kernel] [-o options]\n");
+	} else {
+		fprintf(stderr, "usage: %s%s [-%sflNnpq%s] "
+		    "[-e name=value] [-k kernel] [-o options]\n",
+		    dofast ? "fast" : "",
+		    dohalt ? "halt" : dofast ? "boot" : "reboot",
+		    dohalt ? "D" : "cDd",
+		    dohalt || dofast ? "" : "r");
+	}
 	exit(1);
 }
 

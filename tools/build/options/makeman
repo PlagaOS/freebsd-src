@@ -127,8 +127,8 @@ show()
 		exit 1
 		;;
 	esac
-	requireds=`env -i ${make} -f ${srcdir}/share/mk/src.opts.mk \
-	    -V '${__REQUIRED_OPTIONS:ts,}'`
+	requireds=$(env -i ${make} -f ${srcdir}/share/mk/src.opts.mk \
+	    -V 'REQUIRED_OPTIONS:ts,')
 	env -i ${make} .MAKE.MODE=normal "$@" showconfig __MAKE_CONF=/dev/null \
 	    SRCCONF=/dev/null |
 	while read var _ val ; do
@@ -222,8 +222,11 @@ variables that control the aspects of how the system builds.
 .Pp
 The default location of
 .Nm
-is
-.Pa /etc/src.conf ,
+is the top level of the source tree, or
+.Pa /etc/src.conf
+if no
+.Nm
+is found in the source tree itself,
 though an alternative location can be specified in the
 .Xr make 1
 variable
@@ -379,12 +382,18 @@ EOF
 The following options accept a single value from a list of valid values.
 .Bl -tag -width indent
 EOF
+	prev_opt=
 	show_group_options |
 	while read opt ; do
 		if [ ! -f ${opt} ] ; then
 			echo "no description found for ${opt}, skipping" >&2
 			continue
 		fi
+		if [ $opt = "$prev_opt" ]; then
+			echo "ignoring duplicate option $opt" >&2
+			continue
+		fi
+		prev_opt=$opt
 
 		echo ".It Va ${opt}"
 		cat ${opt}

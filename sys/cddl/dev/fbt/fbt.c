@@ -49,12 +49,12 @@
 #include <sys/proc.h>
 #include <sys/selinfo.h>
 #include <sys/smp.h>
+#include <sys/stdarg.h>
 #include <sys/syscall.h>
 #include <sys/sysent.h>
 #include <sys/sysproto.h>
 #include <sys/uio.h>
 #include <sys/unistd.h>
-#include <machine/stdarg.h>
 
 #include <sys/dtrace.h>
 #include <sys/dtrace_bsd.h>
@@ -134,6 +134,13 @@ fbt_excluded(const char *name)
 	    strcmp(name, "owner_rm") == 0 ||
 	    strcmp(name, "owner_rw") == 0 ||
 	    strcmp(name, "owner_sx") == 0)
+		return (1);
+
+	/*
+	 * The KMSAN runtime can't be instrumented safely.
+	 */
+	if (strncmp(name, "__msan", 6) == 0 ||
+	    strncmp(name, "kmsan_", 6) == 0)
 		return (1);
 
 	/*

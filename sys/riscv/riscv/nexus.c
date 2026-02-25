@@ -100,6 +100,7 @@ static device_method_t nexus_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		nexus_fdt_probe),
 	DEVMETHOD(device_attach,	nexus_attach),
+	DEVMETHOD(device_shutdown,	bus_generic_shutdown),
 
 	/* OFW interface */
 	DEVMETHOD(ofw_bus_map_intr,	nexus_ofw_map_intr),
@@ -171,8 +172,8 @@ nexus_attach(device_t dev)
 	nexus_add_child(dev, 1, "rcons", 0);
 	nexus_add_child(dev, 2, "ofwbus", 0);
 
-	bus_generic_probe(dev);
-	bus_generic_attach(dev);
+	bus_identify_children(dev);
+	bus_attach_children(dev);
 
 	return (0);
 }
@@ -214,7 +215,6 @@ nexus_get_rman(device_t bus, int type, u_int flags)
 	case SYS_RES_IRQ:
 		return (&irq_rman);
 	case SYS_RES_MEMORY:
-	case SYS_RES_IOPORT:
 		return (&mem_rman);
 	default:
 		return (NULL);
@@ -226,7 +226,7 @@ nexus_get_rman(device_t bus, int type, u_int flags)
  * child of one of our descendants, not a direct child of nexus0.
  */
 static struct resource *
-nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
+nexus_alloc_resource(device_t bus, device_t child, int type, int rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct nexus_device *ndev = DEVTONX(child);
@@ -241,7 +241,7 @@ nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
 	if (RMAN_IS_DEFAULT_RANGE(start, end) && (count == 1)) {
 		if (device_get_parent(child) != bus || ndev == NULL)
 			return (NULL);
-		rle = resource_list_find(&ndev->nx_resources, type, *rid);
+		rle = resource_list_find(&ndev->nx_resources, type, rid);
 		if (rle == NULL)
 			return (NULL);
 		start = rle->start;
@@ -308,7 +308,6 @@ nexus_activate_resource(device_t bus, device_t child, struct resource *r)
 	int error;
 
 	switch (rman_get_type(r)) {
-	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
 		error = bus_generic_rman_activate_resource(bus, child, r);
 		break;
@@ -343,7 +342,6 @@ nexus_deactivate_resource(device_t bus, device_t child, struct resource *r)
 	int error;
 
 	switch (rman_get_type(r)) {
-	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
 		error = bus_generic_rman_deactivate_resource(bus, child, r);
 		break;
@@ -372,9 +370,8 @@ nexus_map_resource(device_t bus, device_t child, struct resource *r,
 	if ((rman_get_flags(r) & RF_ACTIVE) == 0)
 		return (ENXIO);
 
-	/* Mappings are only supported on I/O and memory resources. */
+	/* Mappings are only supported on memory resources. */
 	switch (rman_get_type(r)) {
-	case SYS_RES_IOPORT:
 	case SYS_RES_MEMORY:
 		break;
 	default:
@@ -403,7 +400,6 @@ nexus_unmap_resource(device_t bus, device_t child, struct resource *r,
 {
 	switch (rman_get_type(r)) {
 	case SYS_RES_MEMORY:
-	case SYS_RES_IOPORT:
 		pmap_unmapdev(map->r_vaddr, map->r_size);
 		return (0);
 	default:

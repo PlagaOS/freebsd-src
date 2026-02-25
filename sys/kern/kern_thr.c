@@ -26,11 +26,16 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
+#include "opt_ktrace.h"
 #include "opt_posix.h"
 #include "opt_hwpmc_hooks.h"
-#include <sys/param.h>
+#include "opt_hwt_hooks.h"
+#include <sys/systm.h>
 #include <sys/kernel.h>
+#ifdef KTRACE
+#include <sys/ktrace.h>
+#endif
+#include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <sys/priv.h>
@@ -39,23 +44,24 @@
 #include <sys/ptrace.h>
 #include <sys/racct.h>
 #include <sys/resourcevar.h>
+#include <sys/rtprio.h>
 #include <sys/rwlock.h>
 #include <sys/sched.h>
 #include <sys/sysctl.h>
 #include <sys/smp.h>
 #include <sys/syscallsubr.h>
 #include <sys/sysent.h>
-#include <sys/systm.h>
 #include <sys/sysproto.h>
 #include <sys/signalvar.h>
 #include <sys/sysctl.h>
-#include <sys/ucontext.h>
 #include <sys/thr.h>
-#include <sys/rtprio.h>
+#include <sys/ucontext.h>
 #include <sys/umtxvar.h>
-#include <sys/limits.h>
 #ifdef	HWPMC_HOOKS
 #include <sys/pmckern.h>
+#endif
+#ifdef HWT_HOOKS
+#include <dev/hwt/hwt_hook.h>
 #endif
 
 #include <machine/frame.h>
@@ -170,7 +176,7 @@ thr_new_initthr(struct thread *td, void *thunk)
 	if (error != 0)
 		return (error);
 	/* Setup user TLS address and TLS pointer register. */
-	return (cpu_set_user_tls(td, param->tls_base));
+	return (cpu_set_user_tls(td, param->tls_base, param->flags));
 }
 
 int
@@ -179,6 +185,9 @@ kern_thr_new(struct thread *td, struct thr_param *param)
 	struct rtprio rtp, *rtpp;
 	int error;
 
+	if ((param->flags & ~(THR_SUSPENDED | THR_SYSTEM_SCOPE |
+	    THR_C_RUNTIME)) != 0)
+		return (EINVAL);
 	rtpp = NULL;
 	if (param->rtp != 0) {
 		error = copyin(param->rtp, &rtp, sizeof(struct rtprio));
@@ -186,6 +195,10 @@ kern_thr_new(struct thread *td, struct thr_param *param)
 			return (error);
 		rtpp = &rtp;
 	}
+#ifdef KTRACE
+	if (KTRPOINT(td, KTR_STRUCT))
+		ktrthrparam(param);
+#endif
 	return (thread_create(td, rtpp, thr_new_initthr, param));
 }
 
@@ -270,6 +283,10 @@ thread_create(struct thread *td, struct rtprio *rtp,
 		PMC_CALL_HOOK_UNLOCKED(newtd, PMC_FN_THR_CREATE_LOG, NULL);
 #endif
 
+#ifdef HWT_HOOKS
+	HWT_CALL_HOOK(newtd, HWT_THREAD_CREATE, NULL);
+#endif
+
 	tidhash_add(newtd);
 
 	/* ignore timesharing class */
@@ -328,6 +345,17 @@ kern_thr_exit(struct thread *td)
 	struct proc *p;
 
 	p = td->td_proc;
+
+	/*
+	 * Clear kernel ASTs in advance of selecting the last exiting
+	 * thread and acquiring schedulers locks.  It is fine to
+	 * clear the ASTs here even if we are not going to exit after
+	 * all.  On the other hand, leaving them pending could trigger
+	 * execution in subsystems in a context where they are not
+	 * prepared to handle top kernel actions, even in execution of
+	 * an unrelated thread.
+	 */
+	ast_kclear(td);
 
 	/*
 	 * If all of the threads in a process call this routine to
@@ -602,6 +630,9 @@ sys_thr_set_name(struct thread *td, struct thr_set_name_args *uap)
 #ifdef HWPMC_HOOKS
 	if (PMC_PROC_IS_USING_PMCS(p) || PMC_SYSTEM_SAMPLING_ACTIVE())
 		PMC_CALL_HOOK_UNLOCKED(ttd, PMC_FN_THR_CREATE_LOG, NULL);
+#endif
+#ifdef HWT_HOOKS
+	HWT_CALL_HOOK(ttd, HWT_THREAD_SET_NAME, NULL);
 #endif
 #ifdef KTR
 	sched_clear_tdname(ttd);

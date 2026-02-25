@@ -680,9 +680,9 @@ static void
 agp_i810_identify(driver_t *driver, device_t parent)
 {
 
-	if (device_find_child(parent, "agp", -1) == NULL &&
+	if (device_find_child(parent, "agp", DEVICE_UNIT_ANY) == NULL &&
 	    agp_i810_match(parent))
-		device_add_child(parent, "agp", -1);
+		device_add_child(parent, "agp", DEVICE_UNIT_ANY);
 }
 
 static int
@@ -1796,7 +1796,7 @@ agp_i810_free_memory(device_t dev, struct agp_memory *mem)
 			vm_page_unwire(m, PQ_INACTIVE);
 			VM_OBJECT_WUNLOCK(mem->am_obj);
 		} else {
-			contigfree(sc->argb_cursor, mem->am_size, M_AGP);
+			free(sc->argb_cursor, M_AGP);
 			sc->argb_cursor = NULL;
 		}
 	}
@@ -1913,7 +1913,7 @@ static device_method_t agp_i810_methods[] = {
 	DEVMETHOD(agp_bind_memory,	agp_i810_bind_memory),
 	DEVMETHOD(agp_unbind_memory,	agp_i810_unbind_memory),
 	DEVMETHOD(agp_chipset_flush,	agp_intel_gtt_chipset_flush),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t agp_i810_driver = {
@@ -2025,7 +2025,7 @@ agp_i915_chipset_flush_alloc_page(device_t dev, uint64_t start, uint64_t end)
 	vga = device_get_parent(dev);
 	sc->sc_flush_page_rid = 100;
 	sc->sc_flush_page_res = BUS_ALLOC_RESOURCE(device_get_parent(vga), dev,
-	    SYS_RES_MEMORY, &sc->sc_flush_page_rid, start, end, PAGE_SIZE,
+	    SYS_RES_MEMORY, sc->sc_flush_page_rid, start, end, PAGE_SIZE,
 	    RF_ACTIVE);
 	if (sc->sc_flush_page_res == NULL) {
 		device_printf(dev, "Failed to allocate flush page at 0x%jx\n",

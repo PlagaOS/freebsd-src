@@ -39,6 +39,7 @@
 #include <sys/kernel.h>
 #include <sys/limits.h>
 #include <sys/loginclass.h>
+#include <sys/malloc.h>
 #include <sys/priv.h>
 #include <sys/proc.h>
 #include <sys/racct.h>
@@ -208,7 +209,7 @@ static struct dict actionnames[] = {
 	{ "throttle", RCTL_ACTION_THROTTLE },
 	{ NULL, -1 }};
 
-static void rctl_init(void);
+static void rctl_init(void *);
 SYSINIT(rctl, SI_SUB_RACCT, SI_ORDER_FIRST, rctl_init, NULL);
 
 static uma_zone_t rctl_rule_zone;
@@ -2174,7 +2175,7 @@ rctl_racct_release(struct racct *racct)
 }
 
 static void
-rctl_init(void)
+rctl_init(void *dummy __unused)
 {
 
 	if (!racct_enable)
@@ -2205,6 +2206,7 @@ rctl_init(void)
 #else /* !RCTL */
 
 #include <sys/types.h>
+#include <sys/errno.h>
 #include <sys/sysproto.h>
 
 int

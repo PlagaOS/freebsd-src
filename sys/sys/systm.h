@@ -51,9 +51,9 @@ __NULLABILITY_PRAGMA_PUSH
 extern int cold;		/* nonzero if we are doing a cold boot */
 extern int suspend_blocked;	/* block suspend due to pending shutdown */
 extern int rebooting;		/* kern_reboot() has been called. */
-extern char version[];		/* system version */
-extern char compiler_version[];	/* compiler version */
-extern char copyright[];	/* system copyright */
+extern const char version[];	/* system version */
+extern const char compiler_version[];	/* compiler version */
+extern const char copyright[];	/* system copyright */
 extern int kstack_pages;	/* number of kernel stack pages */
 
 extern u_long pagesizes[];	/* supported page sizes */
@@ -79,7 +79,7 @@ extern u_long maxphys;		/* max raw I/O transfer size */
  */
 enum VM_GUEST { VM_GUEST_NO = 0, VM_GUEST_VM, VM_GUEST_XEN, VM_GUEST_HV,
 		VM_GUEST_VMWARE, VM_GUEST_KVM, VM_GUEST_BHYVE, VM_GUEST_VBOX,
-		VM_GUEST_PARALLELS, VM_GUEST_LAST };
+		VM_GUEST_PARALLELS, VM_GUEST_NVMM, VM_GUEST_LAST };
 
 #endif /* KERNEL */
 
@@ -109,7 +109,7 @@ extern bool scheduler_stopped;
  */
 #define	SCHEDULER_STOPPED()	__predict_false(scheduler_stopped)
 
-extern int osreldate;
+extern const int osreldate;
 
 extern const void *zero_region;	/* address space maps to a zeroed page	*/
 
@@ -309,9 +309,9 @@ int __result_use_check copyin(const void * __restrict udaddr,
     void * _Nonnull __restrict kaddr, size_t len);
 int __result_use_check copyin_nofault(const void * __restrict udaddr,
     void * _Nonnull __restrict kaddr, size_t len);
-int __result_use_or_ignore_check copyout(const void * _Nonnull __restrict kaddr,
+__nodiscard int copyout(const void * _Nonnull __restrict kaddr,
     void * __restrict udaddr, size_t len);
-int __result_use_or_ignore_check copyout_nofault(
+__nodiscard int copyout_nofault(
     const void * _Nonnull __restrict kaddr, void * __restrict udaddr,
     size_t len);
 
@@ -334,11 +334,11 @@ int64_t	fuword64(volatile const void *base);
 int __result_use_check fueword(volatile const void *base, long *val);
 int __result_use_check fueword32(volatile const void *base, int32_t *val);
 int __result_use_check fueword64(volatile const void *base, int64_t *val);
-int __result_use_or_ignore_check subyte(volatile void *base, int byte);
-int __result_use_or_ignore_check suword(volatile void *base, long word);
-int __result_use_or_ignore_check suword16(volatile void *base, int word);
-int __result_use_or_ignore_check suword32(volatile void *base, int32_t word);
-int __result_use_or_ignore_check suword64(volatile void *base, int64_t word);
+__nodiscard int subyte(volatile void *base, int byte);
+__nodiscard int suword(volatile void *base, long word);
+__nodiscard int suword16(volatile void *base, int word);
+__nodiscard int suword32(volatile void *base, int32_t word);
+__nodiscard int suword64(volatile void *base, int64_t word);
 uint32_t casuword32(volatile uint32_t *base, uint32_t oldval, uint32_t newval);
 u_long	casuword(volatile u_long *p, u_long oldval, u_long newval);
 int	casueword32(volatile uint32_t *base, uint32_t oldval, uint32_t *oldvalp,
@@ -566,17 +566,32 @@ void counted_warning(unsigned *counter, const char *msg);
 /*
  * APIs to manage deprecation and obsolescence.
  */
-void _gone_in(int major, const char *msg);
-void _gone_in_dev(device_t dev, int major, const char *msg);
+void _gone_in(int major, const char *msg, ...) __printflike(2, 3);
+void _gone_in_dev(device_t dev, int major, const char *msg, ...)
+    __printflike(3, 4);
 #ifdef NO_OBSOLETE_CODE
 #define __gone_ok(m, msg)					 \
 	_Static_assert(m < P_OSREL_MAJOR(__FreeBSD_version)),	 \
-	    "Obsolete code: " msg);
+	    "Obsolete code: " msg)
 #else
 #define	__gone_ok(m, msg)
 #endif
-#define gone_in(major, msg)		__gone_ok(major, msg) _gone_in(major, msg)
-#define gone_in_dev(dev, major, msg)	__gone_ok(major, msg) _gone_in_dev(dev, major, msg)
+#define gone_in(major, msg, ...)	do {				\
+	static bool __read_mostly __gone_in_ ## __LINE__ = true;	\
+	__gone_ok(major, msg);						\
+	if (__predict_false(__gone_in_ ## __LINE__)) {			\
+		__gone_in_ ## __LINE__ = false;				\
+		_gone_in(major, msg __VA_OPT__(,) __VA_ARGS__);		\
+	}								\
+} while (0)
+#define gone_in_dev(dev, major, msg, ...)	do {			\
+	static bool __read_mostly __gone_in_ ## __LINE__ = true;	\
+	__gone_ok(major, msg);						\
+	if (__predict_false(__gone_in_ ## __LINE__)) {			\
+		__gone_in_ ## __LINE__ = false;				\
+		_gone_in_dev(dev, major, msg __VA_OPT__(,) __VA_ARGS__);\
+	}								\
+} while (0)
 
 #ifdef INVARIANTS
 #define	__diagused

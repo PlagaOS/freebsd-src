@@ -76,6 +76,7 @@ enum {
 	TPF_TLS_RX_QUIESCING = (1 << 14), /* RX quiesced for TLS RX startup */
 	TPF_TLS_RX_QUIESCED = (1 << 15), /* RX quiesced for TLS RX startup */
 	TPF_WAITING_FOR_FINAL = (1<< 16), /* waiting for wakeup on final CPL */
+	TPF_IN_TOEP_LIST   = (1 << 17),	/* toep is in the main td->toep_list */
 };
 
 enum {
@@ -112,6 +113,7 @@ struct conn_params {
 	int8_t mtu_idx;
 	int8_t ulp_mode;
 	int8_t tx_align;
+	int8_t ctrlq_idx;	/* ctrlq = &sc->sge.ctrlq[ctrlq_idx] */
 	int16_t txq_idx;	/* ofld_txq = &sc->sge.ofld_txq[txq_idx] */
 	int16_t rxq_idx;	/* ofld_rxq = &sc->sge.ofld_rxq[rxq_idx] */
 	int16_t l2t_idx;
@@ -121,9 +123,12 @@ struct conn_params {
 };
 
 struct ofld_tx_sdesc {
-	uint32_t plen;		/* payload length */
-	uint8_t tx_credits;	/* firmware tx credits (unit is 16B) */
+	uint32_t plen : 26;		/* payload length */
+	uint32_t tx_credits : 6;	/* firmware tx credits (unit is 16B) */
 };
+
+#define	MAX_OFLD_TX_SDESC_PLEN		((1u << 26) - 1)
+#define	MAX_OFLD_TX_SDESC_CREDITS	((1u << 6) - 1)
 
 struct ppod_region {
 	u_int pr_start;
@@ -210,7 +215,7 @@ struct toepcb {
 	struct tom_data *td;
 	struct inpcb *inp;	/* backpointer to host stack's PCB */
 	u_int flags;		/* miscellaneous flags */
-	TAILQ_ENTRY(toepcb) link; /* toep_list */
+	TAILQ_ENTRY(toepcb) link; /* toep_list or stranded_toep_list */
 	int refcount;
 	struct vnet *vnet;
 	struct vi_info *vi;	/* virtual interface */
@@ -220,6 +225,7 @@ struct toepcb {
 	struct l2t_entry *l2te;	/* L2 table entry used by this connection */
 	struct clip_entry *ce;	/* CLIP table entry used by this tid */
 	int tid;		/* Connection identifier */
+	int incarnation;	/* sc->incarnation when toepcb was allocated */
 
 	/* tx credit handling */
 	u_int tx_total;		/* total tx WR credits (in 16B units) */
@@ -269,6 +275,7 @@ struct synq_entry {
 	struct listen_ctx *lctx;	/* backpointer to listen ctx */
 	struct mbuf *syn;
 	int flags;			/* same as toepcb's tp_flags */
+	TAILQ_ENTRY(synq_entry) link;	/* synqe_list */
 	volatile int ok_to_respond;
 	volatile u_int refcnt;
 	int tid;
@@ -277,6 +284,7 @@ struct synq_entry {
 	uint32_t ts;
 	uint32_t rss_hash;
 	__be16 tcp_opt; /* from cpl_pass_establish */
+	int incarnation;
 	struct toepcb *toep;
 
 	struct conn_params params;
@@ -284,13 +292,14 @@ struct synq_entry {
 
 /* listen_ctx flags */
 #define LCTX_RPL_PENDING 1	/* waiting for a CPL_PASS_OPEN_RPL */
+#define LCTX_SETUP_IN_HW 2	/* stid entry is setup in hardware */
 
 struct listen_ctx {
 	LIST_ENTRY(listen_ctx) link;	/* listen hash linkage */
 	volatile int refcount;
 	int stid;
-	struct stid_region stid_region;
 	int flags;
+	bool isipv6;
 	struct inpcb *inp;		/* listening socket's inp */
 	struct vnet *vnet;
 	struct sge_wrq *ctrlq;
@@ -329,6 +338,12 @@ struct tom_data {
 	/* toepcb's associated with this TOE device */
 	struct mtx toep_list_lock;
 	TAILQ_HEAD(, toepcb) toep_list;
+	TAILQ_HEAD(, synq_entry) synqe_list;
+	/* List of tids left stranded because hw stopped abruptly. */
+	TAILQ_HEAD(, toepcb) stranded_atids;
+	TAILQ_HEAD(, toepcb) stranded_tids;
+	TAILQ_HEAD(, synq_entry) stranded_synqe;
+	struct task cleanup_stranded_tids;
 
 	struct mtx lctx_hash_lock;
 	LIST_HEAD(, listen_ctx) *listen_hash;
@@ -463,18 +478,22 @@ int select_rcv_wscale(void);
 void init_conn_params(struct vi_info *, struct offload_settings *,
     struct in_conninfo *, struct socket *, const struct tcp_options *, int16_t,
     struct conn_params *cp);
+void update_tid_qid_sel(struct vi_info *, struct conn_params *, int);
 __be64 calc_options0(struct vi_info *, struct conn_params *);
 __be32 calc_options2(struct vi_info *, struct conn_params *);
 uint64_t select_ntuple(struct vi_info *, struct l2t_entry *);
 int negative_advice(int);
 int add_tid_to_history(struct adapter *, u_int);
+struct adapter *find_offload_adapter(struct socket *);
+void send_txdataplen_max_flowc_wr(struct adapter *, struct toepcb *, int);
+void t4_pcb_detach(struct toedev *, struct tcpcb *);
 
 /* t4_connect.c */
 void t4_init_connect_cpl_handlers(void);
 void t4_uninit_connect_cpl_handlers(void);
 int t4_connect(struct toedev *, struct socket *, struct nhop_object *,
     struct sockaddr *);
-void act_open_failure_cleanup(struct adapter *, u_int, u_int);
+void act_open_failure_cleanup(struct adapter *, struct toepcb *, u_int);
 
 /* t4_listen.c */
 void t4_init_listen_cpl_handlers(void);
@@ -489,7 +508,11 @@ int do_abort_req_synqe(struct sge_iq *, const struct rss_header *,
 int do_abort_rpl_synqe(struct sge_iq *, const struct rss_header *,
     struct mbuf *);
 void t4_offload_socket(struct toedev *, void *, struct socket *);
-void synack_failure_cleanup(struct adapter *, int);
+void synack_failure_cleanup(struct adapter *, struct synq_entry *);
+int alloc_stid_tab(struct adapter *);
+void free_stid_tab(struct adapter *);
+void stop_stid_tab(struct adapter *);
+void restart_stid_tab(struct adapter *);
 
 /* t4_cpl_io.c */
 void aiotx_init_toep(struct toepcb *);
@@ -509,8 +532,11 @@ int t4_send_fin(struct toedev *, struct tcpcb *);
 int t4_send_rst(struct toedev *, struct tcpcb *);
 void t4_set_tcb_field(struct adapter *, struct sge_wrq *, struct toepcb *,
     uint16_t, uint64_t, uint64_t, int, int);
-void t4_push_frames(struct adapter *, struct toepcb *, int);
 void t4_push_pdus(struct adapter *, struct toepcb *, int);
+bool t4_push_raw_wr(struct adapter *, struct toepcb *, struct mbuf *);
+void t4_raw_wr_tx(struct adapter *, struct toepcb *, struct mbuf *);
+void write_set_tcb_field(struct adapter *, void *, struct toepcb *, uint16_t,
+    uint64_t, uint64_t, int, int);
 
 /* t4_ddp.c */
 int t4_init_ppod_region(struct ppod_region *, struct t4_range *, u_int,
@@ -536,6 +562,7 @@ int t4_aio_queue_ddp(struct socket *, struct kaiocb *);
 int t4_enable_ddp_rcv(struct socket *, struct toepcb *);
 void t4_ddp_mod_load(void);
 void t4_ddp_mod_unload(void);
+struct mbuf *alloc_raw_wr_mbuf(int);
 void ddp_assert_empty(struct toepcb *);
 void ddp_uninit_toep(struct toepcb *);
 void ddp_queue_toep(struct toepcb *);
@@ -558,5 +585,11 @@ void tls_init_toep(struct toepcb *);
 int tls_tx_key(struct toepcb *);
 void tls_uninit_toep(struct toepcb *);
 int tls_alloc_ktls(struct toepcb *, struct ktls_session *, int);
+
+/* t4_tpt.c */
+uint32_t t4_pblpool_alloc(struct adapter *, int);
+void t4_pblpool_free(struct adapter *, uint32_t, int);
+int t4_pblpool_create(struct adapter *);
+void t4_pblpool_destroy(struct adapter *);
 
 #endif

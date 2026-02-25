@@ -113,7 +113,17 @@ struct uart_class uart_snps_class = {
 	.uc_rclk = 0,
 };
 
+struct uart_class uart_snps_jh7110_class = {
+	"snps",
+	snps_methods,
+	sizeof(struct snps_softc),
+	.uc_ops = &uart_ns8250_ops,
+	.uc_range = 8,
+	.uc_rclk = 24000000,
+};
+
 static struct ofw_compat_data compat_data[] = {
+	{ "starfive,jh7110-uart",	(uintptr_t)&uart_snps_jh7110_class },
 	{ "snps,dw-apb-uart",		(uintptr_t)&uart_snps_class },
 	{ "marvell,armada-38x-uart",	(uintptr_t)&uart_snps_class },
 	{ NULL,				(uintptr_t)NULL }
@@ -224,6 +234,22 @@ snps_probe(device_t dev)
 }
 
 static int
+snps_attach(device_t dev)
+{
+	phandle_t node;
+	int ret;
+
+	ret = uart_bus_attach(dev);
+	if (ret == 0) {
+		node = ofw_bus_get_node(dev);
+		/* Set up phandle to dev mapping */
+		OF_device_register_xref(OF_xref_from_node(node), dev);
+	}
+
+	return (ret);
+}
+
+static int
 snps_detach(device_t dev)
 {
 	struct snps_softc *sc;
@@ -269,7 +295,7 @@ snps_detach(device_t dev)
 static device_method_t snps_bus_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		snps_probe),
-	DEVMETHOD(device_attach,	uart_bus_attach),
+	DEVMETHOD(device_attach,	snps_attach),
 	DEVMETHOD(device_detach, 	snps_detach),
 	DEVMETHOD_END
 };

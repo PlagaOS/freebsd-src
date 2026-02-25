@@ -137,14 +137,16 @@ opal_i2c_attach(device_t dev)
 		return (EINVAL);
 	OF_getencprop(ofw_bus_get_node(dev), "ibm,opal-id", &sc->opal_id, len);
 
-	if ((sc->iicbus = device_add_child(dev, "iicbus", -1)) == NULL) {
+	if ((sc->iicbus = device_add_child(dev, "iicbus",
+	    DEVICE_UNIT_ANY)) == NULL) {
 		device_printf(dev, "could not allocate iicbus instance\n");
 		return (EINVAL);
 	}
 
 	I2C_LOCK_INIT(sc);
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 }
 
 static int

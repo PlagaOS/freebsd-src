@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: BSD-2-Clause
 /*
  * Copyright (c) 2020 iXsystems, Inc.
  * All rights reserved.
@@ -35,10 +36,6 @@
 #include <vm/vm_pageout.h>
 
 #include <sys/zfs_ioctl_impl.h>
-
-#if __FreeBSD_version < 1201517
-#define	vm_page_max_user_wired	vm_page_max_wired
-#endif
 
 int
 zfs_vfs_ref(zfsvfs_t **zfvp)
@@ -111,11 +108,11 @@ zfs_ioc_nextboot(const char *unused, nvlist_t *innvl, nvlist_t *outnvl)
 	    "command", &command) != 0)
 		return (EINVAL);
 
-	mutex_enter(&spa_namespace_lock);
+	spa_namespace_enter(FTAG);
 	spa = spa_by_guid(pool_guid, vdev_guid);
 	if (spa != NULL)
 		strcpy(name, spa_name(spa));
-	mutex_exit(&spa_namespace_lock);
+	spa_namespace_exit(FTAG);
 	if (spa == NULL)
 		return (ENOENT);
 

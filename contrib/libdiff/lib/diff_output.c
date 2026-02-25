@@ -30,6 +30,22 @@
 
 #include "diff_internal.h"
 
+static bool color;
+static const char *del_code = "31";
+static const char *add_code = "32";
+
+void
+diff_output_set_colors(bool _color,
+		       const char *_del_code,
+		       const char *_add_code)
+{
+	color = _color;
+	if (_del_code)
+		del_code = _del_code;
+	if (_add_code)
+		add_code = _add_code;
+}
+
 static int
 get_atom_byte(int *ch, struct diff_atom *atom, off_t off)
 {
@@ -66,28 +82,43 @@ diff_output_lines(struct diff_output_info *outinfo, FILE *dest,
 	off_t outoff = 0, *offp;
 	uint8_t *typep;
 	int rc;
+	bool colored;
 
 	if (outinfo && outinfo->line_offsets.len > 0) {
 		unsigned int idx = outinfo->line_offsets.len - 1;
 		outoff = outinfo->line_offsets.head[idx];
 	}
 
+	if (color) {
+		colored = true;
+		if (*prefix == '-' || *prefix == '<')
+			printf("\033[%sm", del_code);
+		else if (*prefix == '+' || *prefix == '>')
+			printf("\033[%sm", add_code);
+		else
+			colored = false;
+	} else {
+		colored = false;
+	}
+
 	foreach_diff_atom(atom, start_atom, count) {
 		off_t outlen = 0;
 		int i, ch, nbuf = 0;
-		unsigned int len = atom->len;
-		unsigned char buf[DIFF_OUTPUT_BUF_SIZE + 1 /* '\n' */];
+		size_t len = atom->len, wlen;
+		char buf[DIFF_OUTPUT_BUF_SIZE + 1 /* '\n' */];
 		size_t n;
 
 		n = strlcpy(buf, prefix, sizeof(buf));
-		if (n >= DIFF_OUTPUT_BUF_SIZE) /* leave room for '\n' */
-			return ENOBUFS;
+		if (n >= DIFF_OUTPUT_BUF_SIZE) { /* leave room for '\n' */
+			rc = ENOBUFS;
+			goto out;
+		}
 		nbuf += n;
 
 		if (len) {
 			rc = get_atom_byte(&ch, atom, len - 1);
 			if (rc)
-				return rc;
+				goto out;
 			if (ch == '\n')
 				len--;
 		}
@@ -95,37 +126,49 @@ diff_output_lines(struct diff_output_info *outinfo, FILE *dest,
 		for (i = 0; i < len; i++) {
 			rc = get_atom_byte(&ch, atom, i);
 			if (rc)
-				return rc;
+				goto out;
 			if (nbuf >= DIFF_OUTPUT_BUF_SIZE) {
-				rc = fwrite(buf, 1, nbuf, dest);
-				if (rc != nbuf)
-					return errno;
-				outlen += rc;
+				wlen = fwrite(buf, 1, nbuf, dest);
+				if (wlen != nbuf) {
+					rc = errno;
+					goto out;
+				}
+				outlen += wlen;
 				nbuf = 0;
 			}
 			buf[nbuf++] = ch;
 		}
 		buf[nbuf++] = '\n';
-		rc = fwrite(buf, 1, nbuf, dest);
-		if (rc != nbuf)
-			return errno;
-		outlen += rc;
+		wlen = fwrite(buf, 1, nbuf, dest);
+		if (wlen != nbuf) {
+			rc = errno;
+			goto out;
+		}
+		outlen += wlen;
 		if (outinfo) {
 			ARRAYLIST_ADD(offp, outinfo->line_offsets);
-			if (offp == NULL)
-				return ENOMEM;
+			if (offp == NULL) {
+				rc = ENOMEM;
+				goto out;
+			}
 			outoff += outlen;
 			*offp = outoff;
 			ARRAYLIST_ADD(typep, outinfo->line_types);
-			if (typep == NULL)
-				return ENOMEM;
+			if (typep == NULL) {
+				rc = ENOMEM;
+				goto out;
+			}
 			*typep = *prefix == ' ' ? DIFF_LINE_CONTEXT :
 			    *prefix == '-' ? DIFF_LINE_MINUS :
 			    *prefix == '+' ? DIFF_LINE_PLUS : DIFF_LINE_NONE;
 		}
 	}
 
-	return DIFF_RC_OK;
+	rc = DIFF_RC_OK;
+out:
+	if (colored)
+		printf("\033[m");
+	return rc;
 }
 
 int
@@ -253,7 +296,7 @@ diff_output_trailing_newline_msg(struct diff_output_info *outinfo, FILE *dest,
 }
 
 static bool
-is_function_prototype(unsigned char ch)
+is_function_prototype(char ch)
 {
 	return (isalpha((unsigned char)ch) || ch == '_' || ch == '$' ||
 	    ch == '-' || ch == '+');
@@ -268,7 +311,7 @@ diff_output_match_function_prototype(char *prototype, size_t prototype_size,
 {
 	struct diff_atom *start_atom, *atom;
 	const struct diff_data *data;
-	unsigned char buf[DIFF_FUNCTION_CONTEXT_SIZE];
+	char buf[DIFF_FUNCTION_CONTEXT_SIZE];
 	const char *state = NULL;
 	int rc, i, ch;
 
@@ -285,7 +328,7 @@ diff_output_match_function_prototype(char *prototype, size_t prototype_size,
 		rc = get_atom_byte(&ch, atom, 0);
 		if (rc)
 			return rc;
-		buf[0] = (unsigned char)ch;
+		buf[0] = ch;
 		if (!is_function_prototype(buf[0]))
 			continue;
 		for (i = 1; i < atom->len && i < sizeof(buf) - 1; i++) {
@@ -294,7 +337,7 @@ diff_output_match_function_prototype(char *prototype, size_t prototype_size,
 				return rc;
 			if (ch == '\n')
 				break;
-			buf[i] = (unsigned char)ch;
+			buf[i] = ch;
 		}
 		buf[i] = '\0';
 		if (begins_with(buf, "private:")) {

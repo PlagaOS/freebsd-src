@@ -59,7 +59,7 @@ static int	ps3bus_read_ivar(device_t bus, device_t child, int which,
 		    uintptr_t *result);
 static struct rman *ps3bus_get_rman(device_t bus, int type, u_int flags);
 static struct resource *ps3bus_alloc_resource(device_t bus, device_t child,
-		    int type, int *rid, rman_res_t start, rman_res_t end,
+		    int type, int rid, rman_res_t start, rman_res_t end,
 		    rman_res_t count, u_int flags);
 static int	ps3bus_map_resource(device_t bus, device_t child,
 		    struct resource *r, struct resource_map_request *argsp,
@@ -157,7 +157,7 @@ ps3bus_identify(driver_t *driver, device_t parent)
 	if (strcmp(installed_platform(), "ps3") != 0)
 		return;
 
-	if (device_find_child(parent, "ps3bus", -1) == NULL)
+	if (device_find_child(parent, "ps3bus", DEVICE_UNIT_ANY) == NULL)
 		BUS_ADD_CHILD(parent, 0, "ps3bus", 0);
 }
 
@@ -408,7 +408,7 @@ ps3bus_attach(device_t self)
 				ps3bus_resources_init_by_type(&sc->sc_mem_rman, bus_index,
 				    dev_index, OHCI_IRQ, OHCI_REG, dinfo);
 
-				cdev = device_add_child(self, "ohci", -1);
+				cdev = device_add_child(self, "ohci", DEVICE_UNIT_ANY);
 				if (cdev == NULL) {
 					device_printf(self,
 					    "device_add_child failed\n");
@@ -434,7 +434,7 @@ ps3bus_attach(device_t self)
 				ps3bus_resources_init_by_type(&sc->sc_mem_rman, bus_index,
 				    dev_index, EHCI_IRQ, EHCI_REG, dinfo);
 
-				cdev = device_add_child(self, "ehci", -1);
+				cdev = device_add_child(self, "ehci", DEVICE_UNIT_ANY);
 				if (cdev == NULL) {
 					device_printf(self,
 					    "device_add_child failed\n");
@@ -463,7 +463,7 @@ ps3bus_attach(device_t self)
 				ps3bus_resources_init(&sc->sc_mem_rman, bus_index,
 				    dev_index, dinfo);
 
-				cdev = device_add_child(self, NULL, -1);
+				cdev = device_add_child(self, NULL, DEVICE_UNIT_ANY);
 				if (cdev == NULL) {
 					device_printf(self,
 					    "device_add_child failed\n");
@@ -479,7 +479,8 @@ ps3bus_attach(device_t self)
 
 	clock_register(self, 1000);
 
-	return (bus_generic_attach(self));
+	bus_attach_children(self);
+	return (0);
 }
 
 static int
@@ -547,7 +548,7 @@ ps3bus_get_rman(device_t bus, int type, u_int flags)
 }
 
 static struct resource *
-ps3bus_alloc_resource(device_t bus, device_t child, int type, int *rid,
+ps3bus_alloc_resource(device_t bus, device_t child, int type, int rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct	ps3bus_devinfo *dinfo;
@@ -559,10 +560,10 @@ ps3bus_alloc_resource(device_t bus, device_t child, int type, int *rid,
 	switch (type) {
 	case SYS_RES_MEMORY:
 		rle = resource_list_find(&dinfo->resources, SYS_RES_MEMORY,
-		    *rid);
+		    rid);
 		if (rle == NULL) {
 			device_printf(bus, "no rle for %s memory %d\n",
-				      device_get_nameunit(child), *rid);
+				      device_get_nameunit(child), rid);
 			return (NULL);
 		}
 
@@ -584,7 +585,7 @@ ps3bus_alloc_resource(device_t bus, device_t child, int type, int *rid,
 		break;
 	case SYS_RES_IRQ:
 		rle = resource_list_find(&dinfo->resources, SYS_RES_IRQ,
-		    *rid);
+		    rid);
 		adjstart = rle->start;
 		adjcount = ulmax(count, rle->count);
 		adjend = ulmax(rle->end, rle->start + adjcount - 1);

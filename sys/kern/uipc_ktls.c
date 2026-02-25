@@ -136,7 +136,7 @@ SYSCTL_UINT(_kern_ipc_tls, OID_AUTO, ifnet_max_rexmit_pct, CTLFLAG_RWTUN,
     &ktls_ifnet_max_rexmit_pct, 2,
     "Max percent bytes retransmitted before ifnet TLS is disabled");
 
-static bool ktls_offload_enable;
+static bool ktls_offload_enable = true;
 SYSCTL_BOOL(_kern_ipc_tls, OID_AUTO, enable, CTLFLAG_RWTUN,
     &ktls_offload_enable, 0,
     "Enable support for kernel TLS offload");
@@ -273,7 +273,7 @@ SYSCTL_COUNTER_U64(_kern_ipc_tls_ifnet, OID_AUTO, reset_failed, CTLFLAG_RD,
     &ktls_ifnet_reset_failed,
     "TLS sessions that failed to allocate a new ifnet send tag");
 
-static int ktls_ifnet_permitted;
+static int ktls_ifnet_permitted = 1;
 SYSCTL_UINT(_kern_ipc_tls_ifnet, OID_AUTO, permitted, CTLFLAG_RWTUN,
     &ktls_ifnet_permitted, 1,
     "Whether to permit hardware (ifnet) TLS sessions");
@@ -495,7 +495,7 @@ ktls_init(void)
 		ktls_buffer_zone = uma_zcache_create("ktls_buffers",
 		    roundup2(ktls_maxlen, PAGE_SIZE), NULL, NULL, NULL, NULL,
 		    ktls_buffer_import, ktls_buffer_release, NULL,
-		    UMA_ZONE_FIRSTTOUCH);
+		    UMA_ZONE_FIRSTTOUCH | UMA_ZONE_NOTRIM);
 	}
 
 	/*
@@ -819,6 +819,7 @@ ktls_create_session(struct socket *so, struct tls_enable *en,
 			arc4rand(tls->params.iv + 8, sizeof(uint64_t), 0);
 	}
 
+	tls->gen = 0;
 	*tlsp = tls;
 	return (0);
 }
@@ -861,6 +862,7 @@ ktls_clone_session(struct ktls_session *tls, int direction)
 	memcpy(tls_new->params.cipher_key, tls->params.cipher_key,
 	    tls->params.cipher_key_len);
 
+	tls_new->gen = 0;
 	return (tls_new);
 }
 
@@ -1153,11 +1155,11 @@ ktls_use_sw(struct ktls_session *tls)
 }
 
 static int
-ktls_try_sw(struct socket *so, struct ktls_session *tls, int direction)
+ktls_try_sw(struct ktls_session *tls, int direction)
 {
 	int error;
 
-	error = ktls_ocf_try(so, tls, direction);
+	error = ktls_ocf_try(tls, direction);
 	if (error)
 		return (error);
 	ktls_use_sw(tls);
@@ -1205,7 +1207,7 @@ sb_mark_notready(struct sockbuf *sb)
 	for (; m != NULL; m = m->m_next) {
 		KASSERT(m->m_nextpkt == NULL, ("%s: m_nextpkt != NULL",
 		    __func__));
-		KASSERT((m->m_flags & M_NOTAVAIL) == 0, ("%s: mbuf not avail",
+		KASSERT((m->m_flags & M_NOTREADY) == 0, ("%s: mbuf not ready",
 		    __func__));
 		KASSERT(sb->sb_acc >= m->m_len, ("%s: sb_acc < m->m_len",
 		    __func__));
@@ -1314,7 +1316,17 @@ ktls_enable_rx(struct socket *so, struct tls_enable *en)
 	if (error)
 		return (error);
 
-	error = ktls_ocf_try(so, tls, KTLS_RX);
+	error = ktls_ocf_try(tls, KTLS_RX);
+	if (error) {
+		ktls_free(tls);
+		return (error);
+	}
+
+	/*
+	 * Serialize with soreceive_generic() and make sure that we're not
+	 * operating on a listening socket.
+	 */
+	error = SOCK_IO_RECV_LOCK(so, SBL_WAIT);
 	if (error) {
 		ktls_free(tls);
 		return (error);
@@ -1322,10 +1334,15 @@ ktls_enable_rx(struct socket *so, struct tls_enable *en)
 
 	/* Mark the socket as using TLS offload. */
 	SOCK_RECVBUF_LOCK(so);
-	if (SOLISTENING(so)) {
+	if (__predict_false(so->so_rcv.sb_tls_info != NULL))
+		error = EALREADY;
+	else if ((so->so_rcv.sb_flags & SB_SPLICED) != 0)
+		error = EINVAL;
+	if (error != 0) {
 		SOCK_RECVBUF_UNLOCK(so);
+		SOCK_IO_RECV_UNLOCK(so);
 		ktls_free(tls);
-		return (EINVAL);
+		return (EALREADY);
 	}
 	so->so_rcv.sb_tls_seqno = be64dec(en->rec_seq);
 	so->so_rcv.sb_tls_info = tls;
@@ -1335,6 +1352,7 @@ ktls_enable_rx(struct socket *so, struct tls_enable *en)
 	sb_mark_notready(&so->so_rcv);
 	ktls_check_rx(&so->so_rcv);
 	SOCK_RECVBUF_UNLOCK(so);
+	SOCK_IO_RECV_UNLOCK(so);
 
 	/* Prefer TOE -> ifnet TLS -> software TLS. */
 #ifdef TCP_OFFLOAD
@@ -1388,6 +1406,9 @@ ktls_enable_tx(struct socket *so, struct tls_enable *en)
 	if (error)
 		return (error);
 
+	/* some ktls offload NICs require initial seqno to start offload */
+	tls->initial_offload_seqno = be64dec(en->rec_seq);
+
 	/* Prefer TOE -> ifnet TLS -> software TLS. */
 #ifdef TCP_OFFLOAD
 	error = ktls_try_toe(so, tls, KTLS_TX);
@@ -1395,7 +1416,7 @@ ktls_enable_tx(struct socket *so, struct tls_enable *en)
 #endif
 		error = ktls_try_ifnet(so, tls, KTLS_TX, false);
 	if (error)
-		error = ktls_try_sw(so, tls, KTLS_TX);
+		error = ktls_try_sw(tls, KTLS_TX);
 
 	if (error) {
 		ktls_free(tls);
@@ -1420,6 +1441,17 @@ ktls_enable_tx(struct socket *so, struct tls_enable *en)
 	inp = so->so_pcb;
 	INP_WLOCK(inp);
 	SOCK_SENDBUF_LOCK(so);
+	if (__predict_false(so->so_snd.sb_tls_info != NULL))
+		error = EALREADY;
+	else if ((so->so_snd.sb_flags & SB_SPLICED) != 0)
+		error = EINVAL;
+	if (error != 0) {
+		SOCK_SENDBUF_UNLOCK(so);
+		INP_WUNLOCK(inp);
+		SOCK_IO_SEND_UNLOCK(so);
+		ktls_free(tls);
+		return (error);
+	}
 	so->so_snd.sb_tls_seqno = be64dec(en->rec_seq);
 	so->so_snd.sb_tls_info = tls;
 	if (tls->mode != TCP_TLS_MODE_SW) {
@@ -1580,7 +1612,7 @@ ktls_set_tx_mode(struct socket *so, int mode)
 	if (mode == TCP_TLS_MODE_IFNET)
 		error = ktls_try_ifnet(so, tls_new, KTLS_TX, true);
 	else
-		error = ktls_try_sw(so, tls_new, KTLS_TX);
+		error = ktls_try_sw(tls_new, KTLS_TX);
 	if (error) {
 		counter_u64_add(ktls_switch_failed, 1);
 		ktls_free(tls_new);
@@ -3053,6 +3085,7 @@ ktls_encrypt(struct ktls_wq *wq, struct mbuf *top)
 
 		if ((m->m_epg_flags & EPG_FLAG_ANON) == 0)
 			ktls_finish_nonanon(m, &state);
+		m->m_flags |= M_RDONLY;
 
 		npages += m->m_epg_nrdy;
 
@@ -3091,6 +3124,7 @@ ktls_encrypt_cb(struct ktls_ocf_encrypt_state *state, int error)
 
 	if ((m->m_epg_flags & EPG_FLAG_ANON) == 0)
 		ktls_finish_nonanon(m, state);
+	m->m_flags |= M_RDONLY;
 
 	so = state->so;
 	free(state, M_KTLS);
@@ -3409,4 +3443,57 @@ ktls_disable_ifnet(void *arg)
 	SOCK_UNLOCK(so);
 	TASK_INIT(&tls->disable_ifnet_task, 0, ktls_disable_ifnet_help, tls);
 	(void)taskqueue_enqueue(taskqueue_thread, &tls->disable_ifnet_task);
+}
+
+void
+ktls_session_to_xktls_onedir(const struct ktls_session *ktls, bool export_keys,
+    struct xktls_session_onedir *xk)
+{
+	if_t ifp;
+	struct m_snd_tag *st;
+
+	xk->gen = ktls->gen;
+#define	A(m) xk->m = ktls->params.m
+	A(cipher_algorithm);
+	A(auth_algorithm);
+	A(cipher_key_len);
+	A(auth_key_len);
+	A(max_frame_len);
+	A(tls_vmajor);
+	A(tls_vminor);
+	A(tls_hlen);
+	A(tls_tlen);
+	A(tls_bs);
+	A(flags);
+	if (export_keys) {
+		memcpy(&xk->iv, &ktls->params.iv, XKTLS_SESSION_IV_BUF_LEN);
+		A(iv_len);
+	} else {
+		memset(&xk->iv, 0, XKTLS_SESSION_IV_BUF_LEN);
+		xk->iv_len = 0;
+	}
+#undef A
+	if ((st = ktls->snd_tag) != NULL &&
+	    (ifp = ktls->snd_tag->ifp) != NULL)
+		strncpy(xk->ifnet, if_name(ifp), sizeof(xk->ifnet));
+}
+
+void
+ktls_session_copy_keys(const struct ktls_session *ktls,
+    uint8_t *data, size_t *sz)
+{
+	size_t t, ta, tc;
+
+	if (ktls == NULL) {
+		*sz = 0;
+		return;
+	}
+	t = *sz;
+	tc = MIN(t, ktls->params.cipher_key_len);
+	if (data != NULL)
+		memcpy(data, ktls->params.cipher_key, tc);
+	ta = MIN(t - tc, ktls->params.auth_key_len);
+	if (data != NULL)
+		memcpy(data + tc, ktls->params.auth_key, ta);
+	*sz = ta + tc;
 }

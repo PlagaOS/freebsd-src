@@ -1,10 +1,8 @@
-
 .include <src.opts.mk>
 .include "${.CURDIR:H}/config.mk"
 
 SRCDIR=	${NCURSES_DIR}/panel
 
-PACKAGE=	clibs
 LIB=	panelw
 SHLIB_MAJOR=	6
 
@@ -62,9 +60,6 @@ SYMLINKS+=	libpanelw.a ${LIBDIR}/libpanel.a
 .endif
 .if !defined(NO_PIC)
 SYMLINKS+=	libpanelw.so ${LIBDIR}/libpanel.so
-.endif
-.if ${MK_PROFILE} != "no"
-SYMLINKS+=	libpanelw_p.a ${LIBDIR}/libpanel_p.a
 .endif
 
 INCS=	panel.h

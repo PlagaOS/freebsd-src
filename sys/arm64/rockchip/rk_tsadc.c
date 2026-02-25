@@ -484,7 +484,7 @@ tsadc_init_tsensor(struct tsadc_softc *sc, struct tsensor *sensor)
 	WR4(sc, TSADC_INT_EN, val);
 
 	/* Shutdown temperature */
-	val =  tsadc_raw_to_temp(sc, sc->shutdown_temp);
+	val =  tsadc_temp_to_raw(sc, sc->shutdown_temp);
 	WR4(sc, TSADC_COMP_SHUT(sensor->channel), val);
 	val = RD4(sc, TSADC_AUTO_CON);
 	val |= TSADC_AUTO_SRC_EN(sensor->channel);
@@ -818,7 +818,8 @@ tsadc_attach(device_t dev)
 	}
 
 	OF_device_register_xref(OF_xref_from_node(node), dev);
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 
 fail_sysctl:
 	sysctl_ctx_free(&tsadc_sysctl_ctx);

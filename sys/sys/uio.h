@@ -50,13 +50,13 @@ typedef	__off_t	off_t;
 #ifdef _KERNEL
 
 struct uio {
-	struct	iovec *uio_iov;		/* scatter/gather list */
-	int	uio_iovcnt;		/* length of scatter/gather list */
-	off_t	uio_offset;		/* offset in target object */
-	ssize_t	uio_resid;		/* remaining bytes to process */
-	enum	uio_seg uio_segflg;	/* address space */
-	enum	uio_rw uio_rw;		/* operation */
-	struct	thread *uio_td;		/* owner */
+	struct iovec	*uio_iov;	/* scatter/gather list */
+	int		 uio_iovcnt;	/* length of scatter/gather list */
+	off_t		 uio_offset;	/* offset in target object */
+	ssize_t		 uio_resid;	/* remaining bytes to process */
+	enum uio_seg	 uio_segflg;	/* address space */
+	enum uio_rw	 uio_rw;	/* operation */
+	struct thread	*uio_td;	/* owner */
 };
 
 /*
@@ -84,12 +84,14 @@ int	copyiniov(const struct iovec *iovp, u_int iovcnt, struct iovec **iov,
 int	copyinuio(const struct iovec *iovp, u_int iovcnt, struct uio **uiop);
 int	copyout_map(struct thread *td, vm_offset_t *addr, size_t sz);
 int	copyout_unmap(struct thread *td, vm_offset_t addr, size_t sz);
+void	exterr_copyout(struct thread *td);
 int	physcopyin(void *src, vm_paddr_t dst, size_t len);
 int	physcopyout(vm_paddr_t src, void *dst, size_t len);
 int	physcopyin_vlist(struct bus_dma_segment *src, off_t offset,
 	    vm_paddr_t dst, size_t len);
 int	physcopyout_vlist(vm_paddr_t src, struct bus_dma_segment *dst,
 	    off_t offset, size_t len);
+void	uioadvance(struct uio *, size_t);
 int	uiomove(void *cp, int n, struct uio *uio);
 int	uiomove_frombuf(void *buf, int buflen, struct uio *uio);
 int	uiomove_fromphys(struct vm_page *ma[], vm_offset_t offset, int n,
@@ -98,6 +100,10 @@ int	uiomove_nofault(void *cp, int n, struct uio *uio);
 int	uiomove_object(struct vm_object *obj, off_t obj_size, struct uio *uio);
 
 #else /* !_KERNEL */
+
+#if defined(_FORTIFY_SOURCE) && _FORTIFY_SOURCE > 0
+#include <ssp/uio.h>
+#endif
 
 __BEGIN_DECLS
 ssize_t	readv(int, const struct iovec *, int);

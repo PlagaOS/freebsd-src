@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -162,7 +163,7 @@ uint64_t
 vdev_label_offset(uint64_t psize, int l, uint64_t offset)
 {
 	ASSERT(offset < sizeof (vdev_label_t));
-	ASSERT(P2PHASE_TYPED(psize, sizeof (vdev_label_t), uint64_t) == 0);
+	ASSERT0(P2PHASE_TYPED(psize, sizeof (vdev_label_t), uint64_t));
 
 	return (offset + l * sizeof (vdev_label_t) + (l < VDEV_LABELS / 2 ?
 	    0 : psize - VDEV_LABELS * sizeof (vdev_label_t)));
@@ -387,6 +388,10 @@ vdev_config_generate_stats(vdev_t *vd, nvlist_t *nv)
 	/* IO delays */
 	fnvlist_add_uint64(nvx, ZPOOL_CONFIG_VDEV_SLOW_IOS, vs->vs_slow_ios);
 
+	/* Direct I/O write verify errors */
+	fnvlist_add_uint64(nvx, ZPOOL_CONFIG_VDEV_DIO_VERIFY_ERRORS,
+	    vs->vs_dio_verify_errors);
+
 	/* Add extended stats nvlist to main nvlist */
 	fnvlist_add_nvlist(nv, ZPOOL_CONFIG_VDEV_STATS_EX, nvx);
 
@@ -506,6 +511,8 @@ vdev_config_generate(spa_t *spa, vdev_t *vd, boolean_t getstats,
 		fnvlist_add_uint64(nv, ZPOOL_CONFIG_ASHIFT, vd->vdev_ashift);
 		fnvlist_add_uint64(nv, ZPOOL_CONFIG_ASIZE,
 		    vd->vdev_asize);
+		fnvlist_add_uint64(nv, ZPOOL_CONFIG_MIN_ALLOC,
+		    vdev_get_min_alloc(vd));
 		fnvlist_add_uint64(nv, ZPOOL_CONFIG_IS_LOG, vd->vdev_islog);
 		if (vd->vdev_noalloc) {
 			fnvlist_add_uint64(nv, ZPOOL_CONFIG_NONALLOCATING,
@@ -639,7 +646,8 @@ vdev_config_generate(spa_t *spa, vdev_t *vd, boolean_t getstats,
 			 * will be combined with adjacent allocated segments
 			 * as a single mapping.
 			 */
-			for (int i = 0; i < RANGE_TREE_HISTOGRAM_SIZE; i++) {
+			for (int i = 0; i < ZFS_RANGE_TREE_HISTOGRAM_SIZE;
+			    i++) {
 				if (i + 1 < highbit64(vdev_removal_max_span)
 				    - 1) {
 					to_alloc +=
@@ -762,12 +770,12 @@ vdev_top_config_generate(spa_t *spa, nvlist_t *config)
 	}
 
 	if (idx) {
-		VERIFY(nvlist_add_uint64_array(config, ZPOOL_CONFIG_HOLE_ARRAY,
-		    array, idx) == 0);
+		VERIFY0(nvlist_add_uint64_array(config,
+		    ZPOOL_CONFIG_HOLE_ARRAY, array, idx));
 	}
 
-	VERIFY(nvlist_add_uint64(config, ZPOOL_CONFIG_VDEV_CHILDREN,
-	    rvd->vdev_children) == 0);
+	VERIFY0(nvlist_add_uint64(config, ZPOOL_CONFIG_VDEV_CHILDREN,
+	    rvd->vdev_children));
 
 	kmem_free(array, rvd->vdev_children * sizeof (uint64_t));
 }
@@ -854,8 +862,8 @@ retry:
 		}
 	}
 
-	if (config == NULL && !(flags & ZIO_FLAG_TRYHARD)) {
-		flags |= ZIO_FLAG_TRYHARD;
+	if (config == NULL && !(flags & ZIO_FLAG_IO_RETRY)) {
+		flags |= ZIO_FLAG_IO_RETRY;
 		goto retry;
 	}
 
@@ -1007,6 +1015,47 @@ vdev_inuse(vdev_t *vd, uint64_t crtxg, vdev_labeltype_t reason,
 	return (state == POOL_STATE_ACTIVE);
 }
 
+static nvlist_t *
+vdev_aux_label_generate(vdev_t *vd, boolean_t reason_spare)
+{
+	/*
+	 * For inactive hot spares and level 2 ARC devices, we generate
+	 * a special label that identifies as a mutually shared hot
+	 * spare or l2cache device. We write the label in case of
+	 * addition or removal of hot spare or l2cache vdev (in which
+	 * case we want to revert the labels).
+	 */
+	nvlist_t *label = fnvlist_alloc();
+	fnvlist_add_uint64(label, ZPOOL_CONFIG_VERSION,
+	    spa_version(vd->vdev_spa));
+	fnvlist_add_uint64(label, ZPOOL_CONFIG_POOL_STATE, reason_spare ?
+	    POOL_STATE_SPARE : POOL_STATE_L2CACHE);
+	fnvlist_add_uint64(label, ZPOOL_CONFIG_GUID, vd->vdev_guid);
+
+	/*
+	 * This is merely to facilitate reporting the ashift of the
+	 * cache device through zdb. The actual retrieval of the
+	 * ashift (in vdev_alloc()) uses the nvlist
+	 * spa->spa_l2cache->sav_config (populated in
+	 * spa_ld_open_aux_vdevs()).
+	 */
+	if (!reason_spare)
+		fnvlist_add_uint64(label, ZPOOL_CONFIG_ASHIFT, vd->vdev_ashift);
+
+	/*
+	 * Add path information to help find it during pool import
+	 */
+	if (vd->vdev_path != NULL)
+		fnvlist_add_string(label, ZPOOL_CONFIG_PATH, vd->vdev_path);
+	if (vd->vdev_devid != NULL)
+		fnvlist_add_string(label, ZPOOL_CONFIG_DEVID, vd->vdev_devid);
+	if (vd->vdev_physpath != NULL) {
+		fnvlist_add_string(label, ZPOOL_CONFIG_PHYS_PATH,
+		    vd->vdev_physpath);
+	}
+	return (label);
+}
+
 /*
  * Initialize a vdev label.  We check to make sure each leaf device is not in
  * use, and writable.  We put down an initial label which we will later
@@ -1030,7 +1079,8 @@ vdev_label_init(vdev_t *vd, uint64_t crtxg, vdev_labeltype_t reason)
 	size_t buflen;
 	int error;
 	uint64_t spare_guid = 0, l2cache_guid = 0;
-	int flags = ZIO_FLAG_CONFIG_WRITER | ZIO_FLAG_CANFAIL;
+	int flags = ZIO_FLAG_CONFIG_WRITER | ZIO_FLAG_CANFAIL |
+	    ZIO_FLAG_TRYHARD;
 	boolean_t reason_spare = (reason == VDEV_LABEL_SPARE || (reason ==
 	    VDEV_LABEL_REMOVE && vd->vdev_isspare));
 	boolean_t reason_l2cache = (reason == VDEV_LABEL_L2CACHE || (reason ==
@@ -1121,49 +1171,7 @@ vdev_label_init(vdev_t *vd, uint64_t crtxg, vdev_labeltype_t reason)
 	 * be written again with a meaningful txg by spa_sync().
 	 */
 	if (reason_spare || reason_l2cache) {
-		/*
-		 * For inactive hot spares and level 2 ARC devices, we generate
-		 * a special label that identifies as a mutually shared hot
-		 * spare or l2cache device. We write the label in case of
-		 * addition or removal of hot spare or l2cache vdev (in which
-		 * case we want to revert the labels).
-		 */
-		VERIFY(nvlist_alloc(&label, NV_UNIQUE_NAME, KM_SLEEP) == 0);
-
-		VERIFY(nvlist_add_uint64(label, ZPOOL_CONFIG_VERSION,
-		    spa_version(spa)) == 0);
-		VERIFY(nvlist_add_uint64(label, ZPOOL_CONFIG_POOL_STATE,
-		    reason_spare ? POOL_STATE_SPARE : POOL_STATE_L2CACHE) == 0);
-		VERIFY(nvlist_add_uint64(label, ZPOOL_CONFIG_GUID,
-		    vd->vdev_guid) == 0);
-
-		/*
-		 * This is merely to facilitate reporting the ashift of the
-		 * cache device through zdb. The actual retrieval of the
-		 * ashift (in vdev_alloc()) uses the nvlist
-		 * spa->spa_l2cache->sav_config (populated in
-		 * spa_ld_open_aux_vdevs()).
-		 */
-		if (reason_l2cache) {
-			VERIFY(nvlist_add_uint64(label, ZPOOL_CONFIG_ASHIFT,
-			    vd->vdev_ashift) == 0);
-		}
-
-		/*
-		 * Add path information to help find it during pool import
-		 */
-		if (vd->vdev_path != NULL) {
-			VERIFY(nvlist_add_string(label, ZPOOL_CONFIG_PATH,
-			    vd->vdev_path) == 0);
-		}
-		if (vd->vdev_devid != NULL) {
-			VERIFY(nvlist_add_string(label, ZPOOL_CONFIG_DEVID,
-			    vd->vdev_devid) == 0);
-		}
-		if (vd->vdev_physpath != NULL) {
-			VERIFY(nvlist_add_string(label, ZPOOL_CONFIG_PHYS_PATH,
-			    vd->vdev_physpath) == 0);
-		}
+		label = vdev_aux_label_generate(vd, reason_spare);
 
 		/*
 		 * When spare or l2cache (aux) vdev is added during pool
@@ -1184,8 +1192,8 @@ vdev_label_init(vdev_t *vd, uint64_t crtxg, vdev_labeltype_t reason)
 		 * vdev uses as described above, and automatically expires if we
 		 * fail.
 		 */
-		VERIFY(nvlist_add_uint64(label, ZPOOL_CONFIG_CREATE_TXG,
-		    crtxg) == 0);
+		VERIFY0(nvlist_add_uint64(label, ZPOOL_CONFIG_CREATE_TXG,
+		    crtxg));
 	}
 
 	buf = vp->vp_nvlist;
@@ -1216,7 +1224,6 @@ vdev_label_init(vdev_t *vd, uint64_t crtxg, vdev_labeltype_t reason)
 	/*
 	 * Write everything in parallel.
 	 */
-retry:
 	zio = zio_root(spa, NULL, NULL, flags);
 
 	for (int l = 0; l < VDEV_LABELS; l++) {
@@ -1240,11 +1247,6 @@ retry:
 	}
 
 	error = zio_wait(zio);
-
-	if (error != 0 && !(flags & ZIO_FLAG_TRYHARD)) {
-		flags |= ZIO_FLAG_TRYHARD;
-		goto retry;
-	}
 
 	nvlist_free(label);
 	abd_free(bootenv);
@@ -1391,7 +1393,8 @@ vdev_label_write_bootenv(vdev_t *vd, nvlist_t *env)
 	zio_t *zio;
 	spa_t *spa = vd->vdev_spa;
 	vdev_boot_envblock_t *bootenv;
-	int flags = ZIO_FLAG_CONFIG_WRITER | ZIO_FLAG_CANFAIL;
+	int flags = ZIO_FLAG_CONFIG_WRITER | ZIO_FLAG_CANFAIL |
+	    ZIO_FLAG_TRYHARD;
 	int error;
 	size_t nvsize;
 	char *nvbuf;
@@ -1459,7 +1462,6 @@ vdev_label_write_bootenv(vdev_t *vd, nvlist_t *env)
 		return (SET_ERROR(error));
 	}
 
-retry:
 	zio = zio_root(spa, NULL, NULL, flags);
 	for (int l = 0; l < VDEV_LABELS; l++) {
 		vdev_label_write(zio, vd, l, abd,
@@ -1468,10 +1470,6 @@ retry:
 	}
 
 	error = zio_wait(zio);
-	if (error != 0 && !(flags & ZIO_FLAG_TRYHARD)) {
-		flags |= ZIO_FLAG_TRYHARD;
-		goto retry;
-	}
 
 	abd_free(abd);
 	return (error);
@@ -1900,6 +1898,8 @@ vdev_label_sync(zio_t *zio, uint64_t *good_writes,
 	abd_t *vp_abd;
 	char *buf;
 	size_t buflen;
+	vdev_t *pvd = vd->vdev_parent;
+	boolean_t spare_in_use = B_FALSE;
 
 	for (int c = 0; c < vd->vdev_children; c++) {
 		vdev_label_sync(zio, good_writes,
@@ -1920,10 +1920,17 @@ vdev_label_sync(zio_t *zio, uint64_t *good_writes,
 	if (vd->vdev_ops == &vdev_draid_spare_ops)
 		return;
 
+	if (pvd && pvd->vdev_ops == &vdev_spare_ops)
+		spare_in_use = B_TRUE;
+
 	/*
 	 * Generate a label describing the top-level config to which we belong.
 	 */
-	label = spa_config_generate(vd->vdev_spa, vd, txg, B_FALSE);
+	if ((vd->vdev_isspare && !spare_in_use) || vd->vdev_isl2cache) {
+		label = vdev_aux_label_generate(vd, vd->vdev_isspare);
+	} else {
+		label = spa_config_generate(vd->vdev_spa, vd, txg, B_FALSE);
+	}
 
 	vp_abd = abd_alloc_linear(sizeof (vdev_phys_t), B_TRUE);
 	abd_zero(vp_abd, sizeof (vdev_phys_t));
@@ -1973,6 +1980,24 @@ vdev_label_sync_list(spa_t *spa, int l, uint64_t txg, int flags)
 		zio_nowait(vio);
 	}
 
+	/*
+	 * AUX path may have changed during import
+	 */
+	spa_aux_vdev_t *sav[2] = {&spa->spa_spares, &spa->spa_l2cache};
+	for (int i = 0; i < 2; i++) {
+		for (int v = 0; v < sav[i]->sav_count; v++) {
+			uint64_t *good_writes;
+			if (!sav[i]->sav_label_sync)
+				continue;
+			good_writes = kmem_zalloc(sizeof (uint64_t), KM_SLEEP);
+			zio_t *vio = zio_null(zio, spa, NULL,
+			    vdev_label_sync_ignore_done, good_writes, flags);
+			vdev_label_sync(vio, good_writes, sav[i]->sav_vdevs[v],
+			    l, txg, flags);
+			zio_nowait(vio);
+		}
+	}
+
 	error = zio_wait(zio);
 
 	/*
@@ -1982,6 +2007,15 @@ vdev_label_sync_list(spa_t *spa, int l, uint64_t txg, int flags)
 
 	for (vd = list_head(dl); vd != NULL; vd = list_next(dl, vd))
 		zio_flush(zio, vd);
+
+	for (int i = 0; i < 2; i++) {
+		if (!sav[i]->sav_label_sync)
+			continue;
+		for (int v = 0; v < sav[i]->sav_count; v++)
+			zio_flush(zio, sav[i]->sav_vdevs[v]);
+		if (l == 1)
+			sav[i]->sav_label_sync = B_FALSE;
+	}
 
 	(void) zio_wait(zio);
 
@@ -2013,13 +2047,13 @@ retry:
 	 * Normally, we don't want to try too hard to write every label and
 	 * uberblock.  If there is a flaky disk, we don't want the rest of the
 	 * sync process to block while we retry.  But if we can't write a
-	 * single label out, we should retry with ZIO_FLAG_TRYHARD before
+	 * single label out, we should retry with ZIO_FLAG_IO_RETRY before
 	 * bailing out and declaring the pool faulted.
 	 */
 	if (error != 0) {
-		if ((flags & ZIO_FLAG_TRYHARD) != 0)
+		if ((flags & ZIO_FLAG_IO_RETRY) != 0)
 			return (error);
-		flags |= ZIO_FLAG_TRYHARD;
+		flags |= ZIO_FLAG_IO_RETRY;
 	}
 
 	ASSERT(ub->ub_txg <= txg);
@@ -2027,6 +2061,7 @@ retry:
 	/*
 	 * If this isn't a resync due to I/O errors,
 	 * and nothing changed in this transaction group,
+	 * and multihost protection isn't enabled,
 	 * and the vdev configuration hasn't changed,
 	 * then there's nothing to do.
 	 */
@@ -2034,7 +2069,8 @@ retry:
 		boolean_t changed = uberblock_update(ub, spa->spa_root_vdev,
 		    txg, spa->spa_mmp.mmp_delay);
 
-		if (!changed && list_is_empty(&spa->spa_config_dirty_list))
+		if (!changed && list_is_empty(&spa->spa_config_dirty_list) &&
+		    !spa_multihost(spa))
 			return (0);
 	}
 
@@ -2068,7 +2104,7 @@ retry:
 	 * are committed to stable storage before the uberblock update.
 	 */
 	if ((error = vdev_label_sync_list(spa, 0, txg, flags)) != 0) {
-		if ((flags & ZIO_FLAG_TRYHARD) != 0) {
+		if ((flags & ZIO_FLAG_IO_RETRY) != 0) {
 			zfs_dbgmsg("vdev_label_sync_list() returned error %d "
 			    "for pool '%s' when syncing out the even labels "
 			    "of dirty vdevs", error, spa_name(spa));
@@ -2092,7 +2128,7 @@ retry:
 	 *	to the new uberblocks.
 	 */
 	if ((error = vdev_uberblock_sync_list(svd, svdcount, ub, flags)) != 0) {
-		if ((flags & ZIO_FLAG_TRYHARD) != 0) {
+		if ((flags & ZIO_FLAG_IO_RETRY) != 0) {
 			zfs_dbgmsg("vdev_uberblock_sync_list() returned error "
 			    "%d for pool '%s'", error, spa_name(spa));
 		}
@@ -2113,7 +2149,7 @@ retry:
 	 * stable storage before the next transaction group begins.
 	 */
 	if ((error = vdev_label_sync_list(spa, 1, txg, flags)) != 0) {
-		if ((flags & ZIO_FLAG_TRYHARD) != 0) {
+		if ((flags & ZIO_FLAG_IO_RETRY) != 0) {
 			zfs_dbgmsg("vdev_label_sync_list() returned error %d "
 			    "for pool '%s' when syncing out the odd labels of "
 			    "dirty vdevs", error, spa_name(spa));

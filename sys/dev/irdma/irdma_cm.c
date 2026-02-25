@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB
  *
- * Copyright (c) 2015 - 2023 Intel Corporation
+ * Copyright (c) 2015 - 2025 Intel Corporation
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -395,25 +395,25 @@ irdma_form_ah_cm_frame(struct irdma_cm_node *cm_node,
 	if (flags & SET_ACK) {
 		cm_node->tcp_cntxt.loc_ack_num = cm_node->tcp_cntxt.rcv_nxt;
 		tcph->th_ack = htonl(cm_node->tcp_cntxt.loc_ack_num);
-		tcph->th_flags |= TH_ACK;
+		tcp_set_flags(tcph, tcp_get_flags(tcph) | TH_ACK);
 	} else {
 		tcph->th_ack = 0;
 	}
 
 	if (flags & SET_SYN) {
 		cm_node->tcp_cntxt.loc_seq_num++;
-		tcph->th_flags |= TH_SYN;
+		tcp_set_flags(tcph, tcp_get_flags(tcph) | TH_SYN);
 	} else {
 		cm_node->tcp_cntxt.loc_seq_num += hdr_len + pd_len;
 	}
 
 	if (flags & SET_FIN) {
 		cm_node->tcp_cntxt.loc_seq_num++;
-		tcph->th_flags |= TH_FIN;
+		tcp_set_flags(tcph, tcp_get_flags(tcph) | TH_FIN);
 	}
 
 	if (flags & SET_RST)
-		tcph->th_flags |= TH_RST;
+		tcp_set_flags(tcph, tcp_get_flags(tcph) | TH_RST);
 
 	tcph->th_off = (u16)((sizeof(*tcph) + opts_len + 3) >> 2);
 	sqbuf->tcphlen = tcph->th_off << 2;
@@ -582,25 +582,25 @@ irdma_form_uda_cm_frame(struct irdma_cm_node *cm_node,
 	if (flags & SET_ACK) {
 		cm_node->tcp_cntxt.loc_ack_num = cm_node->tcp_cntxt.rcv_nxt;
 		tcph->th_ack = htonl(cm_node->tcp_cntxt.loc_ack_num);
-		tcph->th_flags |= TH_ACK;
+		tcp_set_flags(tcph, tcp_get_flags(tcph) | TH_ACK);
 	} else {
 		tcph->th_ack = 0;
 	}
 
 	if (flags & SET_SYN) {
 		cm_node->tcp_cntxt.loc_seq_num++;
-		tcph->th_flags |= TH_SYN;
+		tcp_set_flags(tcph, tcp_get_flags(tcph) | TH_SYN);
 	} else {
 		cm_node->tcp_cntxt.loc_seq_num += hdr_len + pd_len;
 	}
 
 	if (flags & SET_FIN) {
 		cm_node->tcp_cntxt.loc_seq_num++;
-		tcph->th_flags |= TH_FIN;
+		tcp_set_flags(tcph, tcp_get_flags(tcph) | TH_FIN);
 	}
 
 	if (flags & SET_RST)
-		tcph->th_flags |= TH_RST;
+		tcp_set_flags(tcph, tcp_get_flags(tcph) | TH_RST);
 
 	tcph->th_off = (u16)((sizeof(*tcph) + opts_len + 3) >> 2);
 	sqbuf->tcphlen = tcph->th_off << 2;
@@ -796,7 +796,7 @@ irdma_handle_tcp_options(struct irdma_cm_node *cm_node,
 
 	if (optionsize) {
 		ret = irdma_process_options(cm_node, optionsloc, optionsize,
-					    (u32)tcph->th_flags & TH_SYN);
+					    (u32)tcp_get_flags(tcph) & TH_SYN);
 		if (ret) {
 			irdma_debug(&cm_node->iwdev->rf->sc_dev, IRDMA_DEBUG_CM,
 				    "Node %p, Sending Reset\n", cm_node);
@@ -1316,7 +1316,7 @@ irdma_cm_timer_tick(struct timer_list *t)
 	struct irdma_timer_entry *send_entry, *close_entry;
 	struct list_head *list_core_temp;
 	struct list_head *list_node;
-	struct irdma_cm_core *cm_core = from_timer(cm_core, t, tcp_timer);
+	struct irdma_cm_core *cm_core = timer_container_of(cm_core, t, tcp_timer);
 	struct irdma_sc_vsi *vsi;
 	u32 settimer = 0;
 	unsigned long timetosend;
@@ -1664,9 +1664,11 @@ irdma_get_vlan_mac_ipv6(struct iw_cm_id *cm_id, u32 *addr, u16 *vlan_id, u8 *mac
 u16
 irdma_get_vlan_ipv4(struct iw_cm_id *cm_id, u32 *addr)
 {
+	u16 vlan_id = 0xFFFF;
+
+#ifdef INET
 	if_t netdev;
 	struct vnet *vnet = &init_net;
-	u16 vlan_id = 0xFFFF;
 
 #ifdef VIMAGE
 	vnet = irdma_cmid_to_vnet(cm_id);
@@ -1676,33 +1678,9 @@ irdma_get_vlan_ipv4(struct iw_cm_id *cm_id, u32 *addr)
 		vlan_id = rdma_vlan_dev_vlan_id(netdev);
 		dev_put(netdev);
 	}
+#endif
 
 	return vlan_id;
-}
-
-static int
-irdma_manage_qhash_wait(struct irdma_pci_f *rf, struct irdma_cm_info *cm_info)
-{
-	struct irdma_cqp_request *cqp_request = cm_info->cqp_request;
-	int cnt = rf->sc_dev.hw_attrs.max_cqp_compl_wait_time_ms * CQP_TIMEOUT_THRESHOLD;
-	u32 ret_val;
-
-	if (!cqp_request)
-		return -ENOMEM;
-	do {
-		irdma_cqp_ce_handler(rf, &rf->ccq.sc_cq);
-		mdelay(1);
-	} while (!READ_ONCE(cqp_request->request_done) && --cnt);
-
-	ret_val = cqp_request->compl_info.op_ret_val;
-	irdma_put_cqp_request(&rf->cqp, cqp_request);
-	if (cnt) {
-		if (!ret_val)
-			return 0;
-		return -EINVAL;
-	}
-
-	return -ETIMEDOUT;
 }
 
 /**
@@ -1768,16 +1746,7 @@ irdma_add_mqh_ifa_cb(void *arg, struct ifaddr *ifa, u_int count)
 		    irdma_iw_get_vlan_prio(child_listen_node->loc_addr,
 					   cm_info->user_pri,
 					   cm_info->ipv4);
-	ret = irdma_manage_qhash(iwdev, cm_info,
-				 IRDMA_QHASH_TYPE_TCP_SYN,
-				 IRDMA_QHASH_MANAGE_TYPE_ADD,
-				 NULL, false);
-	if (ret) {
-		kfree(child_listen_node);
-		return ret;
-	}
-	/* wait for qhash finish */
-	ret = irdma_manage_qhash_wait(iwdev->rf, cm_info);
+	ret = irdma_add_qhash_wait_no_lock(iwdev, cm_info);
 	if (ret) {
 		kfree(child_listen_node);
 		return ret;
@@ -2764,16 +2733,16 @@ irdma_process_pkt(struct irdma_cm_node *cm_node,
 	u32 fin_set = 0;
 	int err;
 
-	if (tcph->th_flags & TH_RST) {
+	if (tcp_get_flags(tcph) & TH_RST) {
 		pkt_type = IRDMA_PKT_TYPE_RST;
-	} else if (tcph->th_flags & TH_SYN) {
+	} else if (tcp_get_flags(tcph) & TH_SYN) {
 		pkt_type = IRDMA_PKT_TYPE_SYN;
-		if (tcph->th_flags & TH_ACK)
+		if (tcp_get_flags(tcph) & TH_ACK)
 			pkt_type = IRDMA_PKT_TYPE_SYNACK;
-	} else if (tcph->th_flags & TH_ACK) {
+	} else if (tcp_get_flags(tcph) & TH_ACK) {
 		pkt_type = IRDMA_PKT_TYPE_ACK;
 	}
-	if (tcph->th_flags & TH_FIN)
+	if (tcp_get_flags(tcph) & TH_FIN)
 		fin_set = 1;
 
 	switch (pkt_type) {
@@ -3064,7 +3033,7 @@ irdma_receive_ilq(struct irdma_sc_vsi *vsi, struct irdma_puda_buf *rbuf)
 		/*
 		 * Only type of packet accepted are for the PASSIVE open (syn only)
 		 */
-		if (!(tcph->th_flags & TH_SYN) || tcph->th_flags & TH_ACK)
+		if (!(tcp_get_flags(tcph) & TH_SYN) || tcp_get_flags(tcph) & TH_ACK)
 			return;
 
 		listener = irdma_find_listener(cm_core,
@@ -3090,7 +3059,7 @@ irdma_receive_ilq(struct irdma_sc_vsi *vsi, struct irdma_puda_buf *rbuf)
 			return;
 		}
 
-		if (!(tcph->th_flags & (TH_RST | TH_FIN))) {
+		if (!(tcp_get_flags(tcph) & (TH_RST | TH_FIN))) {
 			cm_node->state = IRDMA_CM_STATE_LISTENING;
 		} else {
 			irdma_rem_ref_cm_node(cm_node);

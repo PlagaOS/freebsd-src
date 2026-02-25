@@ -121,7 +121,6 @@ MALLOC_DEFINE(M_NEWNFSCLCLIENT, "NFSCL client", "NFSCL Client");
 MALLOC_DEFINE(M_NEWNFSCLLOCKOWNER, "NFSCL lckown", "NFSCL Lock Owner");
 MALLOC_DEFINE(M_NEWNFSCLLOCK, "NFSCL lck", "NFSCL Lock");
 MALLOC_DEFINE(M_NEWNFSV4NODE, "NEWNFSnode", "NFS vnode");
-MALLOC_DEFINE(M_NEWNFSDIRECTIO, "NEWdirectio", "NFS Direct IO buffer");
 MALLOC_DEFINE(M_NEWNFSDIROFF, "NFSCL diroff",
     "NFS directory offset data");
 MALLOC_DEFINE(M_NEWNFSDROLLBACK, "NFSD rollback",
@@ -259,7 +258,8 @@ newnfs_copycred(struct nfscred *nfscr, struct ucred *cr)
 	KASSERT(nfscr->nfsc_ngroups >= 0,
 	    ("newnfs_copycred: negative nfsc_ngroups"));
 	cr->cr_uid = nfscr->nfsc_uid;
-	crsetgroups(cr, nfscr->nfsc_ngroups, nfscr->nfsc_groups);
+	crsetgroups_and_egid(cr, nfscr->nfsc_ngroups, nfscr->nfsc_groups,
+	    GID_NOGROUP);
 }
 
 /*
@@ -371,16 +371,14 @@ nfsrv_atroot(struct vnode *vp, uint64_t *retp)
 
 /*
  * Set the credentials to refer to root.
- * If only the various BSDen could agree on whether cr_gid is a separate
- * field or cr_groups[0]...
  */
 void
 newnfs_setroot(struct ucred *cred)
 {
 
 	cred->cr_uid = 0;
-	cred->cr_groups[0] = 0;
-	cred->cr_ngroups = 1;
+	cred->cr_gid = 0;
+	cred->cr_ngroups = 0;
 }
 
 /*
@@ -817,6 +815,26 @@ nfs_supportsnfsv4acls(struct vnode *vp)
 	if (nfsrv_useacl == 0)
 		return (0);
 	error = VOP_PATHCONF(vp, _PC_ACL_NFS4, &retval);
+	if (error == 0 && retval != 0)
+		return (1);
+	return (0);
+}
+
+/*
+ * Determine if the file system supports POSIX draft ACLs.
+ * Return 1 if it does, 0 otherwise.
+ */
+int
+nfs_supportsposixacls(struct vnode *vp)
+{
+	int error;
+	long retval;
+
+	ASSERT_VOP_LOCKED(vp, "nfs supports posixacls");
+
+	if (nfsrv_useacl == 0)
+		return (0);
+	error = VOP_PATHCONF(vp, _PC_ACL_EXTENDED, &retval);
 	if (error == 0 && retval != 0)
 		return (1);
 	return (0);

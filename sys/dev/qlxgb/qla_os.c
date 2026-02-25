@@ -93,7 +93,7 @@ static device_method_t qla_pci_methods[] = {
 	DEVMETHOD(device_probe, qla_pci_probe),
 	DEVMETHOD(device_attach, qla_pci_attach),
 	DEVMETHOD(device_detach, qla_pci_detach),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t qla_pci_driver = {
@@ -657,9 +657,6 @@ qla_init_ifnet(device_t dev, qla_host_t *ha)
 	QL_DPRINT2((dev, "%s: enter\n", __func__));
 
 	ifp = ha->ifp = if_alloc(IFT_ETHER);
-
-	if (ifp == NULL)
-		panic("%s: cannot if_alloc()\n", device_get_nameunit(dev));
 
 	if_initname(ifp, device_get_name(dev), device_get_unit(dev));
 

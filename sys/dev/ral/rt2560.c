@@ -281,6 +281,8 @@ rt2560_attach(device_t dev, int id)
 #endif
 		;
 
+	ic->ic_flags_ext |= IEEE80211_FEXT_SEQNO_OFFLOAD;
+
 	rt2560_getradiocaps(ic, IEEE80211_CHAN_MAX, &ic->ic_nchans,
 	    ic->ic_channels);
 
@@ -1516,6 +1518,8 @@ rt2560_tx_mgt(struct rt2560_softc *sc, struct mbuf *m0,
 
 	wh = mtod(m0, struct ieee80211_frame *);
 
+	ieee80211_output_seqno_assign(ni, -1, m0);
+
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
 		k = ieee80211_crypto_encap(ni, m0);
 		if (k == NULL) {
@@ -1558,10 +1562,7 @@ rt2560_tx_mgt(struct rt2560_softc *sc, struct mbuf *m0,
 		*(uint16_t *)wh->i_dur = htole16(dur);
 
 		/* tell hardware to add timestamp for probe responses */
-		if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) ==
-		    IEEE80211_FC0_TYPE_MGT &&
-		    (wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
-		    IEEE80211_FC0_SUBTYPE_PROBE_RESP)
+		if (IEEE80211_IS_MGMT_PROBE_RESP(wh))
 			flags |= RT2560_TX_TIMESTAMP;
 	}
 
@@ -1743,7 +1744,7 @@ rt2560_tx_data(struct rt2560_softc *sc, struct mbuf *m0,
 		rate = tp->ucastrate;
 	} else {
 		(void) ieee80211_ratectl_rate(ni, NULL, 0);
-		rate = ni->ni_txrate;
+		rate = ieee80211_node_get_txrate_dot11rate(ni);
 	}
 
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
@@ -1824,7 +1825,7 @@ rt2560_tx_data(struct rt2560_softc *sc, struct mbuf *m0,
 
 	/* remember link conditions for rate adaptation algorithm */
 	if (tp->ucastrate == IEEE80211_FIXED_RATE_NONE) {
-		data->rix = ni->ni_txrate;
+		data->rix = ieee80211_node_get_txrate_dot11rate(ni);
 		/* XXX probably need last rssi value and not avg */
 		data->rssi = ic->ic_node_getrssi(ni);
 	} else

@@ -1,4 +1,3 @@
-
 .include <src.opts.mk>
 .include <src.tools.mk>
 
@@ -54,16 +53,23 @@ distribution:
 	@echo "set DESTDIR before running \"make ${.TARGET}\""
 	@false
 .endif
+.if ${MK_MITKRB5} != "no"
+	${_+_}cd ${.CURDIR}/gss-krb5; ${MAKE} install
+.else
 	${_+_}cd ${.CURDIR}/gss; ${MAKE} install
+.endif
 	${_+_}cd ${.CURDIR}/mtree; ${MAKE} install
 	${_+_}cd ${SRCTOP}/share/termcap; ${MAKE} etc-termcap
 	${_+_}cd ${SRCTOP}/usr.sbin/rmt; ${MAKE} etc-rmt
 	${INSTALL_SYMLINK} -T "package=runtime" ../var/run/os-release \
 		${DESTDIR}/etc/os-release
 .if ${MK_UNBOUND} != "no"
-	if [ ! -e ${DESTDIR}/etc/unbound ]; then \
-		${INSTALL_SYMLINK} -T "package=unbound" \
-		../var/unbound ${DESTDIR}/etc/unbound; \
+# If NO_ROOT is defined, we are doing a stage install and always need to
+# install the /etc/unbound symlink, otherwise, don't overwrite the user's
+# existing symlink.
+	if [ "${NO_ROOT:Dtrue}" = true -o ! -e ${DESTDIR}/etc/unbound ]; then \
+		${INSTALL_SYMLINK} -Tpackage=local-unbound ../var/unbound \
+			${DESTDIR}/etc/unbound; \
 	fi
 .endif
 .if ${MK_SENDMAIL} != "no"
@@ -72,26 +78,26 @@ distribution:
 .if ${MK_KERBEROS} != "no"
 	cd ${.CURDIR}/root; \
 	    ${INSTALL} -o ${BINOWN} -g ${BINGRP} -m 644 \
-		-T "package=runtime" \
+		-T "package=runtime,config" \
 		dot.k5login ${DESTDIR}/root/.k5login;
 .endif
 
 .if ${MK_MAIL} != "no"
 	cd ${.CURDIR}/mail; ${INSTALL} -o ${BINOWN} -g ${BINGRP} -m 644 \
 	    -T "package=runtime,config" ${ETCMAIL} ${DESTDIR}/etc/mail
-	if [ -d ${DESTDIR}/etc/mail -a -f ${DESTDIR}/etc/mail/aliases -a \
-	      ! -f ${DESTDIR}/etc/aliases ]; then \
-		${INSTALL_SYMLINK} -T "package=runtime" \
-		mail/aliases ${DESTDIR}/etc/aliases; \
+# If NO_ROOT is defined, we are doing a stage install and always need to
+# install the /etc/aliases symlink, otherwise, don't overwrite the user's
+# existing symlink.
+	if [ "${NO_ROOT:Dtrue}" = true -o \( -f ${DESTDIR}/etc/mail/aliases -a \
+	   ! -f ${DESTDIR}/etc/aliases \) ]; then \
+		${INSTALL_SYMLINK} -Tpackage=runtime mail/aliases \
+			${DESTDIR}/etc/aliases; \
 	fi
-.endif
+.endif	# ${MK_MAIL} != "no"
+
 .if ${MK_SENDMAIL} != "no"
 	cd ${.CURDIR}/mail; ${INSTALL} -o ${BINOWN} -g ${BINGRP} -m 644 \
 		-T "package=sendmail" ${ETCMAIL_SENDMAIL} ${DESTDIR}/etc/mail
-.endif
-.if ${MK_LOCATE} != "no"
-	${INSTALL} -o nobody -g ${BINGRP} -m 644 -T "package=runtime"\
-	    /dev/null ${DESTDIR}/var/db/locate.database
 .endif
 	cd ${.CURDIR}/..; ${INSTALL} -o ${BINOWN} -g ${BINGRP} -m 444 \
 		-T "package=runtime" ${FREEBSD} ${DESTDIR}/
@@ -117,7 +123,7 @@ MTREES+=	mtree/BSD.lib${libcompat}.dist	/usr/lib/debug/usr
 .endfor
 .if ${MK_TESTS} != "no"
 MTREES+=	mtree/BSD.tests.dist		${TESTSBASE}
-MTREES+=	mtree/BSD.tests.dist		/usr/lib/debug/${TESTSBASE}
+MTREES+=	mtree/BSD.tests.dist		/usr/lib/debug${TESTSBASE}
 .endif
 .if ${MK_SENDMAIL} != "no"
 MTREES+=	mtree/BSD.sendmail.dist		/

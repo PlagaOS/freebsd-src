@@ -57,7 +57,7 @@ ipmi_isa_identify(driver_t *driver, device_t parent)
 	uint32_t devid;
 
 	if (ipmi_smbios_identify(&info) && info.iface_type != SSIF_MODE &&
-	    device_find_child(parent, "ipmi", -1) == NULL) {
+	    device_find_child(parent, "ipmi", DEVICE_UNIT_ANY) == NULL) {
 		/*
 		 * XXX: Hack alert.  On some broken systems, the IPMI
 		 * interface is described via SMBIOS, but the actual
@@ -70,7 +70,7 @@ ipmi_isa_identify(driver_t *driver, device_t parent)
 		if (devid != 0xffffffff &&
 		    ipmi_pci_match(devid & 0xffff, devid >> 16) != NULL)
 			return;
-		BUS_ADD_CHILD(parent, 0, "ipmi", -1);
+		BUS_ADD_CHILD(parent, 0, "ipmi", DEVICE_UNIT_ANY);
 	}
 }
 
@@ -277,7 +277,7 @@ static device_method_t ipmi_methods[] = {
 	DEVMETHOD(device_probe,		ipmi_isa_probe),
 	DEVMETHOD(device_attach,	ipmi_isa_attach),
 	DEVMETHOD(device_detach,	ipmi_detach),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t ipmi_isa_driver = {

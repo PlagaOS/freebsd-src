@@ -87,15 +87,17 @@ static fo_rdwr_t soo_read;
 static fo_rdwr_t soo_write;
 static fo_ioctl_t soo_ioctl;
 static fo_poll_t soo_poll;
-extern fo_kqfilter_t soo_kqfilter;
+static fo_kqfilter_t soo_kqfilter;
 static fo_stat_t soo_stat;
 static fo_close_t soo_close;
+static fo_fdclose_t soo_fdclose;
+static fo_chmod_t soo_chmod;
 static fo_fill_kinfo_t soo_fill_kinfo;
 static fo_aio_queue_t soo_aio_queue;
 
 static void	soo_aio_cancel(struct kaiocb *job);
 
-struct fileops	socketops = {
+const struct fileops socketops = {
 	.fo_read = soo_read,
 	.fo_write = soo_write,
 	.fo_truncate = invfo_truncate,
@@ -104,7 +106,8 @@ struct fileops	socketops = {
 	.fo_kqfilter = soo_kqfilter,
 	.fo_stat = soo_stat,
 	.fo_close = soo_close,
-	.fo_chmod = invfo_chmod,
+	.fo_fdclose = soo_fdclose,
+	.fo_chmod = soo_chmod,
 	.fo_chown = invfo_chown,
 	.fo_sendfile = invfo_sendfile,
 	.fo_fill_kinfo = soo_fill_kinfo,
@@ -287,7 +290,15 @@ soo_poll(struct file *fp, int events, struct ucred *active_cred,
 	if (error)
 		return (error);
 #endif
-	return (sopoll(so, events, fp->f_cred, td));
+	return (so->so_proto->pr_sopoll(so, events, td));
+}
+
+static int
+soo_kqfilter(struct file *fp, struct knote *kn)
+{
+	struct socket *so = fp->f_data;
+
+	return (so->so_proto->pr_kqfilter(so, kn));
 }
 
 static int
@@ -353,11 +364,34 @@ soo_close(struct file *fp, struct thread *td)
 	return (error);
 }
 
+static void
+soo_fdclose(struct file *fp, int fd __unused, struct thread *td)
+{
+	struct socket *so;
+
+	so = fp->f_data;
+	if (so->so_proto->pr_fdclose != NULL)
+		so->so_proto->pr_fdclose(so);
+}
+
+static int
+soo_chmod(struct file *fp, mode_t mode, struct ucred *cred, struct thread *td)
+{
+	struct socket *so;
+	int error;
+
+	so = fp->f_data;
+	if (so->so_proto->pr_chmod != NULL)
+		error = so->so_proto->pr_chmod(so, mode, cred, td);
+	else
+		error = EINVAL;
+	return (error);
+}
+
 static int
 soo_fill_kinfo(struct file *fp, struct kinfo_file *kif, struct filedesc *fdp)
 {
 	struct sockaddr_storage ss = { .ss_len = sizeof(ss) };
-	struct inpcb *inpcb;
 	struct unpcb *unpcb;
 	struct socket *so;
 	int error;
@@ -373,11 +407,8 @@ soo_fill_kinfo(struct file *fp, struct kinfo_file *kif, struct filedesc *fdp)
 	switch (kif->kf_un.kf_sock.kf_sock_domain0) {
 	case AF_INET:
 	case AF_INET6:
-		if (so->so_pcb != NULL) {
-			inpcb = (struct inpcb *)(so->so_pcb);
-			kif->kf_un.kf_sock.kf_sock_inpcb =
-			    (uintptr_t)inpcb->inp_ppcb;
-		}
+		/* XXX: kf_sock_inpcb is obsolete.  It may be removed. */
+		kif->kf_un.kf_sock.kf_sock_inpcb = (uintptr_t)so->so_pcb;
 		kif->kf_un.kf_sock.kf_sock_rcv_sb_state =
 		    so->so_rcv.sb_state;
 		kif->kf_un.kf_sock.kf_sock_snd_sb_state =
@@ -567,7 +598,7 @@ soaio_enqueue(struct task *task)
 }
 
 static void
-soaio_init(void)
+soaio_init(void *dummy __unused)
 {
 
 	soaio_lifetime = AIOD_LIFETIME_DEFAULT;
@@ -791,15 +822,16 @@ soo_aio_cancel(struct kaiocb *job)
 static int
 soo_aio_queue(struct file *fp, struct kaiocb *job)
 {
-	struct socket *so;
+	struct socket *so = fp->f_data;
+
+	return (so->so_proto->pr_aio_queue(so, job));
+}
+
+int
+soaio_queue_generic(struct socket *so, struct kaiocb *job)
+{
 	struct sockbuf *sb;
 	sb_which which;
-	int error;
-
-	so = fp->f_data;
-	error = so->so_proto->pr_aio_queue(so, job);
-	if (error == 0)
-		return (0);
 
 	/* Lock through the socket, since this may be a listening socket. */
 	switch (job->uaiocb.aio_lio_opcode & (LIO_WRITE | LIO_READ)) {

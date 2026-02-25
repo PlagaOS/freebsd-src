@@ -38,7 +38,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_atpic.h"
 #include "opt_cpu.h"
 #include "opt_ddb.h"
@@ -82,9 +81,7 @@
 #include <sys/rwlock.h>
 #include <sys/sched.h>
 #include <sys/signalvar.h>
-#ifdef SMP
 #include <sys/smp.h>
-#endif
 #include <sys/syscallsubr.h>
 #include <sys/sysctl.h>
 #include <sys/sysent.h>
@@ -132,9 +129,7 @@
 #include <machine/tss.h>
 #include <x86/ucode.h>
 #include <x86/ifunc.h>
-#ifdef SMP
 #include <machine/smp.h>
-#endif
 #ifdef FDT
 #include <x86/fdt.h>
 #endif
@@ -148,6 +143,10 @@
 #include <isa/isareg.h>
 #include <isa/rtc.h>
 #include <x86/init.h>
+
+#ifndef SMP
+#error amd64 requires options SMP
+#endif
 
 /* Sanity check for __curthread() */
 CTASSERT(offsetof(struct pcpu, pc_curthread) == 0);
@@ -169,10 +168,10 @@ SYSINIT(cpu, SI_SUB_CPU, SI_ORDER_FIRST, cpu_startup, NULL);
 static void native_clock_source_init(void);
 
 /* Preload data parse function */
-static caddr_t native_parse_preload_data(u_int64_t);
+static void native_parse_preload_data(u_int64_t);
 
 /* Native function to fetch and parse the e820 map */
-static void native_parse_memmap(caddr_t, vm_paddr_t *, int *);
+static void native_parse_memmap(vm_paddr_t *, int *);
 
 /* Default init_ops implementation. */
 struct init_ops init_ops = {
@@ -188,6 +187,12 @@ struct init_ops init_ops = {
  */
 vm_paddr_t efi_systbl_phys;
 
+/*
+ * Bitmap of extra EFI memory region types that should be preserved and mapped
+ * during runtime services calls.
+ */
+uint32_t efi_map_regs;
+
 /* Intel ICH registers */
 #define ICH_PMBASE	0x400
 #define ICH_SMI_EN	ICH_PMBASE + 0x30
@@ -199,6 +204,7 @@ int cold = 1;
 long Maxmem = 0;
 long realmem = 0;
 int late_console = 1;
+int lass_enabled = 0;
 
 struct kva_md_info kmi;
 
@@ -213,6 +219,7 @@ struct mem_range_softc mem_range_softc;
 
 struct mtx dt_lock;	/* lock for GDT and LDT */
 
+void (*vmm_suspend_p)(void);
 void (*vmm_resume_p)(void);
 
 bool efi_boot;
@@ -229,7 +236,7 @@ cpu_startup(void *dummy)
 	 * namely: incorrect CPU frequency detection and failure to
 	 * start the APs.
 	 * We do this by disabling a bit in the SMI_EN (SMI Control and
-	 * Enable register) of the Intel ICH LPC Interface Bridge. 
+	 * Enable register) of the Intel ICH LPC Interface Bridge.
 	 */
 	sysenv = kern_getenv("smbios.system.product");
 	if (sysenv != NULL) {
@@ -315,7 +322,6 @@ late_ifunc_resolve(void *dummy __unused)
 	link_elf_late_ireloc();
 }
 SYSINIT(late_ifunc_resolve, SI_SUB_CPU, SI_ORDER_ANY, late_ifunc_resolve, NULL);
-
 
 void
 cpu_setregs(void)
@@ -644,7 +650,7 @@ add_physmap_entry(uint64_t base, uint64_t length, vm_paddr_t *physmap,
 	 * NB: physmap_idx points to the next free slot.
 	 */
 	insert_idx = physmap_idx;
-	for (i = 0; i <= physmap_idx; i += 2) {
+	for (i = 0; i < physmap_idx; i += 2) {
 		if (base < physmap[i + 1]) {
 			if (base + length <= physmap[i]) {
 				insert_idx = i;
@@ -658,7 +664,7 @@ add_physmap_entry(uint64_t base, uint64_t length, vm_paddr_t *physmap,
 	}
 
 	/* See if we can prepend to the next entry. */
-	if (insert_idx <= physmap_idx && base + length == physmap[insert_idx]) {
+	if (insert_idx < physmap_idx && base + length == physmap[insert_idx]) {
 		physmap[insert_idx] = base;
 		return (1);
 	}
@@ -669,8 +675,6 @@ add_physmap_entry(uint64_t base, uint64_t length, vm_paddr_t *physmap,
 		return (1);
 	}
 
-	physmap_idx += 2;
-	*physmap_idxp = physmap_idx;
 	if (physmap_idx == PHYS_AVAIL_ENTRIES) {
 		printf(
 		"Too many segments in the physical address map, giving up\n");
@@ -681,10 +685,13 @@ add_physmap_entry(uint64_t base, uint64_t length, vm_paddr_t *physmap,
 	 * Move the last 'N' entries down to make room for the new
 	 * entry if needed.
 	 */
-	for (i = (physmap_idx - 2); i > insert_idx; i -= 2) {
+	for (i = physmap_idx; i > insert_idx; i -= 2) {
 		physmap[i] = physmap[i - 2];
 		physmap[i + 1] = physmap[i - 1];
 	}
+
+	physmap_idx += 2;
+	*physmap_idxp = physmap_idx;
 
 	/* Insert the new entry. */
 	physmap[insert_idx] = base;
@@ -756,6 +763,7 @@ add_efi_map_entries(struct efi_map_header *efihdr, vm_paddr_t *physmap,
 		printf("%23s %12s %12s %8s %4s\n",
 		    "Type", "Physical", "Virtual", "#Pages", "Attr");
 
+	TUNABLE_INT_FETCH("machdep.efirt.regs", &efi_map_regs);
 	for (i = 0, p = map; i < ndesc; i++,
 	    p = efi_next_descriptor(p, efihdr->descriptor_size)) {
 		if (boothowto & RB_VERBOSE) {
@@ -793,10 +801,13 @@ add_efi_map_entries(struct efi_map_header *efihdr, vm_paddr_t *physmap,
 		}
 
 		switch (p->md_type) {
-		case EFI_MD_TYPE_CODE:
-		case EFI_MD_TYPE_DATA:
 		case EFI_MD_TYPE_BS_CODE:
 		case EFI_MD_TYPE_BS_DATA:
+			if (EFI_MAP_BOOTTYPE_ALLOWED(p->md_type))
+				continue;
+			/* FALLTHROUGH */
+		case EFI_MD_TYPE_CODE:
+		case EFI_MD_TYPE_DATA:
 		case EFI_MD_TYPE_FREE:
 			/*
 			 * We're allowed to use any entry with these types.
@@ -813,23 +824,14 @@ add_efi_map_entries(struct efi_map_header *efihdr, vm_paddr_t *physmap,
 }
 
 static void
-native_parse_memmap(caddr_t kmdp, vm_paddr_t *physmap, int *physmap_idx)
+native_parse_memmap(vm_paddr_t *physmap, int *physmap_idx)
 {
 	struct bios_smap *smap;
 	struct efi_map_header *efihdr;
-	u_int32_t size;
 
-	/*
-	 * Memory map from INT 15:E820.
-	 *
-	 * subr_module.c says:
-	 * "Consumer may safely assume that size value precedes data."
-	 * ie: an int32_t immediately precedes smap.
-	 */
-
-	efihdr = (struct efi_map_header *)preload_search_info(kmdp,
+	efihdr = (struct efi_map_header *)preload_search_info(preload_kmdp,
 	    MODINFO_METADATA | MODINFOMD_EFI_MAP);
-	smap = (struct bios_smap *)preload_search_info(kmdp,
+	smap = (struct bios_smap *)preload_search_info(preload_kmdp,
 	    MODINFO_METADATA | MODINFOMD_SMAP);
 	if (efihdr == NULL && smap == NULL)
 		panic("No BIOS smap or EFI map info from loader!");
@@ -838,7 +840,15 @@ native_parse_memmap(caddr_t kmdp, vm_paddr_t *physmap, int *physmap_idx)
 		add_efi_map_entries(efihdr, physmap, physmap_idx);
 		strlcpy(bootmethod, "UEFI", sizeof(bootmethod));
 	} else {
-		size = *((u_int32_t *)smap - 1);
+		/*
+		 * Memory map from INT 15:E820.
+		 *
+		 * subr_module.c says:
+		 * "Consumer may safely assume that size value precedes data."
+		 * ie: an int32_t immediately precedes smap.
+		 */
+		u_int32_t size = *((u_int32_t *)smap - 1);
+
 		bios_add_smap_entries(smap, size, physmap, physmap_idx);
 		strlcpy(bootmethod, "BIOS", sizeof(bootmethod));
 	}
@@ -857,7 +867,7 @@ native_parse_memmap(caddr_t kmdp, vm_paddr_t *physmap, int *physmap_idx)
  * XXX first should be vm_paddr_t.
  */
 static void
-getmemsize(caddr_t kmdp, u_int64_t first)
+getmemsize(u_int64_t first)
 {
 	int i, physmap_idx, pa_indx, da_indx;
 	vm_paddr_t pa, physmap[PHYS_AVAIL_ENTRIES];
@@ -876,7 +886,7 @@ getmemsize(caddr_t kmdp, u_int64_t first)
 	bzero(physmap, sizeof(physmap));
 	physmap_idx = 0;
 
-	init_ops.parse_memmap(kmdp, physmap, &physmap_idx);
+	init_ops.parse_memmap(physmap, &physmap_idx);
 	physmap_idx -= 2;
 
 	/*
@@ -1126,10 +1136,9 @@ do_next:
 	TSEXIT();
 }
 
-static caddr_t
+static void
 native_parse_preload_data(u_int64_t modulep)
 {
-	caddr_t kmdp;
 	char *envp;
 #ifdef DDB
 	vm_offset_t ksym_start;
@@ -1138,22 +1147,19 @@ native_parse_preload_data(u_int64_t modulep)
 
 	preload_metadata = (caddr_t)(uintptr_t)(modulep + KERNBASE);
 	preload_bootstrap_relocate(KERNBASE);
-	kmdp = preload_search_by_type("elf kernel");
-	if (kmdp == NULL)
-		kmdp = preload_search_by_type("elf64 kernel");
-	boothowto = MD_FETCH(kmdp, MODINFOMD_HOWTO, int);
-	envp = MD_FETCH(kmdp, MODINFOMD_ENVP, char *);
+	preload_initkmdp(true);
+	boothowto = MD_FETCH(preload_kmdp, MODINFOMD_HOWTO, int);
+	envp = MD_FETCH(preload_kmdp, MODINFOMD_ENVP, char *);
 	if (envp != NULL)
 		envp += KERNBASE;
 	init_static_kenv(envp, 0);
 #ifdef DDB
-	ksym_start = MD_FETCH(kmdp, MODINFOMD_SSYM, uintptr_t);
-	ksym_end = MD_FETCH(kmdp, MODINFOMD_ESYM, uintptr_t);
+	ksym_start = MD_FETCH(preload_kmdp, MODINFOMD_SSYM, uintptr_t);
+	ksym_end = MD_FETCH(preload_kmdp, MODINFOMD_ESYM, uintptr_t);
 	db_fetch_ksymtab(ksym_start, ksym_end, 0);
 #endif
-	efi_systbl_phys = MD_FETCH(kmdp, MODINFOMD_FW_HANDLE, vm_paddr_t);
-
-	return (kmdp);
+	efi_systbl_phys = MD_FETCH(preload_kmdp, MODINFOMD_FW_HANDLE,
+	    vm_paddr_t);
 }
 
 static void
@@ -1211,8 +1217,8 @@ amd64_bsp_pcpu_init2(uint64_t rsp0)
 {
 
 	PCPU_SET(rsp0, rsp0);
-	PCPU_SET(pti_rsp0, ((vm_offset_t)PCPU_PTR(pti_stack) +
-	    PC_PTI_STACK_SZ * sizeof(uint64_t)) & ~0xful);
+	PCPU_SET(pti_rsp0, STACKALIGN((vm_offset_t)PCPU_PTR(pti_stack) +
+	    PC_PTI_STACK_SZ * sizeof(uint64_t)));
 	PCPU_SET(curpcb, thread0.td_pcb);
 }
 
@@ -1286,7 +1292,6 @@ amd64_loadaddr(void)
 u_int64_t
 hammer_time(u_int64_t modulep, u_int64_t physfree)
 {
-	caddr_t kmdp;
 	int gsel_tss, x;
 	struct pcpu *pc;
 	uint64_t rsp0;
@@ -1301,9 +1306,10 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 
 	physfree += kernphys;
 
-	kmdp = init_ops.parse_preload_data(modulep);
+	/* Initializes preload_kmdp */
+	init_ops.parse_preload_data(modulep);
 
-	efi_boot = preload_search_info(kmdp, MODINFO_METADATA |
+	efi_boot = preload_search_info(preload_kmdp, MODINFO_METADATA |
 	    MODINFOMD_EFI_MAP) != NULL;
 
 	if (!efi_boot) {
@@ -1329,12 +1335,9 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 	pti = pti_get_default();
 	TUNABLE_INT_FETCH("vm.pmap.pti", &pti);
 	TUNABLE_INT_FETCH("vm.pmap.pcid_enabled", &pmap_pcid_enabled);
-	if ((cpu_feature2 & CPUID2_PCID) != 0 && pmap_pcid_enabled) {
-		invpcid_works = (cpu_stdext_feature &
-		    CPUID_STDEXT_INVPCID) != 0;
-	} else {
+	if ((cpu_feature2 & CPUID2_PCID) == 0)
 		pmap_pcid_enabled = 0;
-	}
+	invpcid_works = (cpu_stdext_feature & CPUID_STDEXT_INVPCID) != 0;
 
 	/*
 	 * Now we can do small core initialization, after the PCID
@@ -1349,7 +1352,9 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 		TUNABLE_INT_FETCH("hw.use_xsave", &use_xsave);
 	}
 
-	link_elf_ireloc(kmdp);
+	sched_instance_select();
+
+	link_elf_ireloc();
 
 	/*
 	 * This may be done better later if it gets more high level
@@ -1382,7 +1387,7 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 	 */
 	for (x = 0; x < NGDT; x++) {
 		if (x != GPROC0_SEL && x != (GPROC0_SEL + 1) &&
-		    x != GUSERLDT_SEL && x != (GUSERLDT_SEL) + 1)
+		    x != GUSERLDT_SEL && x != (GUSERLDT_SEL + 1))
 			ssdtosd(&gdt_segs[x], &gdt[x]);
 	}
 	gdt_segs[GPROC0_SEL].ssd_base = (uintptr_t)&pc->pc_common_tss;
@@ -1464,15 +1469,6 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 	r_idt.rd_base = (long) idt;
 	lidt(&r_idt);
 
-	/*
-	 * Use vt(4) by default for UEFI boot (during the sc(4)/vt(4)
-	 * transition).
-	 * Once bootblocks have updated, we can test directly for
-	 * efi_systbl != NULL here...
-	 */
-	if (efi_boot)
-		vty_set_preferred(VTY_VT);
-
 	TUNABLE_INT_FETCH("hw.ibrs_disable", &hw_ibrs_disable);
 	TUNABLE_INT_FETCH("machdep.mitigations.ibrs.disable", &hw_ibrs_disable);
 
@@ -1496,6 +1492,12 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 
 	finishidentcpu();	/* Final stage of CPU initialization */
 
+	invlpgb_works = (amd_extended_feature_extensions &
+	    AMDFEID_INVLPGB) != 0;
+	TUNABLE_INT_FETCH("vm.pmap.invlpgb_works", &invlpgb_works);
+	if (invlpgb_works)
+		invlpgb_maxcnt = cpu_procinfo3 & AMDID_INVLPGB_MAXCNT;
+
 	/*
 	 * Initialize the clock before the console so that console
 	 * initialization can use DELAY().
@@ -1517,13 +1519,11 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 
 	/*
 	 * We initialize the PCB pointer early so that exception
-	 * handlers will work.  Also set up td_critnest to short-cut
-	 * the page fault handler.
+	 * handlers will work.
 	 */
 	cpu_max_ext_state_size = sizeof(struct savefpu);
 	set_top_of_stack_td(&thread0);
 	thread0.td_pcb = get_pcb_td(&thread0);
-	thread0.td_critnest = 1;
 
 	/*
 	 * The console and kdb should be initialized even earlier than here,
@@ -1537,7 +1537,7 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 		amd64_kdb_init();
 	}
 
-	getmemsize(kmdp, physfree);
+	getmemsize(physfree);
 	init_param2(physmem);
 
 	/* now running on new page tables, configured,and u/iom is accessible */
@@ -1586,7 +1586,7 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 	/* make an initial tss so cpu can get interrupt stack on syscall! */
 	rsp0 = thread0.td_md.md_stack_base;
 	/* Ensure the stack is aligned to 16 bytes */
-	rsp0 &= ~0xFul;
+	rsp0 = STACKALIGN(rsp0);
 	PCPU_PTR(common_tss)->tss_rsp0 = rsp0;
 	amd64_bsp_pcpu_init2(rsp0);
 
@@ -1614,7 +1614,6 @@ hammer_time(u_int64_t modulep, u_int64_t physfree)
 #ifdef FDT
 	x86_init_fdt();
 #endif
-	thread0.td_critnest = 0;
 
 	kasan_init();
 	kmsan_init();
@@ -1637,19 +1636,15 @@ smap_sysctl_handler(SYSCTL_HANDLER_ARGS)
 {
 	struct bios_smap *smapbase;
 	struct bios_smap_xattr smap;
-	caddr_t kmdp;
 	uint32_t *smapattr;
 	int count, error, i;
 
 	/* Retrieve the system memory map from the loader. */
-	kmdp = preload_search_by_type("elf kernel");
-	if (kmdp == NULL)
-		kmdp = preload_search_by_type("elf64 kernel");
-	smapbase = (struct bios_smap *)preload_search_info(kmdp,
+	smapbase = (struct bios_smap *)preload_search_info(preload_kmdp,
 	    MODINFO_METADATA | MODINFOMD_SMAP);
 	if (smapbase == NULL)
 		return (0);
-	smapattr = (uint32_t *)preload_search_info(kmdp,
+	smapattr = (uint32_t *)preload_search_info(preload_kmdp,
 	    MODINFO_METADATA | MODINFOMD_SMAP_XATTR);
 	count = *((uint32_t *)smapbase - 1) / sizeof(*smapbase);
 	error = 0;
@@ -1674,13 +1669,9 @@ static int
 efi_map_sysctl_handler(SYSCTL_HANDLER_ARGS)
 {
 	struct efi_map_header *efihdr;
-	caddr_t kmdp;
 	uint32_t efisize;
 
-	kmdp = preload_search_by_type("elf kernel");
-	if (kmdp == NULL)
-		kmdp = preload_search_by_type("elf64 kernel");
-	efihdr = (struct efi_map_header *)preload_search_info(kmdp,
+	efihdr = (struct efi_map_header *)preload_search_info(preload_kmdp,
 	    MODINFO_METADATA | MODINFOMD_EFI_MAP);
 	if (efihdr == NULL)
 		return (0);
@@ -1691,6 +1682,22 @@ SYSCTL_PROC(_machdep, OID_AUTO, efi_map,
     CTLTYPE_OPAQUE | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
     efi_map_sysctl_handler, "S,efi_map_header",
     "Raw EFI Memory Map");
+
+static int
+efi_arch_sysctl_handler(SYSCTL_HANDLER_ARGS)
+{
+	char *arch;
+
+	arch = (char *)preload_search_info(preload_kmdp,
+	    MODINFO_METADATA | MODINFOMD_EFI_ARCH);
+	if (arch == NULL)
+		return (0);
+
+	return (SYSCTL_OUT_STR(req, arch));
+}
+SYSCTL_PROC(_machdep, OID_AUTO, efi_arch,
+    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
+    efi_arch_sysctl_handler, "A", "EFI Firmware Architecture");
 
 void
 spinlock_enter(void)
@@ -1787,10 +1794,8 @@ set_pcb_flags_fsgsbase(struct pcb *pcb, const u_int flags)
 	    (pcb->pcb_flags & PCB_FULL_IRET) == 0) {
 		r = intr_disable();
 		if ((pcb->pcb_flags & PCB_FULL_IRET) == 0) {
-			if (rfs() == _ufssel)
-				pcb->pcb_fsbase = rdfsbase();
-			if (rgs() == _ugssel)
-				pcb->pcb_gsbase = rdmsr(MSR_KGSBASE);
+			pcb->pcb_fsbase = rdfsbase();
+			pcb->pcb_gsbase = rdmsr(MSR_KGSBASE);
 		}
 		set_pcb_flags_raw(pcb, flags);
 		intr_restore(r);
@@ -1813,6 +1818,39 @@ clear_pcb_flags(struct pcb *pcb, const u_int flags)
 	__asm __volatile("andl %1,%0"
 	    : "=m" (pcb->pcb_flags) : "ir" (~flags), "m" (pcb->pcb_flags)
 	    : "cc", "memory");
+}
+
+extern const char wrmsr_early_safe_gp_handler[];
+static struct region_descriptor wrmsr_early_safe_orig_efi_idt;
+
+void
+wrmsr_early_safe_start(void)
+{
+	struct region_descriptor efi_idt;
+	struct gate_descriptor *gpf_descr;
+
+	sidt(&wrmsr_early_safe_orig_efi_idt);
+	efi_idt.rd_limit = 32 * sizeof(idt0[0]);
+	efi_idt.rd_base = (uintptr_t)idt0;
+	lidt(&efi_idt);
+
+	gpf_descr = &idt0[IDT_GP];
+	gpf_descr->gd_looffset = (uintptr_t)wrmsr_early_safe_gp_handler;
+	gpf_descr->gd_hioffset = (uintptr_t)wrmsr_early_safe_gp_handler >> 16;
+	gpf_descr->gd_selector = rcs();
+	gpf_descr->gd_type = SDT_SYSTGT;
+	gpf_descr->gd_p = 1;
+}
+
+void
+wrmsr_early_safe_end(void)
+{
+	struct gate_descriptor *gpf_descr;
+
+	lidt(&wrmsr_early_safe_orig_efi_idt);
+
+	gpf_descr = &idt0[IDT_GP];
+	memset(gpf_descr, 0, sizeof(*gpf_descr));
 }
 
 #ifdef KDB

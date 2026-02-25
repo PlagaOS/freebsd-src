@@ -33,6 +33,12 @@
 
 #include "ixgbe.h"
 
+inline device_t
+ixgbe_dev_from_hw(struct ixgbe_hw *hw)
+{
+	return ((struct ixgbe_softc *)hw->back)->dev;
+}
+
 inline u16
 ixgbe_read_pci_cfg(struct ixgbe_hw *hw, u32 reg)
 {
@@ -107,4 +113,30 @@ ixgbe_link_speed_to_baudrate(ixgbe_link_speed speed)
 	}
 
 	return baudrate;
+}
+
+void
+ixgbe_init_lock(struct ixgbe_lock *lock)
+{
+	mtx_init(&lock->mutex, "mutex",
+	    "ixgbe ACI lock", MTX_DEF | MTX_DUPOK);
+}
+
+void
+ixgbe_acquire_lock(struct ixgbe_lock *lock)
+{
+	mtx_lock(&lock->mutex);
+}
+
+void
+ixgbe_release_lock(struct ixgbe_lock *lock)
+{
+	mtx_unlock(&lock->mutex);
+}
+
+void
+ixgbe_destroy_lock(struct ixgbe_lock *lock)
+{
+	if (mtx_initialized(&lock->mutex))
+		mtx_destroy(&lock->mutex);
 }

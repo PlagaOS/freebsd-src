@@ -47,7 +47,6 @@
  * MULTICAST Revision: 3.5.1.4
  */
 
-#include <sys/cdefs.h>
 #include "opt_ddb.h"
 
 #include <sys/param.h>
@@ -80,6 +79,7 @@
 #include <netinet/ip_options.h>
 #include <netinet/igmp.h>
 #include <netinet/igmp_var.h>
+#include <netinet/ip_mroute.h>
 
 #include <machine/in_cksum.h>
 
@@ -402,32 +402,43 @@ out:
 static int
 sysctl_igmp_default_version(SYSCTL_HANDLER_ARGS)
 {
+	struct epoch_tracker	 et;
 	int	 error;
 	int	 new;
+	struct igmp_ifsoftc *igi;
 
 	error = sysctl_wire_old_buffer(req, sizeof(int));
 	if (error)
 		return (error);
 
-	IGMP_LOCK();
-
 	new = V_igmp_default_version;
 
 	error = sysctl_handle_int(oidp, &new, 0, req);
 	if (error || !req->newptr)
-		goto out_locked;
+		return (error);
 
-	if (new < IGMP_VERSION_1 || new > IGMP_VERSION_3) {
-		error = EINVAL;
-		goto out_locked;
+	if (new < IGMP_VERSION_1 || new > IGMP_VERSION_3)
+		return (EINVAL);
+
+	IN_MULTI_LIST_LOCK();
+	IGMP_LOCK();
+	NET_EPOCH_ENTER(et);
+
+	if (V_igmp_default_version != new) {
+		CTR2(KTR_IGMPV3, "change igmp_default_version from %d to %d",
+			V_igmp_default_version, new);
+
+		V_igmp_default_version = new;
+
+		LIST_FOREACH(igi, &V_igi_head, igi_link) {
+			if (igi->igi_version > V_igmp_default_version){
+				igmp_set_version(igi, V_igmp_default_version);
+			}
+		}
 	}
 
-	CTR2(KTR_IGMPV3, "change igmp_default_version from %d to %d",
-	     V_igmp_default_version, new);
-
-	V_igmp_default_version = new;
-
-out_locked:
+	NET_EPOCH_EXIT(et);
+	IN_MULTI_LIST_UNLOCK();
 	IGMP_UNLOCK();
 	return (error);
 }
@@ -680,7 +691,7 @@ igmp_ifdetach(struct ifnet *ifp)
 	SLIST_INIT(&inm_free_tmp);
 	IGMP_LOCK();
 
-	igi = ((struct in_ifinfo *)ifp->if_afdata[AF_INET])->ii_igmp;
+	igi = ((struct in_ifinfo *)ifp->if_inet)->ii_igmp;
 	if (igi->igi_version == IGMP_VERSION_3) {
 		IF_ADDR_WLOCK(ifp);
 		NET_EPOCH_ENTER(et);
@@ -771,7 +782,7 @@ igmp_input_v1_query(struct ifnet *ifp, const struct ip *ip,
 	IN_MULTI_LIST_LOCK();
 	IGMP_LOCK();
 
-	igi = ((struct in_ifinfo *)ifp->if_afdata[AF_INET])->ii_igmp;
+	igi = ((struct in_ifinfo *)ifp->if_inet)->ii_igmp;
 	KASSERT(igi != NULL, ("%s: no igmp_ifsoftc for ifp %p", __func__, ifp));
 
 	if (igi->igi_flags & IGIF_LOOPBACK) {
@@ -864,7 +875,7 @@ igmp_input_v2_query(struct ifnet *ifp, const struct ip *ip,
 	IN_MULTI_LIST_LOCK();
 	IGMP_LOCK();
 
-	igi = ((struct in_ifinfo *)ifp->if_afdata[AF_INET])->ii_igmp;
+	igi = ((struct in_ifinfo *)ifp->if_inet)->ii_igmp;
 	KASSERT(igi != NULL, ("%s: no igmp_ifsoftc for ifp %p", __func__, ifp));
 
 	if (igi->igi_flags & IGIF_LOOPBACK) {
@@ -1056,7 +1067,7 @@ igmp_input_v3_query(struct ifnet *ifp, const struct ip *ip,
 	IN_MULTI_LIST_LOCK();
 	IGMP_LOCK();
 
-	igi = ((struct in_ifinfo *)ifp->if_afdata[AF_INET])->ii_igmp;
+	igi = ((struct in_ifinfo *)ifp->if_inet)->ii_igmp;
 	KASSERT(igi != NULL, ("%s: no igmp_ifsoftc for ifp %p", __func__, ifp));
 
 	if (igi->igi_flags & IGIF_LOOPBACK) {
@@ -1471,6 +1482,7 @@ igmp_input(struct mbuf **mp, int *offp, int proto)
 	m = *mp;
 	ifp = m->m_pkthdr.rcvif;
 	*mp = NULL;
+	M_ASSERTMAPPED(m);
 
 	IGMPSTAT_INC(igps_rcv_total);
 
@@ -2336,7 +2348,7 @@ igmp_change_state(struct in_multi *inm)
 
 	IGMP_LOCK();
 
-	igi = ((struct in_ifinfo *)ifp->if_afdata[AF_INET])->ii_igmp;
+	igi = ((struct in_ifinfo *)ifp->if_inet)->ii_igmp;
 	KASSERT(igi != NULL, ("%s: no igmp_ifsoftc for ifp %p", __func__, ifp));
 
 	/*
@@ -3477,7 +3489,7 @@ igmp_intr(struct mbuf *m)
 
 	imo.imo_multicast_ttl  = 1;
 	imo.imo_multicast_vif  = -1;
-	imo.imo_multicast_loop = (V_ip_mrouter != NULL);
+	imo.imo_multicast_loop = V_ip_mrouting_enabled;
 
 	/*
 	 * If the user requested that IGMP traffic be explicitly

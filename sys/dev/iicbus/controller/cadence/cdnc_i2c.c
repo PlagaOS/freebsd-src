@@ -42,11 +42,11 @@
 #include <sys/mutex.h>
 #include <sys/resource.h>
 #include <sys/rman.h>
+#include <sys/stdarg.h>
 #include <sys/uio.h>
 
 #include <machine/bus.h>
 #include <machine/resource.h>
-#include <machine/stdarg.h>
 
 #include <dev/fdt/fdt_common.h>
 #include <dev/ofw/ofw_bus.h>
@@ -612,12 +612,13 @@ cdnc_i2c_attach(device_t dev)
 		return (err);
 	}
 
-	sc->iicbus = device_add_child(dev, "iicbus", -1);
+	sc->iicbus = device_add_child(dev, "iicbus", DEVICE_UNIT_ANY);
 
 	cdnc_i2c_add_sysctls(dev);
 
 	/* Probe and attach iicbus when interrupts work. */
-	return (bus_delayed_attach_children(dev));
+	bus_delayed_attach_children(dev);
+	return (0);
 }
 
 static int
@@ -625,17 +626,12 @@ cdnc_i2c_detach(device_t dev)
 {
 	struct cdnc_i2c_softc *sc = device_get_softc(dev);
 
-	if (device_is_attached(dev))
-		bus_generic_detach(dev);
+	bus_generic_detach(dev);
 
 	if (sc->ref_clk != NULL) {
 		clk_release(sc->ref_clk);
 		sc->ref_clk = NULL;
 	}
-
-	/* Delete iic bus. */
-	if (sc->iicbus)
-		device_delete_child(dev, sc->iicbus);
 
 	/* Disable hardware. */
 	if (sc->mem_res != NULL) {

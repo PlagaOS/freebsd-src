@@ -42,12 +42,12 @@
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <sys/resource.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <sys/rman.h>
 
 #include <machine/bus.h>
 #include <machine/resource.h>
-#include <machine/stdarg.h>
 
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
@@ -673,8 +673,11 @@ static int
 zy7_slcr_detach(device_t dev)
 {
 	struct zy7_slcr_softc *sc = device_get_softc(dev);
+	int error;
 
-	bus_generic_detach(dev);
+	error = bus_generic_detach(dev);
+	if (error != 0)
+		return (error);
 
 	/* Release memory resource. */
 	if (sc->mem_res != NULL)

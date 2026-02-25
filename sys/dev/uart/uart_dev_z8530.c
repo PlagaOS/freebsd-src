@@ -297,7 +297,7 @@ static kobj_method_t z8530_methods[] = {
 	KOBJMETHOD(uart_transmit,	z8530_bus_transmit),
 	KOBJMETHOD(uart_grab,		z8530_bus_grab),
 	KOBJMETHOD(uart_ungrab,		z8530_bus_ungrab),
-	{ 0, 0 }
+	KOBJMETHOD_END
 };
 
 struct uart_class uart_z8530_class = {
@@ -509,7 +509,6 @@ z8530_bus_param(struct uart_softc *sc, int baudrate, int databits,
 static int
 z8530_bus_probe(struct uart_softc *sc)
 {
-	char buf[80];
 	int error;
 	char ch;
 
@@ -522,8 +521,7 @@ z8530_bus_probe(struct uart_softc *sc)
 
 	ch = sc->sc_bas.chan - 1 + 'A';
 
-	snprintf(buf, sizeof(buf), "z8530, channel %c", ch);
-	device_set_desc_copy(sc->sc_dev, buf);
+	device_set_descf(sc->sc_dev, "z8530, channel %c", ch);
 	return (0);
 }
 

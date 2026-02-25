@@ -85,6 +85,9 @@ static void print_registers(struct trapframe *frame);
 
 int (*dtrace_invop_jump_addr)(struct trapframe *);
 
+u_long cnt_efirt_faults;
+int print_efirt_faults;
+
 typedef void (abort_handler)(struct thread *, struct trapframe *, uint64_t,
     uint64_t, int);
 
@@ -243,6 +246,7 @@ external_abort(struct thread *td, struct trapframe *frame, uint64_t esr,
 
 	print_registers(frame);
 	print_gp_register("far", far);
+	printf(" esr: 0x%.16lx\n", esr);
 	panic("Unhandled external data abort");
 }
 
@@ -308,10 +312,18 @@ data_abort(struct thread *td, struct trapframe *frame, uint64_t esr,
 				break;
 			}
 		}
-		intr_enable();
+		if (td->td_md.md_spinlock_count == 0 &&
+		    (frame->tf_spsr & PSR_DAIF_INTR) != PSR_DAIF_INTR) {
+			MPASS((frame->tf_spsr & PSR_DAIF_INTR) == 0);
+			intr_enable();
+		}
 		map = kernel_map;
 	} else {
-		intr_enable();
+		if (td->td_md.md_spinlock_count == 0 &&
+		    (frame->tf_spsr & PSR_DAIF_INTR) != PSR_DAIF_INTR) {
+			MPASS((frame->tf_spsr & PSR_DAIF_INTR) == 0);
+			intr_enable();
+		}
 		map = &td->td_proc->p_vmspace->vm_map;
 		if (map == NULL)
 			map = kernel_map;
@@ -338,8 +350,9 @@ data_abort(struct thread *td, struct trapframe *frame, uint64_t esr,
 		    td->td_md.md_spinlock_count);
 	}
 #endif
-	if (td->td_critnest != 0 || WITNESS_CHECK(WARN_SLEEPOK |
-	    WARN_GIANTOK, NULL, "Kernel page fault") != 0) {
+	if ((td->td_pflags & TDP_NOFAULTING) == 0 &&
+	    (td->td_critnest != 0 || WITNESS_CHECK(WARN_SLEEPOK |
+	    WARN_GIANTOK, NULL, "Kernel page fault") != 0)) {
 		print_registers(frame);
 		print_gp_register("far", far);
 		printf(" esr: 0x%.16lx\n", esr);
@@ -375,7 +388,6 @@ data_abort(struct thread *td, struct trapframe *frame, uint64_t esr,
 bad_far:
 			if (td->td_intr_nesting_level == 0 &&
 			    pcb->pcb_onfault != 0) {
-				frame->tf_x[0] = error;
 				frame->tf_elr = pcb->pcb_onfault;
 				return;
 			}
@@ -468,6 +480,66 @@ fpe_trap(struct thread *td, void *addr, uint32_t exception)
 }
 #endif
 
+static void
+handle_moe(struct thread *td, struct trapframe *frame, uint64_t esr)
+{
+	uint64_t src;
+	uint64_t dest;
+	uint64_t size;
+	int src_reg;
+	int dest_reg;
+	int size_reg;
+	int format_option;
+
+	format_option = esr & ISS_MOE_FORMAT_OPTION_MASK;
+	dest_reg = (esr & ISS_MOE_DESTREG_MASK) >> ISS_MOE_DESTREG_SHIFT;
+	size_reg = (esr & ISS_MOE_SIZEREG_MASK) >> ISS_MOE_SIZEREG_SHIFT;
+	dest = frame->tf_x[dest_reg];
+	size = frame->tf_x[size_reg];
+
+	/*
+	 * Put the registers back in the original format suitable for a
+	 * prologue instruction, using the generic return routine from the
+	 * Arm ARM (DDI 0487I.a) rules CNTMJ and MWFQH.
+	 */
+	if (esr & ISS_MOE_MEMINST) {
+		/* SET* instruction */
+		if (format_option == ISS_MOE_FORMAT_OPTION_A ||
+		    format_option == ISS_MOE_FORMAT_OPTION_A2) {
+			/* Format is from Option A; forward set */
+			frame->tf_x[dest_reg] = dest + size;
+			frame->tf_x[size_reg] = -size;
+		}
+	} else {
+		/* CPY* instruction */
+		src_reg = (esr & ISS_MOE_SRCREG_MASK) >> ISS_MOE_SRCREG_SHIFT;
+		src = frame->tf_x[src_reg];
+
+		if (format_option == ISS_MOE_FORMAT_OPTION_B ||
+		    format_option == ISS_MOE_FORMAT_OPTION_B2) {
+			/* Format is from Option B */
+			if (frame->tf_spsr & PSR_N) {
+				/* Backward copy */
+				frame->tf_x[dest_reg] = dest - size;
+				frame->tf_x[src_reg] = src + size;
+			}
+		} else {
+			/* Format is from Option A */
+			if (frame->tf_x[size_reg] & (1UL << 63)) {
+				/* Forward copy */
+				frame->tf_x[dest_reg] = dest + size;
+				frame->tf_x[src_reg] = src + size;
+				frame->tf_x[size_reg] = -size;
+			}
+		}
+	}
+
+	if (esr & ISS_MOE_FROM_EPILOGUE)
+		frame->tf_elr -= 8;
+	else
+		frame->tf_elr -= 4;
+}
+
 /*
  * See the comment above data_abort().
  */
@@ -540,11 +612,10 @@ do_el1h_sync(struct thread *td, struct trapframe *frame)
 		break;
 	case EXCP_BRK:
 #ifdef KDTRACE_HOOKS
-		if ((esr & ESR_ELx_ISS_MASK) == 0x40d && \
-		    dtrace_invop_jump_addr != 0) {
-			dtrace_invop_jump_addr(frame);
+		if ((esr & ESR_ELx_ISS_MASK) == 0x40d /* BRK_IMM16_VAL */ &&
+		    dtrace_invop_jump_addr != NULL &&
+		    dtrace_invop_jump_addr(frame) == 0)
 			break;
-		}
 #endif
 #ifdef KDB
 		kdb_trap(exception, 0, frame);
@@ -568,8 +639,6 @@ do_el1h_sync(struct thread *td, struct trapframe *frame)
 		panic("FPAC kernel exception");
 		break;
 	case EXCP_UNKNOWN:
-		if (undef_insn(1, frame))
-			break;
 		print_registers(frame);
 		print_gp_register("far", far);
 		panic("Undefined instruction: %08x",
@@ -579,6 +648,9 @@ do_el1h_sync(struct thread *td, struct trapframe *frame)
 		print_registers(frame);
 		print_gp_register("far", far);
 		panic("Branch Target exception");
+		break;
+	case EXCP_MOE:
+		handle_moe(td, frame, esr);
 		break;
 	default:
 		print_registers(frame);
@@ -639,8 +711,10 @@ do_el0_sync(struct thread *td, struct trapframe *frame)
 #endif
 		break;
 	case EXCP_SVE:
-		call_trapsignal(td, SIGILL, ILL_ILLTRP, (void *)frame->tf_elr,
-		    exception);
+		/* Returns true if this thread can use SVE */
+		if (!sve_restore_state(td))
+			call_trapsignal(td, SIGILL, ILL_ILLTRP,
+			    (void *)frame->tf_elr, exception);
 		userret(td, frame);
 		break;
 	case EXCP_SVC32:
@@ -664,7 +738,7 @@ do_el0_sync(struct thread *td, struct trapframe *frame)
 		}
 		break;
 	case EXCP_UNKNOWN:
-		if (!undef_insn(0, frame))
+		if (!undef_insn(frame))
 			call_trapsignal(td, SIGILL, ILL_ILLTRP, (void *)far,
 			    exception);
 		userret(td, frame);
@@ -704,7 +778,7 @@ do_el0_sync(struct thread *td, struct trapframe *frame)
 		 * instruction to access a special register userspace doesn't
 		 * have access to.
 		 */
-		if (!undef_insn(0, frame))
+		if (!undef_insn(frame))
 			call_trapsignal(td, SIGILL, ILL_PRVOPC,
 			    (void *)frame->tf_elr, exception);
 		userret(td, frame);
@@ -727,6 +801,10 @@ do_el0_sync(struct thread *td, struct trapframe *frame)
 		    exception);
 		userret(td, frame);
 		break;
+	case EXCP_MOE:
+		handle_moe(td, frame, esr);
+		userret(td, frame);
+		break;
 	default:
 		call_trapsignal(td, SIGBUS, BUS_OBJERR, (void *)frame->tf_elr,
 		    exception);
@@ -734,7 +812,8 @@ do_el0_sync(struct thread *td, struct trapframe *frame)
 		break;
 	}
 
-	KASSERT((td->td_pcb->pcb_fpflags & ~PCB_FP_USERMASK) == 0,
+	KASSERT(
+	    (td->td_pcb->pcb_fpflags & ~(PCB_FP_USERMASK|PCB_FP_SVEVALID)) == 0,
 	    ("Kernel VFP flags set while entering userspace"));
 	KASSERT(
 	    td->td_pcb->pcb_fpusaved == &td->td_pcb->pcb_fpustate,

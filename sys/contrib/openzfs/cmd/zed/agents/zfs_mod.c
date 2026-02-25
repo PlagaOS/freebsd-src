@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: CDDL-1.0
 /*
  * CDDL HEADER START
  *
@@ -81,7 +82,7 @@
 #include <sys/sunddi.h>
 #include <sys/sysevent/eventdefs.h>
 #include <sys/sysevent/dev.h>
-#include <thread_pool.h>
+#include <sys/taskq.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <errno.h>
@@ -97,7 +98,7 @@ typedef void (*zfs_process_func_t)(zpool_handle_t *, nvlist_t *, boolean_t);
 libzfs_handle_t *g_zfshdl;
 list_t g_pool_list;	/* list of unavailable pools at initialization */
 list_t g_device_list;	/* list of disks with asynchronous label request */
-tpool_t *g_tpool;
+taskq_t *g_taskq;
 boolean_t g_enumeration_done;
 pthread_t g_zfs_tid;	/* zfs_enum_pools() thread */
 
@@ -214,6 +215,7 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 	vdev_stat_t *vs;
 	char **lines = NULL;
 	int lines_cnt = 0;
+	int rc;
 
 	/*
 	 * Get the persistent path, typically under the '/dev/disk/by-id' or
@@ -405,17 +407,17 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 	}
 
 	nvlist_lookup_string(vdev, "new_devid", &new_devid);
-
 	if (is_mpath_wholedisk) {
 		/* Don't label device mapper or multipath disks. */
 		zed_log_msg(LOG_INFO,
 		    "  it's a multipath wholedisk, don't label");
-		if (zpool_prepare_disk(zhp, vdev, "autoreplace", &lines,
-		    &lines_cnt) != 0) {
+		rc = zpool_prepare_disk(zhp, vdev, "autoreplace", &lines,
+		    &lines_cnt);
+		if (rc != 0) {
 			zed_log_msg(LOG_INFO,
 			    "  zpool_prepare_disk: could not "
-			    "prepare '%s' (%s)", fullpath,
-			    libzfs_error_description(g_zfshdl));
+			    "prepare '%s' (%s), path '%s', rc = %d", fullpath,
+			    libzfs_error_description(g_zfshdl), path, rc);
 			if (lines_cnt > 0) {
 				zed_log_msg(LOG_INFO,
 				    "  zfs_prepare_disk output:");
@@ -446,12 +448,13 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 		 * If this is a request to label a whole disk, then attempt to
 		 * write out the label.
 		 */
-		if (zpool_prepare_and_label_disk(g_zfshdl, zhp, leafname,
-		    vdev, "autoreplace", &lines, &lines_cnt) != 0) {
+		rc = zpool_prepare_and_label_disk(g_zfshdl, zhp, leafname,
+		    vdev, "autoreplace", &lines, &lines_cnt);
+		if (rc != 0) {
 			zed_log_msg(LOG_WARNING,
 			    "  zpool_prepare_and_label_disk: could not "
-			    "label '%s' (%s)", leafname,
-			    libzfs_error_description(g_zfshdl));
+			    "label '%s' (%s), rc = %d", leafname,
+			    libzfs_error_description(g_zfshdl), rc);
 			if (lines_cnt > 0) {
 				zed_log_msg(LOG_INFO,
 				"  zfs_prepare_disk output:");
@@ -702,7 +705,7 @@ zfs_enable_ds(void *arg)
 {
 	unavailpool_t *pool = (unavailpool_t *)arg;
 
-	(void) zpool_enable_datasets(pool->uap_zhp, NULL, 0);
+	(void) zpool_enable_datasets(pool->uap_zhp, NULL, 0, 512);
 	zpool_close(pool->uap_zhp);
 	free(pool);
 }
@@ -746,8 +749,8 @@ zfs_iter_pool(zpool_handle_t *zhp, void *data)
 				continue;
 			if (zfs_toplevel_state(zhp) >= VDEV_STATE_DEGRADED) {
 				list_remove(&g_pool_list, pool);
-				(void) tpool_dispatch(g_tpool, zfs_enable_ds,
-				    pool);
+				(void) taskq_dispatch(g_taskq, zfs_enable_ds,
+				    pool, TQ_SLEEP);
 				break;
 			}
 		}
@@ -1344,9 +1347,9 @@ zfs_slm_fini(void)
 	/* wait for zfs_enum_pools thread to complete */
 	(void) pthread_join(g_zfs_tid, NULL);
 	/* destroy the thread pool */
-	if (g_tpool != NULL) {
-		tpool_wait(g_tpool);
-		tpool_destroy(g_tpool);
+	if (g_taskq != NULL) {
+		taskq_wait(g_taskq);
+		taskq_destroy(g_taskq);
 	}
 
 	while ((pool = list_remove_head(&g_pool_list)) != NULL) {

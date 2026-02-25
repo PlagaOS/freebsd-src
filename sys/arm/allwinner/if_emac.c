@@ -811,10 +811,7 @@ emac_detach(device_t dev)
 		bus_teardown_intr(sc->emac_dev, sc->emac_irq,
 		    sc->emac_intrhand);
 
-	if (sc->emac_miibus != NULL) {
-		device_delete_child(sc->emac_dev, sc->emac_miibus);
-		bus_generic_detach(sc->emac_dev);
-	}
+	bus_generic_detach(sc->emac_dev);
 
 	if (sc->emac_clk != NULL)
 		clk_disable(sc->emac_clk);
@@ -940,11 +937,6 @@ emac_attach(device_t dev)
 	emac_reset(sc);
 
 	ifp = sc->emac_ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		device_printf(dev, "unable to allocate ifp\n");
-		error = ENOSPC;
-		goto fail;
-	}
 	if_setsoftc(ifp, sc);
 
 	/* Setup MII */

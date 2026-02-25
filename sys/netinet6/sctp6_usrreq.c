@@ -139,7 +139,11 @@ sctp6_input_with_port(struct mbuf **i_pak, int *offp, uint16_t port)
 		goto out;
 	}
 	ecn_bits = IPV6_TRAFFIC_CLASS(ip6);
-	if (m->m_pkthdr.csum_flags & CSUM_SCTP_VALID) {
+	if (m->m_pkthdr.csum_flags & (CSUM_SCTP_VALID | CSUM_IP6_SCTP)) {
+		/*
+		 * Packet with CSUM_IP6_SCTP were sent from local host using
+		 * checksum offloading. Checksum not required.
+		 */
 		SCTP_STAT_INCR(sctps_recvhwcrc);
 		compute_crc = 0;
 	} else {
@@ -359,7 +363,7 @@ sctp6_ctlinput(struct ip6ctlparam *ip6cp)
 }
 
 /*
- * this routine can probably be collasped into the one in sctp_userreq.c
+ * this routine can probably be collapsed into the one in sctp_userreq.c
  * since they do the same thing and now we lookup with a sockaddr
  */
 static int
@@ -375,6 +379,8 @@ sctp6_getcred(SYSCTL_HANDLER_ARGS)
 
 	vrf_id = SCTP_DEFAULT_VRFID;
 
+	if (req->newptr == NULL)
+		return (EINVAL);
 	error = priv_check(req->td, PRIV_NETINET_GETCRED);
 	if (error)
 		return (error);
@@ -721,8 +727,8 @@ connected_type:
 		 * note with the current version this code will only be used
 		 * by OpenBSD, NetBSD and FreeBSD have methods for
 		 * re-defining sosend() to use sctp_sosend().  One can
-		 * optionaly switch back to this code (by changing back the
-		 * defininitions but this is not advisable.
+		 * optionally switch back to this code (by changing back the
+		 * definitions but this is not advisable.
 		 */
 		struct epoch_tracker et;
 		int ret;
@@ -1094,7 +1100,6 @@ sctp6_getpeeraddr(struct socket *so, struct sockaddr *sa)
 	.pr_control =	in6_control,					\
 	.pr_close =	sctp6_close,					\
 	.pr_detach =	sctp6_close,					\
-	.pr_sopoll =	sopoll_generic,					\
 	.pr_disconnect = sctp_disconnect,				\
 	.pr_listen =	sctp_listen,					\
 	.pr_peeraddr =	sctp6_getpeeraddr,				\

@@ -1,5 +1,6 @@
+#include <errno.h>
 /*
- * Copyright (C) 1984-2023  Mark Nudelman
+ * Copyright (C) 1984-2026  Mark Nudelman
  *
  * You may distribute under the terms of either the GNU General Public
  * License or the Less License, as specified in the README file.
@@ -16,7 +17,7 @@
  * At some convenient time, the mainline code checks to see if any
  * signals need processing by calling psignal().
  * If we happen to be reading from a file [in iread()] at the time
- * the signal is received, we call intread to interrupt the iread.
+ * the signal is received, we call intio to interrupt the iread.
  */
 
 #include "less.h"
@@ -28,13 +29,9 @@
 public int sigs;
 
 extern int sc_width, sc_height;
-extern int screen_trashed;
-extern int lnloop;
 extern int linenums;
 extern int wscroll;
-extern int reading;
 extern int quit_on_intr;
-extern int secure;
 extern long jump_sline_fraction;
 
 extern int less_is_more;
@@ -46,7 +43,8 @@ extern int less_is_more;
 	/* ARGSUSED*/
 static RETSIGTYPE u_interrupt(int type)
 {
-	bell();
+	(void) type;
+	lbell();
 #if OS2
 	LSIGNAL(SIGINT, SIG_ACK);
 #endif
@@ -66,8 +64,8 @@ static RETSIGTYPE u_interrupt(int type)
 #if HILITE_SEARCH
 	set_filter_pattern(NULL, 0);
 #endif
-	if (reading)
-		intread(); /* May longjmp */
+	polling_ok();
+	intio();
 }
 #endif
 
@@ -78,10 +76,10 @@ static RETSIGTYPE u_interrupt(int type)
 	/* ARGSUSED*/
 static RETSIGTYPE stop(int type)
 {
+	(void) type;
 	LSIGNAL(SIGTSTP, stop);
 	sigs |= S_STOP;
-	if (reading)
-		intread();
+	intio();
 }
 #endif
 
@@ -99,12 +97,21 @@ static RETSIGTYPE stop(int type)
  * "Window" change handler
  */
 	/* ARGSUSED*/
-public RETSIGTYPE winch(int type)
+public RETSIGTYPE lwinch(int type)
 {
-	LSIGNAL(SIG_LESSWINDOW, winch);
+	(void) type;
+	LSIGNAL(SIG_LESSWINDOW, lwinch);
+#if LESSTEST
+	/*
+	 * Ignore window changes during lesstest.
+	 * Changes in the real window are unrelated to the simulated
+	 * screen used by lesstest.
+	 */
+	if (is_lesstest())
+		return;
+#endif
 	sigs |= S_WINCH;
-	if (reading)
-		intread();
+	intio();
 }
 #endif
 
@@ -135,8 +142,30 @@ static BOOL WINAPI wbreak_handler(DWORD dwCtrlType)
 
 static RETSIGTYPE terminate(int type)
 {
+	(void) type;
 	quit(15);
 }
+
+/*
+ * Handle a SIGUSR signal.
+ */
+#ifdef SIGUSR1
+static void sigusr(constant char *var)
+{
+	constant char *cmd = lgetenv(var);
+	if (isnullenv(cmd))
+		return;
+	ungetsc(cmd);
+	intio();
+}
+
+static RETSIGTYPE sigusr1(int type)
+{
+	(void) type;
+	LSIGNAL(SIGUSR1, sigusr1);
+	sigusr("LESS_SIGUSR1");
+}
+#endif
 
 /*
  * Set up the signal handlers.
@@ -154,19 +183,25 @@ public void init_signals(int on)
 		(void) LSIGNAL(SIGINT, u_interrupt);
 #endif
 #ifdef SIGTSTP
-		(void) LSIGNAL(SIGTSTP, secure ? SIG_IGN : stop);
+		(void) LSIGNAL(SIGTSTP, !secure_allow(SF_STOP) ? SIG_IGN : stop);
 #endif
 #ifdef SIGWINCH
-		(void) LSIGNAL(SIGWINCH, winch);
+		(void) LSIGNAL(SIGWINCH, lwinch);
 #endif
 #ifdef SIGWIND
-		(void) LSIGNAL(SIGWIND, winch);
+		(void) LSIGNAL(SIGWIND, lwinch);
 #endif
 #ifdef SIGQUIT
 		(void) LSIGNAL(SIGQUIT, SIG_IGN);
 #endif
 #ifdef SIGTERM
 		(void) LSIGNAL(SIGTERM, terminate);
+#endif
+#ifdef SIGHUP
+		(void) LSIGNAL(SIGHUP, terminate);
+#endif
+#ifdef SIGUSR1
+		(void) LSIGNAL(SIGUSR1, sigusr1);
 #endif
 	} else
 	{
@@ -193,6 +228,12 @@ public void init_signals(int on)
 #ifdef SIGTERM
 		(void) LSIGNAL(SIGTERM, SIG_DFL);
 #endif
+#ifdef SIGHUP
+		(void) LSIGNAL(SIGHUP, SIG_DFL);
+#endif
+#ifdef SIGUSR1
+		(void) LSIGNAL(SIGUSR1, SIG_DFL);
+#endif
 	}
 }
 
@@ -218,7 +259,7 @@ public void psignals(void)
 		LSIGNAL(SIGTTOU, SIG_IGN);
 #endif
 		clear_bot();
-		deinit();
+		term_deinit();
 		flush();
 		raw_mode(0);
 #ifdef SIGTTOU
@@ -234,8 +275,8 @@ public void psignals(void)
 		 */
 		LSIGNAL(SIGTSTP, stop);
 		raw_mode(1);
-		init();
-		screen_trashed = 1;
+		term_init();
+		screen_trashed();
 		tsignals |= S_WINCH;
 	}
 #endif
@@ -250,17 +291,17 @@ public void psignals(void)
 		old_height = sc_height;
 		get_term();
 		if (sc_width != old_width || sc_height != old_height)
-		{
-			wscroll = (sc_height + 1) / 2;
-			calc_jump_sline();
-			calc_shift_count();
-		}
-		screen_trashed = 1;
+			screen_size_changed();
+		screen_trashed();
 	}
 #endif
 	if (tsignals & S_INTERRUPT)
 	{
 		if (quit_on_intr)
 			quit(QUIT_INTERRUPT);
+		getcc_clear();
+#if MSDOS_COMPILER==WIN32C
+		win32_getch_clear();
+#endif
 	}
 }

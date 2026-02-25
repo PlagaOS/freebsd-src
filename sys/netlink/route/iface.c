@@ -36,6 +36,7 @@
 #include <sys/socket.h>
 #include <sys/sockio.h>
 #include <sys/syslog.h>
+#include <sys/proc.h>
 
 #include <net/if.h>
 #include <net/if_dl.h>
@@ -70,7 +71,8 @@ struct netlink_walkargs {
 	int dumped;
 };
 
-static eventhandler_tag ifdetach_event, ifattach_event, iflink_event, ifaddr_event;
+static eventhandler_tag ifdetach_event, ifattach_event, ifrename_event,
+    iflink_event, ifaddr_event;
 
 static SLIST_HEAD(, nl_cloner) nl_cloners = SLIST_HEAD_INITIALIZER(nl_cloners);
 
@@ -288,7 +290,7 @@ dump_iface_caps(struct nl_writer *nw, struct ifnet *ifp)
  */
 static bool
 dump_iface(struct nl_writer *nw, if_t ifp, const struct nlmsghdr *hdr,
-    int if_flags_mask)
+    int if_flags_mask, const char *ifname)
 {
 	struct epoch_tracker et;
         struct ifinfomsg *ifinfo;
@@ -312,7 +314,8 @@ dump_iface(struct nl_writer *nw, if_t ifp, const struct nlmsghdr *hdr,
 	if (ifs.ifla_operstate == IF_OPER_UP)
 		ifinfo->ifi_flags |= IFF_LOWER_UP;
 
-        nlattr_add_string(nw, IFLA_IFNAME, if_name(ifp));
+        nlattr_add_string(nw, IFLA_IFNAME,
+	    ifname != NULL ? ifname : if_name(ifp));
         nlattr_add_u8(nw, IFLA_OPERSTATE, ifs.ifla_operstate);
         nlattr_add_u8(nw, IFLA_CARRIER, ifs.ifla_carrier);
 
@@ -322,11 +325,13 @@ dump_iface(struct nl_writer *nw, if_t ifp, const struct nlmsghdr *hdr,
 */
 	if (if_getaddrlen(ifp) != 0) {
 		struct ifaddr *ifa;
+		struct ifa_iter it;
 
 		NET_EPOCH_ENTER(et);
-		ifa = CK_STAILQ_FIRST(&ifp->if_addrhead);
+		ifa = ifa_iter_start(ifp, &it);
 		if (ifa != NULL)
 			dump_sa(nw, IFLA_ADDRESS, ifa->ifa_addr);
+		ifa_iter_finish(&it);
 		NET_EPOCH_EXIT(et);
 	}
 
@@ -360,6 +365,8 @@ dump_iface(struct nl_writer *nw, if_t ifp, const struct nlmsghdr *hdr,
         nlattr_add_u32(nw, IFLA_PROMISCUITY, val);
 
 	ifc_dump_ifp_nl(ifp, nw);
+
+	nw->ifp = ifp;
 
         if (nlmsg_end(nw))
 		return (true);
@@ -401,6 +408,7 @@ static const struct nlattr_parser nla_p_linfo[] = {
 NL_DECLARE_ATTR_PARSER(linfo_parser, nla_p_linfo);
 
 static const struct nlattr_parser nla_p_if[] = {
+	{ .type = IFLA_ADDRESS, .off = _OUT(ifla_address), .cb = nlattr_get_nla },
 	{ .type = IFLA_IFNAME, .off = _OUT(ifla_ifname), .cb = nlattr_get_string },
 	{ .type = IFLA_MTU, .off = _OUT(ifla_mtu), .cb = nlattr_get_uint32 },
 	{ .type = IFLA_LINK, .off = _OUT(ifla_link), .cb = nlattr_get_uint32 },
@@ -433,7 +441,7 @@ static int
 dump_cb(if_t ifp, void *_arg)
 {
 	struct netlink_walkargs *wa = (struct netlink_walkargs *)_arg;
-	if (!dump_iface(wa->nw, ifp, &wa->hdr, 0))
+	if (!dump_iface(wa->nw, ifp, &wa->hdr, 0, NULL))
 		return (ENOMEM);
 	return (0);
 }
@@ -483,7 +491,7 @@ rtnl_handle_getlink(struct nlmsghdr *hdr, struct nlpcb *nlp, struct nl_pstate *n
 
 		if (ifp != NULL) {
 			if (match_iface(ifp, &attrs)) {
-				if (!dump_iface(wa.nw, ifp, &wa.hdr, 0))
+				if (!dump_iface(wa.nw, ifp, &wa.hdr, 0, NULL))
 					error = ENOMEM;
 			} else
 				error = ENODEV;
@@ -668,6 +676,8 @@ static int
 rtnl_handle_newlink(struct nlmsghdr *hdr, struct nlpcb *nlp, struct nl_pstate *npt)
 {
 	struct nlattr_bmask bm;
+	struct thread *td = curthread;
+	struct ucred *cred;
 	int error;
 
 	struct nl_parsed_link attrs = {};
@@ -676,10 +686,16 @@ rtnl_handle_newlink(struct nlmsghdr *hdr, struct nlpcb *nlp, struct nl_pstate *n
 		return (error);
 	nl_get_attrs_bmask_nlmsg(hdr, &ifmsg_parser, &bm);
 
+	/* XXX: temporary patch until the D39180 review lands */
+	cred = td->td_ucred;
+	td->td_ucred = nlp_get_cred(nlp);
 	if (hdr->nlmsg_flags & NLM_F_CREATE)
-		return (create_link(hdr, &attrs, &bm, nlp, npt));
+		error = create_link(hdr, &attrs, &bm, nlp, npt);
 	else
-		return (modify_link(hdr, &attrs, &bm, nlp, npt));
+		error = modify_link(hdr, &attrs, &bm, nlp, npt);
+	td->td_ucred = cred;
+
+	return (error);
 }
 
 static void
@@ -816,9 +832,9 @@ ifa_get_scope(const struct ifaddr *ifa)
                 {
                         struct in_addr addr;
                         addr = ((const struct sockaddr_in *)sa)->sin_addr;
-                        if (IN_LOOPBACK(addr.s_addr))
+                        if (IN_LOOPBACK(ntohl(addr.s_addr)))
                                 addr_scope = RT_SCOPE_HOST;
-                        else if (IN_LINKLOCAL(addr.s_addr))
+                        else if (IN_LINKLOCAL(ntohl(addr.s_addr)))
                                 addr_scope = RT_SCOPE_LINK;
                         break;
                 }
@@ -1194,17 +1210,17 @@ static int
 handle_deladdr_inet(struct nlmsghdr *hdr, struct nl_parsed_ifa *attrs,
     if_t ifp, struct nlpcb *nlp, struct nl_pstate *npt)
 {
-	struct sockaddr_in *addr = (struct sockaddr_in *)attrs->ifa_local;
+	struct sockaddr *addr = attrs->ifa_local;
 
 	if (addr == NULL)
-		addr = (struct sockaddr_in *)attrs->ifa_address;
+		addr = attrs->ifa_address;
 
 	if (addr == NULL) {
 		nlmsg_report_err_msg(npt, "empty IFA_ADDRESS/IFA_LOCAL");
 		return (EINVAL);
 	}
 
-	struct in_aliasreq req = { .ifra_addr = *addr };
+	struct ifreq req = { .ifr_addr = *addr };
 
 	return (in_control_ioctl(SIOCDIFADDR, &req, ifp, nlp_get_cred(nlp)));
 }
@@ -1288,7 +1304,7 @@ handle_deladdr_inet6(struct nlmsghdr *hdr, struct nl_parsed_ifa *attrs,
 		return (EINVAL);
 	}
 
-	struct in6_aliasreq req = { .ifra_addr = *addr };
+	struct in6_ifreq req = { .ifr_addr = *addr };
 
 	return (in6_control_ioctl(SIOCDIFADDR_IN6, &req, ifp, nlp_get_cred(nlp)));
 }
@@ -1361,7 +1377,7 @@ static void
 rtnl_handle_ifaddr(void *arg __unused, struct ifaddr *ifa, int cmd)
 {
 	struct nlmsghdr hdr = {};
-	struct nl_writer nw = {};
+	struct nl_writer nw;
 	uint32_t group = 0;
 
 	switch (ifa->ifa_addr->sa_family) {
@@ -1381,10 +1397,8 @@ rtnl_handle_ifaddr(void *arg __unused, struct ifaddr *ifa, int cmd)
 		return;
 	}
 
-	if (!nl_has_listeners(NETLINK_ROUTE, group))
-		return;
-
-	if (!nlmsg_get_group_writer(&nw, NLMSG_LARGE, NETLINK_ROUTE, group)) {
+	if (!nl_writer_group(&nw, NLMSG_LARGE, NETLINK_ROUTE, group, 0,
+	    false)) {
 		NL_LOG(LOG_DEBUG, "error allocating group writer");
 		return;
 	}
@@ -1396,19 +1410,18 @@ rtnl_handle_ifaddr(void *arg __unused, struct ifaddr *ifa, int cmd)
 }
 
 static void
-rtnl_handle_ifevent(if_t ifp, int nlmsg_type, int if_flags_mask)
+rtnl_handle_ifevent(if_t ifp, int nlmsg_type, int if_flags_mask,
+    const char *ifname)
 {
 	struct nlmsghdr hdr = { .nlmsg_type = nlmsg_type };
-	struct nl_writer nw = {};
+	struct nl_writer nw;
 
-	if (!nl_has_listeners(NETLINK_ROUTE, RTNLGRP_LINK))
-		return;
-
-	if (!nlmsg_get_group_writer(&nw, NLMSG_LARGE, NETLINK_ROUTE, RTNLGRP_LINK)) {
-		NL_LOG(LOG_DEBUG, "error allocating mbuf");
+	if (!nl_writer_group(&nw, NLMSG_LARGE, NETLINK_ROUTE, RTNLGRP_LINK, 0,
+	    false)) {
+		NL_LOG(LOG_DEBUG, "error allocating group writer");
 		return;
 	}
-	dump_iface(&nw, ifp, &hdr, if_flags_mask);
+	dump_iface(&nw, ifp, &hdr, if_flags_mask, ifname);
         nlmsg_flush(&nw);
 }
 
@@ -1416,28 +1429,35 @@ static void
 rtnl_handle_ifattach(void *arg, if_t ifp)
 {
 	NL_LOG(LOG_DEBUG2, "ifnet %s", if_name(ifp));
-	rtnl_handle_ifevent(ifp, NL_RTM_NEWLINK, 0);
+	rtnl_handle_ifevent(ifp, NL_RTM_NEWLINK, 0, NULL);
 }
 
 static void
 rtnl_handle_ifdetach(void *arg, if_t ifp)
 {
 	NL_LOG(LOG_DEBUG2, "ifnet %s", if_name(ifp));
-	rtnl_handle_ifevent(ifp, NL_RTM_DELLINK, 0);
+	rtnl_handle_ifevent(ifp, NL_RTM_DELLINK, 0, NULL);
 }
 
 static void
-rtnl_handle_iflink(void *arg, if_t ifp)
+rtnl_handle_ifrename(void *arg, if_t ifp, const char *old_name)
+{
+	rtnl_handle_ifevent(ifp, NL_RTM_DELLINK, 0, old_name);
+	rtnl_handle_ifevent(ifp, NL_RTM_NEWLINK, 0, NULL);
+}
+
+static void
+rtnl_handle_iflink(void *arg, if_t ifp, int link_state __unused)
 {
 	NL_LOG(LOG_DEBUG2, "ifnet %s", if_name(ifp));
-	rtnl_handle_ifevent(ifp, NL_RTM_NEWLINK, 0);
+	rtnl_handle_ifevent(ifp, NL_RTM_NEWLINK, 0, NULL);
 }
 
 void
 rtnl_handle_ifnet_event(if_t ifp, int if_flags_mask)
 {
 	NL_LOG(LOG_DEBUG2, "ifnet %s", if_name(ifp));
-	rtnl_handle_ifevent(ifp, NL_RTM_NEWLINK, if_flags_mask);
+	rtnl_handle_ifevent(ifp, NL_RTM_NEWLINK, if_flags_mask, NULL);
 }
 
 static const struct rtnl_cmd_handler cmd_handlers[] = {
@@ -1507,10 +1527,13 @@ void
 rtnl_ifaces_init(void)
 {
 	ifattach_event = EVENTHANDLER_REGISTER(
-	    ifnet_arrival_event, rtnl_handle_ifattach, NULL,
+	    ifnet_attached_event, rtnl_handle_ifattach, NULL,
 	    EVENTHANDLER_PRI_ANY);
 	ifdetach_event = EVENTHANDLER_REGISTER(
 	    ifnet_departure_event, rtnl_handle_ifdetach, NULL,
+	    EVENTHANDLER_PRI_ANY);
+	ifrename_event = EVENTHANDLER_REGISTER(
+	    ifnet_rename_event, rtnl_handle_ifrename, NULL,
 	    EVENTHANDLER_PRI_ANY);
 	ifaddr_event = EVENTHANDLER_REGISTER(
 	    rt_addrmsg, rtnl_handle_ifaddr, NULL,
@@ -1519,7 +1542,7 @@ rtnl_ifaces_init(void)
 	    ifnet_link_event, rtnl_handle_iflink, NULL,
 	    EVENTHANDLER_PRI_ANY);
 	NL_VERIFY_PARSERS(all_parsers);
-	rtnl_register_messages(cmd_handlers, NL_ARRAY_LEN(cmd_handlers));
+	rtnl_register_messages(cmd_handlers, nitems(cmd_handlers));
 }
 
 void
@@ -1527,6 +1550,7 @@ rtnl_ifaces_destroy(void)
 {
 	EVENTHANDLER_DEREGISTER(ifnet_arrival_event, ifattach_event);
 	EVENTHANDLER_DEREGISTER(ifnet_departure_event, ifdetach_event);
+	EVENTHANDLER_DEREGISTER(ifnet_rename_event, ifrename_event);
 	EVENTHANDLER_DEREGISTER(rt_addrmsg, ifaddr_event);
 	EVENTHANDLER_DEREGISTER(ifnet_link_event, iflink_event);
 }

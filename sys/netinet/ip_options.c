@@ -31,7 +31,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_ipstealth.h"
 
 #include <sys/param.h>
@@ -514,6 +513,8 @@ ip_insertoptions(struct mbuf *m, struct mbuf *opt, int *phlen)
 		*phlen = 0;
 		return (m);		/* XXX should fail */
 	}
+	KASSERT((m->m_flags & M_EXTPG) == 0, ("%s: mbuf %p is unmapped",
+	    __func__, m));
 	if (p->ipopt_dst.s_addr)
 		ip->ip_dst = p->ipopt_dst;
 	if (!M_WRITABLE(m) || M_LEADINGSPACE(m) < optlen) {

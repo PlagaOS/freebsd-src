@@ -60,6 +60,7 @@
 #include <sys/smp.h>
 #include <sys/sysctl.h>
 #include <sys/sysent.h>
+#include <sys/thr.h>
 #include <sys/unistd.h>
 #include <sys/vnode.h>
 #include <sys/vmmeter.h>
@@ -92,8 +93,7 @@ set_top_of_stack_td(struct thread *td)
 struct savefpu *
 get_pcb_user_save_td(struct thread *td)
 {
-	KASSERT(((vm_offset_t)td->td_md.md_usr_fpu_save %
-	    XSAVE_AREA_ALIGN) == 0,
+	KASSERT(__is_aligned(td->td_md.md_usr_fpu_save, XSAVE_AREA_ALIGN),
 	    ("Unaligned pcb_user_save area ptr %p td %p",
 	    td->td_md.md_usr_fpu_save, td));
 	return (td->td_md.md_usr_fpu_save);
@@ -156,7 +156,7 @@ copy_thread(struct thread *td1, struct thread *td2)
 
 	/* Kernel threads start with clean FPU and segment bases. */
 	if ((td2->td_pflags & TDP_KTHREAD) != 0) {
-		pcb2->pcb_fsbase = 0;
+		pcb2->pcb_fsbase = pcb2->pcb_tlsbase = 0;
 		pcb2->pcb_gsbase = 0;
 		clear_pcb_flags(pcb2, PCB_FPUINITDONE | PCB_USERFPUINITDONE |
 		    PCB_KERNFPU | PCB_KERNFPU_THR);
@@ -164,6 +164,7 @@ copy_thread(struct thread *td1, struct thread *td2)
 		MPASS((pcb2->pcb_flags & (PCB_KERNFPU | PCB_KERNFPU_THR)) == 0);
 		bcopy(get_pcb_user_save_td(td1), get_pcb_user_save_pcb(pcb2),
 		    cpu_max_ext_state_size);
+		clear_pcb_flags(pcb2, PCB_TLSBASE);
 	}
 
 	td2->td_frame = (struct trapframe *)td2->td_md.md_stack_base - 1;
@@ -182,7 +183,7 @@ copy_thread(struct thread *td1, struct thread *td2)
 	 * pcb2->pcb_savefpu:	cloned above.
 	 * pcb2->pcb_flags:	cloned above.
 	 * pcb2->pcb_onfault:	cloned above (always NULL here?).
-	 * pcb2->pcb_[fg]sbase:	cloned above
+	 * pcb2->pcb_[f,g,tls]sbase:	cloned above
 	 */
 
 	pcb2->pcb_tssp = NULL;
@@ -372,16 +373,6 @@ cpu_thread_clean(struct thread *td)
 		kmem_free(pcb->pcb_tssp, ctob(IOPAGES + 1));
 		pcb->pcb_tssp = NULL;
 	}
-}
-
-void
-cpu_thread_swapin(struct thread *td)
-{
-}
-
-void
-cpu_thread_swapout(struct thread *td)
-{
 }
 
 void
@@ -615,16 +606,6 @@ int
 cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
     stack_t *stack)
 {
-
-	/* 
-	 * Do any extra cleaning that needs to be done.
-	 * The thread may have optional components
-	 * that are not present in a fresh thread.
-	 * This may be a recycled thread so make it look
-	 * as though it's newly allocated.
-	 */
-	cpu_thread_clean(td);
-
 #ifdef COMPAT_FREEBSD32
 	if (SV_PROC_FLAG(td->td_proc, SV_ILP32)) {
 		/*
@@ -675,7 +656,7 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 }
 
 int
-cpu_set_user_tls(struct thread *td, void *tls_base)
+cpu_set_user_tls(struct thread *td, void *tls_base, int thr_flags)
 {
 	struct pcb *pcb;
 
@@ -683,13 +664,21 @@ cpu_set_user_tls(struct thread *td, void *tls_base)
 		return (EINVAL);
 
 	pcb = td->td_pcb;
-	set_pcb_flags(pcb, PCB_FULL_IRET);
+	set_pcb_flags(pcb, PCB_FULL_IRET | ((thr_flags &
+	    THR_C_RUNTIME) != 0 ? PCB_TLSBASE : 0));
 #ifdef COMPAT_FREEBSD32
 	if (SV_PROC_FLAG(td->td_proc, SV_ILP32)) {
 		pcb->pcb_gsbase = (register_t)tls_base;
 		return (0);
 	}
 #endif
-	pcb->pcb_fsbase = (register_t)tls_base;
+	pcb->pcb_fsbase = pcb->pcb_tlsbase = (register_t)tls_base;
 	return (0);
+}
+
+void
+cpu_update_pcb(struct thread *td)
+{
+	MPASS(td == curthread);
+	update_pcb_bases(td->td_pcb);
 }

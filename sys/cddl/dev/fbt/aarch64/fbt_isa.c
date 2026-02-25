@@ -104,7 +104,7 @@ fbt_provide_module_function(linker_file_t lf, int symindx,
 	 */
 	 if (strcmp(name, "handle_el1h_sync") == 0 ||
 	    strcmp(name, "do_el1h_sync") == 0)
-		return (1);
+		return (0);
 
 	instr = (uint32_t *)(symval->value);
 	limit = (uint32_t *)(symval->value + symval->size);
@@ -177,8 +177,7 @@ again:
 			break;
 		else if ((*instr & B_MASK) == B_INSTR) {
 			offs = (*instr & B_DATA_MASK);
-			offs *= 4;
-			target = (instr + offs);
+			target = instr + offs;
 			start = (uint32_t *)symval->value;
 			if (target >= limit || target < start)
 				break;

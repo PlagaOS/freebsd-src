@@ -154,28 +154,26 @@
    counting; the agent will automatically exit when the last client
    disconnects.
 
-7) Class-based login restrictions (27ceebbc2402)
-
-   We've added code to auth.c to enforce the host.allow, host.deny,
-   times.allow and times.deny login class capabilities, based on an
-   upstream submission from
-   https://github.com/openssh/openssh-portable/pull/262.
-
-8) Blocklist integration
+7) Blocklist integration
 
    We include blocklist (https://github.com/zoulasc/blocklist) in FreeBSD,
    and ssh is patched to report login failures to it.
 
-9) Paths
+8) Paths
 
    A number of paths are changed to match FreeBSD's configuration (e.g.,
    using /usr/local/ instead of /uxr/X11R6/).
 
-10) Retired patches
+9) Retired patches
 
-   We no longer have client-side VersionAddendum.
+   We added support for client-side VersionAddendum in 2002 (commit
+   9e2cbe04ff4f) and provided a default value (e.g. FreeBSD-20220415).
+   Support was removed in commit bffe60ead024 ("ssh: retire client
+   VersionAddendum") to reduce the size of our patch set.  Upstream later
+   added the same functionality in the 10.0p2 release.  We have not restored
+   setting a default value on FreeBSD.
 
-11) PrintLastLog bugfix
+10) PrintLastLog bugfix
 
    Upstream's autoconf sets DISABLE_LASTLOG if the system does not have
    lastlog.ll_line, but uses it to disable the PrintLastLog configuration
@@ -183,6 +181,13 @@
    skip setting DISABLE_LASTLOG which we've applied for FreeBSD, but the
    autoconf machinery really ought to be reworked.  Reported upstream at
    https://lists.mindrot.org/pipermail/openssh-unix-dev/2022-May/040242.html
+
+11) Protocol selection
+
+   We use the non-portable feature_present(3) API to determine which
+   internet protocols are supported by the kernel before trying to
+   connect to the target host.  This avoids confusing the user with
+   spurious error messages.
 
 
 This port was brought to you by (in no particular order) DARPA, NAI

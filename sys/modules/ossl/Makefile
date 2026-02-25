@@ -1,4 +1,3 @@
-
 .PATH:	${SRCTOP}/sys/crypto/openssl
 .PATH:	${SRCTOP}/sys/crypto/openssl/${MACHINE_CPUARCH}
 
@@ -26,10 +25,11 @@ SRCS.arm= \
 	sha256-armv4.S \
 	sha512-armv4.S \
 	ossl_arm.c \
-	ossl_aes_gcm.c
+	ossl_aes_gcm_neon.c
 
 SRCS.aarch64= \
 	chacha-armv8.S \
+	chacha-armv8-sve.S \
 	poly1305-armv8.S \
 	sha1-armv8.S \
 	sha256-armv8.S \
@@ -48,6 +48,7 @@ SRCS.amd64= \
 	sha256-x86_64.S \
 	sha512-x86_64.S \
 	ossl_aes_gcm.c \
+	ossl_aes_gcm_avx512.c \
 	ossl_x86.c
 
 SRCS.i386= \
@@ -58,6 +59,52 @@ SRCS.i386= \
 	sha256-586.S \
 	sha512-586.S \
 	ossl_x86.c
+
+SRCS.powerpc64le= \
+	aes-gcm-ppc.S \
+	ossl_aes_gcm.c \
+	ossl_ppccap.c \
+	aes-ppc.S \
+	aesp8-ppc.S \
+	chacha-ppc.S \
+	ecp_nistz256-ppc64.S \
+	ghashp8-ppc.S \
+	keccak1600-ppc64.S \
+	poly1305-ppc.S \
+	poly1305-ppcfp.S \
+	ppc-mont.S \
+	ppc.S \
+	ppccpuid.S \
+	sha1-ppc.S \
+	sha256-ppc.S \
+	sha256p8-ppc.S \
+	sha512-ppc.S \
+	sha512p8-ppc.S \
+	vpaes-ppc.S \
+	x25519-ppc64.S
+
+SRCS.powerpc64= \
+	aes-gcm-ppc.S \
+	ossl_aes_gcm.c \
+	ossl_ppccap.c \
+	aes-ppc.S \
+	aesp8-ppc.S \
+	chacha-ppc.S \
+	ecp_nistz256-ppc64.S \
+	ghashp8-ppc.S \
+	keccak1600-ppc64.S \
+	poly1305-ppc.S \
+	poly1305-ppcfp.S \
+	ppc-mont.S \
+	ppc.S \
+	ppccpuid.S \
+	sha1-ppc.S \
+	sha256-ppc.S \
+	sha256p8-ppc.S \
+	sha512-ppc.S \
+	sha512p8-ppc.S \
+	vpaes-ppc.S \
+	x25519-ppc64.S
 
 CFLAGS.bsaes-armv7.S+=	-D__KERNEL__
 

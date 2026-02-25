@@ -30,6 +30,7 @@
 #include "opt_ddb.h"
 #include "opt_kld.h"
 #include "opt_hwpmc_hooks.h"
+#include "opt_hwt_hooks.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -64,7 +65,7 @@
 
 #include "linker_if.h"
 
-#ifdef HWPMC_HOOKS
+#if defined(HWPMC_HOOKS) || defined(HWT_HOOKS)
 #include <sys/pmckern.h>
 #endif
 
@@ -434,7 +435,7 @@ linker_file_register_modules(linker_file_t lf)
 }
 
 static void
-linker_init_kernel_modules(void)
+linker_init_kernel_modules(void *dummy __unused)
 {
 
 	sx_xlock(&kld_sx);
@@ -657,6 +658,7 @@ linker_make_file(const char *pathname, linker_class_t lc)
 		return (NULL);
 	lf->ctors_addr = 0;
 	lf->ctors_size = 0;
+	lf->ctors_invoked = LF_NONE;
 	lf->dtors_addr = 0;
 	lf->dtors_size = 0;
 	lf->refs = 1;
@@ -701,9 +703,11 @@ linker_file_unload(linker_file_t file, int flags)
 
 	/* Give eventhandlers a chance to prevent the unload. */
 	error = 0;
-	EVENTHANDLER_INVOKE(kld_unload_try, file, &error);
-	if (error != 0)
-		return (EBUSY);
+	if ((file->flags & LINKER_FILE_LINKED) != 0) {
+		EVENTHANDLER_INVOKE(kld_unload_try, file, &error);
+		if (error != 0)
+			return (EBUSY);
+	}
 
 	KLD_DPF(FILE, ("linker_file_unload: file is unloading,"
 	    " informing modules\n"));
@@ -766,10 +770,12 @@ linker_file_unload(linker_file_t file, int flags)
 	 * Don't try to run SYSUNINITs if we are unloaded due to a
 	 * link error.
 	 */
-	if (file->flags & LINKER_FILE_LINKED) {
+	if ((file->flags & LINKER_FILE_LINKED) != 0) {
 		file->flags &= ~LINKER_FILE_LINKED;
 		linker_file_unregister_sysctls(file);
 		linker_file_sysuninit(file);
+		EVENTHANDLER_INVOKE(kld_unload, file->filename, file->address,
+		    file->size);
 	}
 	TAILQ_REMOVE(&linker_files, file, link);
 
@@ -785,9 +791,6 @@ linker_file_unload(linker_file_t file, int flags)
 	}
 
 	LINKER_UNLOAD(file);
-
-	EVENTHANDLER_INVOKE(kld_unload, file->filename, file->address,
-	    file->size);
 
 	if (file->filename) {
 		free(file->filename, M_LINKER);
@@ -904,6 +907,20 @@ linker_file_lookup_symbol_internal(linker_file_t file, const char *name,
 	sx_assert(&kld_sx, SA_XLOCKED);
 	KLD_DPF(SYM, ("linker_file_lookup_symbol: file=%p, name=%s, deps=%d\n",
 	    file, name, deps));
+
+	/*
+	 * Treat the __this_linker_file as a special symbol. This is a
+	 * global that linuxkpi uses to populate the THIS_MODULE
+	 * value.  In this case we can simply return the linker_file_t.
+	 *
+	 * Modules compiled statically into the kernel are assigned NULL.
+	 */
+	if (strcmp(name, "__this_linker_file") == 0) {
+		address = (file == linker_kernel_file) ? NULL : (caddr_t)file;
+		KLD_DPF(SYM, ("linker_file_lookup_symbol: resolving special "
+		    "symbol __this_linker_file to %p\n", address));
+		return (address);
+	}
 
 	if (LINKER_LOOKUP_SYMBOL(file, name, &sym) == 0) {
 		LINKER_SYMBOL_VALUES(file, sym, &symval);
@@ -2015,6 +2032,10 @@ linker_hints_lookup(const char *path, int pathlen, const char *modname,
 		printf("linker.hints file too large %ld\n", (long)vattr.va_size);
 		goto bad;
 	}
+	if (vattr.va_size < sizeof(ival)) {
+		printf("linker.hints file truncated\n");
+		goto bad;
+	}
 	hints = malloc(vattr.va_size, M_TEMP, M_WAITOK);
 	error = vn_rdwr(UIO_READ, nd.ni_vp, (caddr_t)hints, vattr.va_size, 0,
 	    UIO_SYSSPACE, IO_NODELOCKED, cred, NOCRED, &reclen, td);
@@ -2165,7 +2186,7 @@ linker_basename(const char *path)
 	return (filename);
 }
 
-#ifdef HWPMC_HOOKS
+#if defined(HWPMC_HOOKS) || defined(HWT_HOOKS)
 /*
  * Inform hwpmc about the set of kernel modules currently loaded.
  */

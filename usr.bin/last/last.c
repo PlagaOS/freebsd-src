@@ -36,7 +36,6 @@
 #include <sys/stat.h>
 
 #include <capsicum_helpers.h>
-#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <langinfo.h>
@@ -106,7 +105,7 @@ usage(void)
 	xo_error(
 "usage: last [-swy] [-d [[CC]YY][MMDD]hhmm[.SS]] [-f file] [-h host]\n"
 "            [-n maxrec] [-t tty] [user ...]\n");
-	exit(1);
+	exit(EXIT_FAILURE);
 }
 
 int
@@ -120,8 +119,7 @@ main(int argc, char *argv[])
 
 	argc = xo_parse_args(argc, argv);
 	if (argc < 0)
-		exit(1);
-	atexit(xo_finish_atexit);
+		exit(EXIT_FAILURE);
 
 	maxrec = -1;
 	snaptime = 0;
@@ -138,8 +136,11 @@ main(int argc, char *argv[])
 				if (p == NULL)
 					p = strchr(argv[optind], ch);
 				maxrec = atol(p);
-				if (!maxrec)
-					exit(0);
+				if (!maxrec) {
+					if (xo_finish() < 0)
+						xo_err(EXIT_FAILURE, "stdout");
+					exit(EXIT_SUCCESS);
+				}
 			}
 			break;
 		case 'd':
@@ -205,7 +206,9 @@ main(int argc, char *argv[])
 		}
 	}
 	wtmp();
-	exit(0);
+	if (xo_finish() < 0)
+		xo_err(EXIT_FAILURE, "stdout");
+	exit(EXIT_SUCCESS);
 }
 
 /*
@@ -278,8 +281,11 @@ doentry(struct utmpx *bp)
 		 * shutdown/reboot appears while we are tracking the
 		 * active range
 		 */
-		if (snaptime && snapfound)
-			exit(0);
+		if (snaptime && snapfound) {
+			if (xo_finish() < 0)
+				xo_err(EXIT_FAILURE, "stdout");
+			exit(EXIT_SUCCESS);
+		}
 		/*
 		 * don't print shutdown/reboot entries unless flagged for
 		 */
@@ -340,8 +346,11 @@ printentry(struct utmpx *bp, struct idtab *tt)
 	time_t	delta;				/* time difference */
 	time_t	t;
 
-	if (maxrec != -1 && !maxrec--)
-		exit(0);
+	if (maxrec != -1 && !maxrec--) {
+		if (xo_finish() < 0)
+			xo_err(EXIT_FAILURE, "stdout");
+		exit(EXIT_SUCCESS);
+	}
 	xo_open_instance("last");
 	t = bp->ut_tv.tv_sec;
 	tm = localtime(&t);
@@ -424,15 +433,15 @@ want(struct utmpx *bp)
 				return (YES);
 			break;
 		case HOST_TYPE:
-			if (!strcasecmp(step->name, bp->ut_host))
+			if (strcasecmp(step->name, bp->ut_host) == 0)
 				return (YES);
 			break;
 		case TTY_TYPE:
-			if (!strcmp(step->name, bp->ut_line))
+			if (strcmp(step->name, bp->ut_line) == 0)
 				return (YES);
 			break;
 		case USER_TYPE:
-			if (!strcmp(step->name, bp->ut_user))
+			if (strcmp(step->name, bp->ut_user) == 0)
 				return (YES);
 			break;
 		}
@@ -469,7 +478,7 @@ hostconv(char *arg)
 	static char *hostdot, name[MAXHOSTNAMELEN];
 	char *argdot;
 
-	if (!(argdot = strchr(arg, '.')))
+	if ((argdot = strchr(arg, '.')) == NULL)
 		return;
 	if (first) {
 		first = 0;
@@ -477,7 +486,7 @@ hostconv(char *arg)
 			xo_err(1, "gethostname");
 		hostdot = strchr(name, '.');
 	}
-	if (hostdot && !strcasecmp(hostdot, argdot))
+	if (hostdot != NULL && strcasecmp(hostdot, argdot) == 0)
 		*argdot = '\0';
 }
 
@@ -495,19 +504,16 @@ ttyconv(char *arg)
 	 * a two character suffix.
 	 */
 	if (strlen(arg) == 2) {
-		/* either 6 for "ttyxx" or 8 for "console" */
-		if ((mval = malloc(8)) == NULL)
+		if (strcmp(arg, "co") == 0)
+			mval = strdup("console");
+		else
+			asprintf(&mval, "tty%s", arg);
+		if (mval == NULL)
 			xo_errx(1, "malloc failure");
-		if (!strcmp(arg, "co"))
-			(void)strcpy(mval, "console");
-		else {
-			(void)strcpy(mval, "tty");
-			(void)strcpy(mval + 3, arg);
-		}
 		return (mval);
 	}
-	if (!strncmp(arg, _PATH_DEV, sizeof(_PATH_DEV) - 1))
-		return (arg + 5);
+	if (strncmp(arg, _PATH_DEV, strlen(_PATH_DEV)) == 0)
+		return (arg + strlen(_PATH_DEV));
 	return (arg);
 }
 

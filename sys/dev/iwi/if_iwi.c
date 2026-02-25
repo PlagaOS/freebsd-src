@@ -371,6 +371,8 @@ iwi_attach(device_t dev)
 #endif
 	    ;
 
+	ic->ic_flags_ext |= IEEE80211_FEXT_SEQNO_OFFLOAD;
+
 	/* read MAC address from EEPROM */
 	val = iwi_read_prom_word(sc, IWI_EEPROM_MAC + 0);
 	ic->ic_macaddr[0] = val & 0xff;
@@ -927,8 +929,8 @@ iwi_media_status(if_t ifp, struct ifmediareq *imr)
 
 	/* read current transmission rate from adapter */
 	ni = ieee80211_ref_node(vap->iv_bss);
-	ni->ni_txrate =
-	    iwi_cvtrate(CSR_READ_4(sc, IWI_CSR_CURRENT_TX_RATE));
+	ieee80211_node_set_txrate_dot11rate(ni,
+	    iwi_cvtrate(CSR_READ_4(sc, IWI_CSR_CURRENT_TX_RATE)));
 	ieee80211_free_node(ni);
 	ieee80211_media_status(ifp, imr);
 }
@@ -1833,6 +1835,8 @@ iwi_tx_start(struct iwi_softc *sc, struct mbuf *m0, struct ieee80211_node *ni,
 		}
 	} else
 		staid = 0;
+
+	ieee80211_output_seqno_assign(ni, -1, m0);
 
 	if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
 		k = ieee80211_crypto_encap(ni, m0);

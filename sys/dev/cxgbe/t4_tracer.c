@@ -123,9 +123,8 @@ static int
 t4_cloner_match(struct if_clone *ifc, const char *name)
 {
 
-	if (strncmp(name, "t4nex", 5) != 0 &&
-	    strncmp(name, "t5nex", 5) != 0 &&
-	    strncmp(name, "t6nex", 5) != 0)
+	if (strncmp(name, "t4nex", 5) != 0 && strncmp(name, "t5nex", 5) != 0 &&
+	    strncmp(name, "t6nex", 5) != 0 && strncmp(name, "chnex", 5) != 0)
 		return (0);
 	if (name[5] < '0' || name[5] > '9')
 		return (0);
@@ -167,11 +166,6 @@ t4_cloner_create(struct if_clone *ifc, char *name, size_t len, caddr_t params)
 	}
 
 	ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		rc = ENOMEM;
-		goto done;
-	}
-
 	/* Note that if_xname is identical to the nexus nameunit */
 	if_initname(ifp, name, -1);
 	if_setdname(ifp, t4_cloner_name);

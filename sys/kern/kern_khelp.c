@@ -253,7 +253,7 @@ khelp_get_id(char *hname)
 }
 
 int
-khelp_add_hhook(struct hookinfo *hki, uint32_t flags)
+khelp_add_hhook(const struct hookinfo *hki, uint32_t flags)
 {
 	int error;
 
@@ -267,7 +267,7 @@ khelp_add_hhook(struct hookinfo *hki, uint32_t flags)
 }
 
 int
-khelp_remove_hhook(struct hookinfo *hki)
+khelp_remove_hhook(const struct hookinfo *hki)
 {
 	int error;
 
@@ -330,10 +330,6 @@ khelp_modevent(module_t mod, int event_type, void *data)
 			kmd->helper->h_zone = uma_zcreate(kmd->name,
 			    kmd->uma_zsize, kmd->umactor, kmd->umadtor, NULL,
 			    NULL, 0, 0);
-			if (kmd->helper->h_zone == NULL) {
-				error = ENOMEM;
-				break;
-			}
 		}
 		strlcpy(kmd->helper->h_name, kmd->name, HELPER_NAME_MAXLEN);
 		kmd->helper->h_hooks = kmd->hooks;

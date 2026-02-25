@@ -1,6 +1,4 @@
-
 SRCDIR=${SRCTOP}/sys/contrib/openzfs/module
-INCDIR=${SRCTOP}/sys/contrib/openzfs/include
 
 KMOD=	zfs
 
@@ -16,6 +14,7 @@ KMOD=	zfs
 	${SRCDIR}/icp/asm-ppc64/sha2 \
 	${SRCDIR}/icp/asm-ppc64/blake3 \
 	${SRCDIR}/icp/asm-x86_64/blake3 \
+	${SRCDIR}/icp/asm-x86_64/modes \
 	${SRCDIR}/icp/asm-x86_64/sha2 \
 	${SRCDIR}/os/freebsd/spl \
 	${SRCDIR}/os/freebsd/zfs \
@@ -27,11 +26,11 @@ KMOD=	zfs
 	${SRCDIR}/zstd/lib/compress \
 	${SRCDIR}/zstd/lib/decompress
 
-CFLAGS+= -I${INCDIR}
+CFLAGS+= -I${ZINCDIR}
 CFLAGS+= -I${SRCDIR}/icp/include
-CFLAGS+= -I${INCDIR}/os/freebsd
-CFLAGS+= -I${INCDIR}/os/freebsd/spl
-CFLAGS+= -I${INCDIR}/os/freebsd/zfs
+CFLAGS+= -I${ZINCDIR}/os/freebsd
+CFLAGS+= -I${ZINCDIR}/os/freebsd/spl
+CFLAGS+= -I${ZINCDIR}/os/freebsd/zfs
 CFLAGS+= -I${SRCDIR}/zstd/include
 CFLAGS+= -I${.CURDIR}
 
@@ -41,11 +40,12 @@ CFLAGS+= -D__KERNEL__ -DFREEBSD_NAMECACHE -DBUILDING_ZFS \
 
 .if ${MACHINE_ARCH} == "amd64"
 CFLAGS+= -D__x86_64 -DHAVE_SSE2 -DHAVE_SSSE3 -DHAVE_SSE4_1 -DHAVE_SSE4_2 \
-	-DHAVE_AVX -DHAVE_AVX2 -DHAVE_AVX512F -DHAVE_AVX512VL -DHAVE_AVX512BW
+	-DHAVE_AVX -DHAVE_AVX2 -DHAVE_AVX512F -DHAVE_AVX512VL -DHAVE_AVX512BW \
+	-DHAVE_VAES -DHAVE_VPCLMULQDQ
 .endif
 
 .if ${MACHINE_ARCH} == "i386" || ${MACHINE_ARCH} == "powerpc" || \
-	${MACHINE_ARCH} == "powerpcspe" || ${MACHINE_ARCH} == "arm"
+	${MACHINE_ARCH} == "arm"
 CFLAGS+= -DBITS_PER_LONG=32
 .else
 CFLAGS+= -DBITS_PER_LONG=64
@@ -83,6 +83,9 @@ SRCS+=	blake3_avx2.S \
 	blake3_avx512.S \
 	blake3_sse2.S \
 	blake3_sse41.S
+
+#icp/asm-x86_64/modes
+SRCS+=	aesni-gcm-avx2-vaes.S
 .endif
 
 #icp/algs/sha2
@@ -172,7 +175,7 @@ SRCS+=	acl_common.c \
 
 
 .if ${MACHINE_ARCH} == "i386" || ${MACHINE_ARCH} == "powerpc" || \
-	${MACHINE_ARCH} == "powerpcspe" || ${MACHINE_ARCH} == "arm"
+	${MACHINE_ARCH} == "arm"
 SRCS+= spl_atomic.c
 .endif
 
@@ -186,11 +189,11 @@ SRCS+=	abd_os.c \
 	kmod_core.c \
 	spa_os.c \
 	sysctl_os.c \
-	vdev_file.c \
 	vdev_geom.c \
 	vdev_label_os.c \
 	zfs_acl.c \
 	zfs_ctldir.c \
+	zfs_crrd.c \
 	zfs_debug.c \
 	zfs_dir.c \
 	zfs_ioctl_compat.c \
@@ -198,13 +201,12 @@ SRCS+=	abd_os.c \
 	zfs_racct.c \
 	zfs_vfsops.c \
 	zfs_vnops_os.c \
-	zfs_znode.c \
+	zfs_znode_os.c \
 	zio_crypt.c \
 	zvol_os.c
 
 #unicode
-SRCS+=	uconv.c \
-	u8_textprep.c
+SRCS+=	u8_textprep.c
 
 #zcommon
 SRCS+=	zfeature_common.c \
@@ -218,6 +220,7 @@ SRCS+=	zfeature_common.c \
 	zfs_fletcher_superscalar4.c \
 	zfs_namecheck.c \
 	zfs_prop.c \
+	zfs_valstr.c \
 	zpool_prop.c \
 	zprop_common.c
 
@@ -238,9 +241,11 @@ SRCS+=	abd.c \
 	bqueue.c \
 	dataset_kstats.c \
 	ddt.c \
+	ddt_log.c \
 	ddt_stats.c \
 	ddt_zap.c \
 	dmu.c \
+	dmu_direct.c \
 	dmu_diff.c \
 	dmu_object.c \
 	dmu_objset.c \
@@ -297,6 +302,7 @@ SRCS+=	abd.c \
 	vdev.c \
 	vdev_draid.c \
 	vdev_draid_rand.c \
+	vdev_file.c \
 	vdev_indirect.c \
 	vdev_indirect_births.c \
 	vdev_indirect_mapping.c \
@@ -342,6 +348,7 @@ SRCS+=	abd.c \
 	zfs_rlock.c \
 	zfs_sa.c \
 	zfs_vnops.c \
+	zfs_znode.c \
 	zil.c \
 	zio.c \
 	zio_checksum.c \
@@ -380,7 +387,7 @@ SRCS+=	zfs_zstd.c \
 .include <bsd.kmod.mk>
 
 CFLAGS+= -include ${SRCTOP}/sys/cddl/compat/opensolaris/sys/debug_compat.h
-CFLAGS+= -include ${INCDIR}/os/freebsd/spl/sys/ccompile.h
+CFLAGS+= -include ${ZINCDIR}/os/freebsd/spl/sys/ccompile.h
 CFLAGS+= -include ${SRCTOP}/sys/modules/zfs/static_ccompile.h
 
 CFLAGS.sysctl_os.c= -include ${SRCTOP}/sys/modules/zfs/zfs_config.h
@@ -390,6 +397,7 @@ CFLAGS.gcc+= -Wno-pointer-to-int-cast
 
 CFLAGS.abd.c= -Wno-cast-qual
 CFLAGS.ddt.c= -Wno-cast-qual
+CFLAGS.ddt_log.c= -Wno-cast-qual -Wno-pointer-arith
 CFLAGS.ddt_zap.c= -Wno-cast-qual
 CFLAGS.dmu.c= -Wno-cast-qual
 CFLAGS.dmu_traverse.c= -Wno-cast-qual
@@ -466,8 +474,6 @@ CFLAGS.zstd_ldm.c= -U__BMI__ -fno-tree-vectorize ${NO_WBITWISE_INSTEAD_OF_LOGICA
 CFLAGS.zstd_opt.c= -U__BMI__ -fno-tree-vectorize ${NO_WBITWISE_INSTEAD_OF_LOGICAL}
 
 .if ${MACHINE_ARCH} == "aarch64"
-__ZFS_ZSTD_AARCH64_FLAGS= -include ${SRCDIR}/zstd/include/aarch64_compat.h
-CFLAGS.zstd.c+= ${__ZFS_ZSTD_AARCH64_FLAGS}
 CFLAGS.entropy_common.c+= ${__ZFS_ZSTD_AARCH64_FLAGS}
 CFLAGS.error_private.c+= ${__ZFS_ZSTD_AARCH64_FLAGS}
 CFLAGS.fse_compress.c+= ${__ZFS_ZSTD_AARCH64_FLAGS}

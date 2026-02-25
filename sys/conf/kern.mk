@@ -37,6 +37,9 @@ NO_WBITWISE_INSTEAD_OF_LOGICAL=	-Wno-bitwise-instead-of-logical
 NO_WSTRICT_PROTOTYPES=		-Wno-strict-prototypes
 NO_WDEPRECATED_NON_PROTOTYPE=	-Wno-deprecated-non-prototype
 .endif
+.if ${COMPILER_VERSION} >= 210000
+NO_WDEFAULT_CONST_INIT_FIELD_UNSAFE= -Wno-default-const-init-field-unsafe
+.endif
 # Several other warnings which might be useful in some cases, but not severe
 # enough to error out the whole kernel build.  Display them anyway, so there is
 # some incentive to fix them eventually.
@@ -143,6 +146,11 @@ CFLAGS += -mgeneral-regs-only
 CFLAGS += -ffixed-x18
 # Build with BTI+PAC
 CFLAGS += -mbranch-protection=standard
+.if ${LINKER_FEATURES:Mbti-report}
+LDFLAGS += -Wl,-zbti-report=error
+.endif
+# TODO: support outline atomics
+CFLAGS += -mno-outline-atomics
 INLINE_LIMIT?=	8000
 .endif
 
@@ -158,7 +166,7 @@ INLINE_LIMIT?=	8000
 # code model as "medium" and "medany" respectively.
 #
 .if ${MACHINE_CPUARCH} == "riscv"
-CFLAGS+=	-march=rv64imafdc
+CFLAGS+=	-march=rv64imafdch_zifencei
 CFLAGS+=	-mabi=lp64
 CFLAGS.clang+=	-mcmodel=medium
 CFLAGS.gcc+=	-mcmodel=medany
@@ -200,10 +208,6 @@ CFLAGS+=	-mno-altivec -msoft-float
 INLINE_LIMIT?=	15000
 .endif
 
-.if ${MACHINE_ARCH} == "powerpcspe"
-CFLAGS.gcc+=	-mno-spe
-.endif
-
 #
 # Use dot symbols (or, better, the V2 ELF ABI) on powerpc64 to make
 # DDB happy. ELFv2, if available, has some other efficiency benefits.
@@ -228,7 +232,7 @@ CFLAGS+=	-ffreestanding
 CFLAGS+=	-fwrapv
 
 #
-# GCC SSP support
+# Stack Smashing Protection (SSP) support
 #
 .if ${MK_SSP} != "no"
 CFLAGS+=	-fstack-protector
@@ -241,6 +245,86 @@ CFLAGS+=	-fstack-protector
     ${MK_KERNEL_RETPOLINE} != "no"
 CFLAGS+=	-mretpoline
 .endif
+
+#
+# Kernel Address SANitizer support
+#
+.if !empty(KASAN_ENABLED)
+SAN_CFLAGS+=	-DSAN_NEEDS_INTERCEPTORS -DSAN_INTERCEPTOR_PREFIX=kasan \
+		-fsanitize=kernel-address
+.if ${COMPILER_TYPE} == "clang"
+SAN_CFLAGS+=	-mllvm -asan-stack=true \
+		-mllvm -asan-instrument-dynamic-allocas=true \
+		-mllvm -asan-globals=true \
+		-mllvm -asan-use-after-scope=true \
+		-mllvm -asan-instrumentation-with-call-threshold=0 \
+		-mllvm -asan-instrument-byval=false
+.endif
+
+.if ${MACHINE_CPUARCH} == "aarch64"
+# KASAN/ARM64 TODO: -asan-mapping-offset is calculated from:
+#	   (VM_KERNEL_MIN_ADDRESS >> KASAN_SHADOW_SCALE_SHIFT) + $offset = KASAN_MIN_ADDRESS
+#
+#	This is different than amd64, where we have a different
+#	KASAN_MIN_ADDRESS, and this offset value should eventually be
+#	upstreamed similar to: https://reviews.llvm.org/D98285
+#
+.if ${COMPILER_TYPE} == "clang"
+SAN_CFLAGS+=	-mllvm -asan-mapping-offset=0xdfff208000000000
+.else
+SAN_CFLAGS+=	-fasan-shadow-offset=0xdfff208000000000
+.endif
+.elif ${MACHINE_CPUARCH} == "amd64" && \
+      ${COMPILER_TYPE} == "clang" && ${COMPILER_VERSION} >= 180000
+# Work around https://github.com/llvm/llvm-project/issues/87923, which leads to
+# an assertion failure compiling dtrace.c with asan enabled.
+SAN_CFLAGS+=	-mllvm -asan-use-stack-safety=0
+.endif
+.endif # !empty(KASAN_ENABLED)
+
+#
+# Kernel Concurrency SANitizer support
+#
+.if !empty(KCSAN_ENABLED)
+SAN_CFLAGS+=	-DSAN_NEEDS_INTERCEPTORS -DSAN_INTERCEPTOR_PREFIX=kcsan \
+		-fsanitize=thread
+.endif
+
+#
+# Kernel Memory SANitizer support
+#
+.if !empty(KMSAN_ENABLED)
+# Disable -fno-sanitize-memory-param-retval until interceptors have been
+# updated to work properly with it.
+MSAN_CFLAGS+=	-DSAN_NEEDS_INTERCEPTORS -DSAN_INTERCEPTOR_PREFIX=kmsan \
+		-fsanitize=kernel-memory
+.if ${COMPILER_TYPE} == "clang" && ${COMPILER_VERSION} >= 160000
+MSAN_CFLAGS+=	-fno-sanitize-memory-param-retval
+.endif
+SAN_CFLAGS+=	${MSAN_CFLAGS}
+.endif # !empty(KMSAN_ENABLED)
+
+#
+# Kernel Undefined Behavior SANitizer support
+#
+.if !empty(KUBSAN_ENABLED)
+SAN_CFLAGS+=	-fsanitize=undefined
+.endif
+
+#
+# Generic Kernel Coverage support
+#
+.if !empty(COVERAGE_ENABLED)
+.if ${COMPILER_TYPE} == "clang" || \
+    (${COMPILER_TYPE} == "gcc" && ${COMPILER_VERSION} >= 80100)
+SAN_CFLAGS+=	-fsanitize-coverage=trace-pc,trace-cmp
+.else
+SAN_CFLAGS+=	-fsanitize-coverage=trace-pc
+.endif
+.endif # !empty(COVERAGE_ENABLED)
+
+# Add the sanitizer C flags
+CFLAGS+=	${SAN_CFLAGS}
 
 #
 # Initialize stack variables on function entry
@@ -282,19 +366,17 @@ PHONY_NOTMAIN = afterdepend afterinstall all beforedepend beforeinstall \
 .PHONY: ${PHONY_NOTMAIN}
 .NOTMAIN: ${PHONY_NOTMAIN}
 
-CSTD?=		gnu99
+CSTD?=		gnu17
 
-.if ${CSTD} == "k&r"
-CFLAGS+=        -traditional
-.elif ${CSTD} == "c89" || ${CSTD} == "c90"
-CFLAGS+=        -std=iso9899:1990
-.elif ${CSTD} == "c94" || ${CSTD} == "c95"
-CFLAGS+=        -std=iso9899:199409
-.elif ${CSTD} == "c99"
-CFLAGS+=        -std=iso9899:1999
+# c99/gnu99 is the minimum C standard version supported for kernel build
+.if ${CSTD} == "k&r" || ${CSTD} == "c89" || ${CSTD} == "c90" || \
+    ${CSTD} == "c94" || ${CSTD} == "c95"
+.error "Only c99/gnu99 or later is supported"
 .else # CSTD
 CFLAGS+=        -std=${CSTD}
 .endif # CSTD
+
+NOSAN_CFLAGS= ${CFLAGS:N-fsanitize*:N-fno-sanitize*:N-fasan-shadow-offset*}
 
 # Please keep this if in sync with bsd.sys.mk
 .if ${LD} != "ld" && (${CC:[1]:H} != ${LD:[1]:H} || ${LD:[1]:T} != "ld")
@@ -321,11 +403,9 @@ CCLDFLAGS+=	-fuse-ld=${LD:[1]:S/^ld.//1W}
 LD_EMULATION_aarch64=aarch64elf
 LD_EMULATION_amd64=elf_x86_64_fbsd
 LD_EMULATION_arm=armelf_fbsd
-LD_EMULATION_armv6=armelf_fbsd
 LD_EMULATION_armv7=armelf_fbsd
 LD_EMULATION_i386=elf_i386_fbsd
 LD_EMULATION_powerpc= elf32ppc_fbsd
-LD_EMULATION_powerpcspe= elf32ppc_fbsd
 LD_EMULATION_powerpc64= elf64ppc_fbsd
 LD_EMULATION_powerpc64le= elf64lppc_fbsd
 LD_EMULATION_riscv64= elf64lriscv

@@ -48,7 +48,10 @@
 
 #include "ifconfig.h"
 
-#define	GIFBITS	"\020\2IGNORE_SOURCE"
+static const char *GIFBITS[] = {
+	[0] = "NOCLAMP",
+	[1] = "IGNORE_SOURCE",
+};
 
 static void
 gif_status(if_ctx *ctx)
@@ -60,7 +63,8 @@ gif_status(if_ctx *ctx)
 		return;
 	if (opts == 0)
 		return;
-	printb("\toptions", opts, GIFBITS);
+	printf("\toptions=%x", opts);
+	print_bits("options", &opts, 1, GIFBITS, nitems(GIFBITS));
 	putchar('\n');
 }
 
@@ -87,6 +91,8 @@ setgifopts(if_ctx *ctx, const char *val __unused, int d)
 }
 
 static struct cmd gif_cmds[] = {
+	DEF_CMD("noclamp",		GIF_NOCLAMP,		setgifopts),
+	DEF_CMD("-noclamp",		-GIF_NOCLAMP,		setgifopts),
 	DEF_CMD("ignore_source",	GIF_IGNORE_SOURCE,	setgifopts),
 	DEF_CMD("-ignore_source",	-GIF_IGNORE_SOURCE,	setgifopts),
 };

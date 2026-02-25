@@ -25,8 +25,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include <sys/random.h>
+#include <dev/random/randomdev.h>
 
 #include "tpm20.h"
 
@@ -42,9 +42,10 @@
 MALLOC_DEFINE(M_TPM20, "tpm_buffer", "buffer for tpm 2.0 driver");
 
 static void tpm20_discard_buffer(void *arg);
-#ifdef TPM_HARVEST
+#if defined TPM_HARVEST || defined RANDOM_ENABLE_TPM
 static void tpm20_harvest(void *arg, int unused);
 #endif
+static int  tpm20_restart(device_t dev, bool clear);
 static int  tpm20_save_state(device_t dev, bool suspend);
 
 static d_open_t		tpm20_open;
@@ -68,6 +69,7 @@ tpm20_read(struct cdev *dev, struct uio *uio, int flags)
 {
 	struct tpm_sc *sc;
 	size_t bytes_to_transfer;
+	size_t offset;
 	int result = 0;
 
 	sc = (struct tpm_sc *)dev->si_drv1;
@@ -80,10 +82,10 @@ tpm20_read(struct cdev *dev, struct uio *uio, int flags)
 	}
 
 	bytes_to_transfer = MIN(sc->pending_data_length, uio->uio_resid);
+	offset = sc->total_length - sc->pending_data_length;
 	if (bytes_to_transfer > 0) {
-		result = uiomove((caddr_t) sc->buf, bytes_to_transfer, uio);
-		memset(sc->buf, 0, TPM_BUFSIZE);
-		sc->pending_data_length = 0;
+		result = uiomove((caddr_t) sc->buf + offset, bytes_to_transfer, uio);
+		sc->pending_data_length -= bytes_to_transfer;
 		cv_signal(&sc->buf_cv);
 	} else {
 		result = ETIMEDOUT;
@@ -127,7 +129,7 @@ tpm20_write(struct cdev *dev, struct uio *uio, int flags)
 		return (result);
 	}
 
-	result = sc->transmit(sc, byte_count);
+	result = TPM_TRANSMIT(sc->dev, byte_count);
 
 	if (result == 0) {
 		callout_reset(&sc->discard_buffer_callout,
@@ -152,6 +154,7 @@ tpm20_discard_buffer(void *arg)
 
 	memset(sc->buf, 0, TPM_BUFSIZE);
 	sc->pending_data_length = 0;
+	sc->total_length = 0;
 
 	cv_signal(&sc->buf_cv);
 	sx_xunlock(&sc->dev_lock);
@@ -182,6 +185,13 @@ tpm20_ioctl(struct cdev *dev, u_long cmd, caddr_t data,
 	return (ENOTTY);
 }
 
+#if defined TPM_HARVEST || defined RANDOM_ENABLE_TPM
+static const struct random_source random_tpm = {
+	.rs_ident = "TPM",
+	.rs_source = RANDOM_PURE_TPM,
+};
+#endif
+
 int
 tpm20_init(struct tpm_sc *sc)
 {
@@ -191,6 +201,7 @@ tpm20_init(struct tpm_sc *sc)
 	cv_init(&sc->buf_cv, "TPM buffer cv");
 	callout_init(&sc->discard_buffer_callout, 1);
 	sc->pending_data_length = 0;
+	sc->total_length = 0;
 
 	make_dev_args_init(&args);
 	args.mda_devsw = &tpm20_cdevsw;
@@ -202,7 +213,8 @@ tpm20_init(struct tpm_sc *sc)
 	if (result != 0)
 		tpm20_release(sc);
 
-#ifdef TPM_HARVEST
+#if defined TPM_HARVEST || defined RANDOM_ENABLE_TPM
+	random_source_register(&random_tpm);
 	TIMEOUT_TASK_INIT(taskqueue_thread, &sc->harvest_task, 0,
 	    tpm20_harvest, sc);
 	taskqueue_enqueue_timeout(taskqueue_thread, &sc->harvest_task, 0);
@@ -216,9 +228,10 @@ void
 tpm20_release(struct tpm_sc *sc)
 {
 
-#ifdef TPM_HARVEST
+#if defined TPM_HARVEST || defined RANDOM_ENABLE_TPM
 	if (device_is_attached(sc->dev))
 		taskqueue_drain_timeout(taskqueue_thread, &sc->harvest_task);
+	random_source_deregister(&random_tpm);
 #endif
 
 	if (sc->buf != NULL)
@@ -231,8 +244,30 @@ tpm20_release(struct tpm_sc *sc)
 }
 
 int
+tpm20_resume(device_t dev)
+{
+
+	tpm20_restart(dev, false);
+
+#if defined TPM_HARVEST || defined RANDOM_ENABLE_TPM
+	struct tpm_sc *sc;
+
+	sc = device_get_softc(dev);
+	taskqueue_enqueue_timeout(taskqueue_thread, &sc->harvest_task,
+	    hz * TPM_HARVEST_INTERVAL);
+#endif
+	return (0);
+}
+
+int
 tpm20_suspend(device_t dev)
 {
+#if defined TPM_HARVEST || defined RANDOM_ENABLE_TPM
+	struct tpm_sc *sc;
+
+	sc = device_get_softc(dev);
+	taskqueue_drain_timeout(taskqueue_thread, &sc->harvest_task);
+#endif
 	return (tpm20_save_state(dev, true));
 }
 
@@ -242,7 +277,7 @@ tpm20_shutdown(device_t dev)
 	return (tpm20_save_state(dev, false));
 }
 
-#ifdef TPM_HARVEST
+#if defined TPM_HARVEST || defined RANDOM_ENABLE_TPM
 /*
  * Get TPM_HARVEST_SIZE random bytes and add them
  * into system entropy pool.
@@ -267,7 +302,7 @@ tpm20_harvest(void *arg, int unused)
 		cv_wait(&sc->buf_cv, &sc->dev_lock);
 
 	memcpy(sc->buf, cmd, sizeof(cmd));
-	result = sc->transmit(sc, sizeof(cmd));
+	result = TPM_TRANSMIT(sc->dev, sizeof(cmd));
 	if (result != 0) {
 		sx_xunlock(&sc->dev_lock);
 		return;
@@ -275,6 +310,7 @@ tpm20_harvest(void *arg, int unused)
 
 	/* Ignore response size */
 	sc->pending_data_length = 0;
+	sc->total_length = 0;
 
 	/* The number of random bytes we got is placed right after the header */
 	entropy_size = (uint16_t) sc->buf[TPM_HEADER_SIZE + 1];
@@ -293,6 +329,43 @@ tpm20_harvest(void *arg, int unused)
 	    hz * TPM_HARVEST_INTERVAL);
 }
 #endif	/* TPM_HARVEST */
+
+static int
+tpm20_restart(device_t dev, bool clear)
+{
+	struct tpm_sc *sc;
+	uint8_t startup_cmd[] = {
+		0x80, 0x01,             /* TPM_ST_NO_SESSIONS tag*/
+		0x00, 0x00, 0x00, 0x0C, /* cmd length */
+		0x00, 0x00, 0x01, 0x44, /* cmd TPM_CC_Startup */
+		0x00, 0x01              /* TPM_SU_STATE */
+	};
+
+	sc = device_get_softc(dev);
+
+	/*
+	 * Inform the TPM whether we are resetting or resuming.
+	 */
+	if (clear)
+		startup_cmd[11] = 0; /* TPM_SU_CLEAR */
+
+	if (sc == NULL || sc->buf == NULL)
+		return (0);
+
+	sx_xlock(&sc->dev_lock);
+
+	MPASS(sc->pending_data_length == 0);
+	memcpy(sc->buf, startup_cmd, sizeof(startup_cmd));
+
+	/* XXX Ignoring both TPM_TRANSMIT return and tpm's response */
+	TPM_TRANSMIT(sc->dev, sizeof(startup_cmd));
+	sc->pending_data_length = 0;
+	sc->total_length = 0;
+
+	sx_xunlock(&sc->dev_lock);
+
+	return (0);
+}
 
 static int
 tpm20_save_state(device_t dev, bool suspend)
@@ -318,8 +391,13 @@ tpm20_save_state(device_t dev, bool suspend)
 
 	sx_xlock(&sc->dev_lock);
 
+	MPASS(sc->pending_data_length == 0);
 	memcpy(sc->buf, save_cmd, sizeof(save_cmd));
-	sc->transmit(sc, sizeof(save_cmd));
+
+	/* XXX Ignoring both TPM_TRANSMIT return and tpm's response */
+	TPM_TRANSMIT(sc->dev, sizeof(save_cmd));
+	sc->pending_data_length = 0;
+	sc->total_length = 0;
 
 	sx_xunlock(&sc->dev_lock);
 

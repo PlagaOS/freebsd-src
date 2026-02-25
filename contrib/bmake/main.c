@@ -1,4 +1,4 @@
-/*	$NetBSD: main.c,v 1.612 2024/03/10 02:53:37 sjg Exp $	*/
+/*	$NetBSD: main.c,v 1.662 2025/08/09 23:13:28 rillig Exp $	*/
 
 /*
  * Copyright (c) 1988, 1989, 1990, 1993
@@ -83,9 +83,6 @@
  *	Fatal		Print an error message and exit.
  *
  *	Punt		Abort all jobs and exit with a message.
- *
- *	Finish		Finish things up by printing the number of errors
- *			that occurred, and exit.
  */
 
 #include <sys/types.h>
@@ -107,11 +104,14 @@
 #include "make.h"
 #include "dir.h"
 #include "job.h"
+#ifdef USE_META
+# include "meta.h"
+#endif
 #include "pathnames.h"
 #include "trace.h"
 
 /*	"@(#)main.c	8.3 (Berkeley) 3/19/94"	*/
-MAKE_RCSID("$NetBSD: main.c,v 1.612 2024/03/10 02:53:37 sjg Exp $");
+MAKE_RCSID("$NetBSD: main.c,v 1.662 2025/08/09 23:13:28 rillig Exp $");
 #if defined(MAKE_NATIVE)
 __COPYRIGHT("@(#) Copyright (c) 1988, 1989, 1990, 1993 "
 	    "The Regents of the University of California.  "
@@ -130,8 +130,9 @@ bool deleteOnError;		/* .DELETE_ON_ERROR: set */
 
 static int maxJobTokens;	/* -j argument */
 static bool enterFlagObj;	/* -w and objdir != srcdir */
+static bool bogusJflag;		/* -J invalid */
 
-static int jp_0 = -1, jp_1 = -1; /* ends of parent job pipe */
+static int tokenPoolReader = -1, tokenPoolWriter = -1;
 bool doing_depend;		/* Set while reading .depend */
 static bool jobsRunning;	/* true if the jobs might be running */
 static const char *tracefile;
@@ -364,7 +365,8 @@ MainParseArgChdir(const char *argvalue)
 		exit(2);	/* Not 1 so -q can distinguish error */
 	}
 	if (getcwd(curdir, MAXPATHLEN) == NULL) {
-		(void)fprintf(stderr, "%s: %s.\n", progname, strerror(errno));
+		(void)fprintf(stderr, "%s: getcwd: %s\n",
+		    progname, strerror(errno));
 		exit(2);
 	}
 	if (!IsRelativePath(argvalue) &&
@@ -372,7 +374,7 @@ MainParseArgChdir(const char *argvalue)
 	    stat(curdir, &sb) != -1 &&
 	    sa.st_ino == sb.st_ino &&
 	    sa.st_dev == sb.st_dev)
-		strncpy(curdir, argvalue, MAXPATHLEN);
+		snprintf(curdir, MAXPATHLEN, "%s", argvalue);
 	ignorePWD = true;
 }
 
@@ -380,17 +382,19 @@ static void
 MainParseArgJobsInternal(const char *argvalue)
 {
 	char end;
-	if (sscanf(argvalue, "%d,%d%c", &jp_0, &jp_1, &end) != 2) {
+	if (sscanf(argvalue, "%d,%d%c",
+	    &tokenPoolReader, &tokenPoolWriter, &end) != 2) {
 		(void)fprintf(stderr,
-		    "%s: internal error -- J option malformed (%s)\n",
-		    progname, argvalue);
-		usage();
+		    "%s: error: invalid internal option "
+		    "\"-J %s\" in \"%s\"\n",
+		    progname, argvalue, curdir);
+		exit(2);
 	}
-	if ((fcntl(jp_0, F_GETFD, 0) < 0) ||
-	    (fcntl(jp_1, F_GETFD, 0) < 0)) {
-		jp_0 = -1;
-		jp_1 = -1;
-		opts.compatMake = true;
+	if (fcntl(tokenPoolReader, F_GETFD, 0) < 0 ||
+	    fcntl(tokenPoolWriter, F_GETFD, 0) < 0) {
+		tokenPoolReader = -1;
+		tokenPoolWriter = -1;
+		bogusJflag = true;
 	} else {
 		Global_Append(MAKEFLAGS, "-J");
 		Global_Append(MAKEFLAGS, argvalue);
@@ -597,7 +601,7 @@ MainParseArgs(int argc, char **argv)
 	bool inOption, dashDash = false;
 
 	const char *optspecs = "BC:D:I:J:NST:V:WXd:ef:ij:km:nqrstv:w";
-/* Can't actually use getopt(3) because rescanning is not portable */
+	/* Can't actually use getopt(3) because rescanning is not portable */
 
 rearg:
 	inOption = false;
@@ -711,7 +715,9 @@ Main_ParseArgLine(const char *line)
 		return;
 	}
 	free(buf);
+	EvalStack_PushMakeflags(line);
 	MainParseArgs((int)words.len, words.words);
+	EvalStack_Pop();
 
 	Words_Free(words);
 }
@@ -741,8 +747,12 @@ Main_SetObjdir(bool writable, const char *fmt, ...)
 		return false;
 
 	if ((writable && access(path, W_OK) != 0) || chdir(path) != 0) {
-		(void)fprintf(stderr, "%s: warning: %s: %s.\n",
+		(void)fprintf(stderr, "%s: warning: %s: %s\n",
 		    progname, path, strerror(errno));
+		/* Allow debugging how we got here - not always obvious */
+		if (GetBooleanExpr("${MAKE_DEBUG_OBJDIR_CHECK_WRITABLE}",
+			false))
+			PrintOnError(NULL, "");
 		return false;
 	}
 
@@ -766,7 +776,7 @@ SetVarObjdir(bool writable, const char *var, const char *suffix)
 		return false;
 	}
 
-	Var_Expand(&path, SCOPE_GLOBAL, VARE_WANTRES);
+	Var_Expand(&path, SCOPE_GLOBAL, VARE_EVAL);
 
 	(void)Main_SetObjdir(writable, "%s%s", path.str, suffix);
 
@@ -789,7 +799,6 @@ AppendWords(StringList *lp, char *str)
 }
 
 #ifdef SIGINFO
-/*ARGSUSED*/
 static void
 siginfo(int signo MAKE_ATTR_UNUSED)
 {
@@ -808,8 +817,7 @@ siginfo(int signo MAKE_ATTR_UNUSED)
 static void
 MakeMode(void)
 {
-	char *mode = Var_Subst("${.MAKE.MODE:tl}",
-	    SCOPE_GLOBAL, VARE_WANTRES);
+	char *mode = Var_Subst("${.MAKE.MODE:tl}", SCOPE_GLOBAL, VARE_EVAL);
 	/* TODO: handle errors */
 
 	if (mode[0] != '\0') {
@@ -829,17 +837,17 @@ MakeMode(void)
 }
 
 static void
-PrintVar(const char *varname, bool expandVars)
+PrintVariable(const char *varname, bool expandVars)
 {
 	if (strchr(varname, '$') != NULL) {
-		char *evalue = Var_Subst(varname, SCOPE_GLOBAL, VARE_WANTRES);
+		char *evalue = Var_Subst(varname, SCOPE_GLOBAL, VARE_EVAL);
 		/* TODO: handle errors */
 		printf("%s\n", evalue);
 		free(evalue);
 
 	} else if (expandVars) {
 		char *expr = str_concat3("${", varname, "}");
-		char *evalue = Var_Subst(expr, SCOPE_GLOBAL, VARE_WANTRES);
+		char *evalue = Var_Subst(expr, SCOPE_GLOBAL, VARE_EVAL);
 		/* TODO: handle errors */
 		free(expr);
 		printf("%s\n", evalue);
@@ -865,7 +873,7 @@ GetBooleanExpr(const char *expr, bool fallback)
 	char *value;
 	bool res;
 
-	value = Var_Subst(expr, SCOPE_GLOBAL, VARE_WANTRES);
+	value = Var_Subst(expr, SCOPE_GLOBAL, VARE_EVAL);
 	/* TODO: handle errors */
 	res = ParseBoolean(value, fallback);
 	free(value);
@@ -873,7 +881,7 @@ GetBooleanExpr(const char *expr, bool fallback)
 }
 
 static void
-doPrintVars(void)
+PrintVariables(void)
 {
 	StringListNode *ln;
 	bool expandVars;
@@ -886,49 +894,33 @@ doPrintVars(void)
 		expandVars = GetBooleanExpr("${.MAKE.EXPAND_VARIABLES}",
 		    false);
 
-	for (ln = opts.variables.first; ln != NULL; ln = ln->next) {
-		const char *varname = ln->datum;
-		PrintVar(varname, expandVars);
-	}
+	for (ln = opts.variables.first; ln != NULL; ln = ln->next)
+		PrintVariable(ln->datum, expandVars);
 }
 
 static bool
-runTargets(void)
+MakeTargets(void)
 {
-	GNodeList targs = LST_INIT;	/* target nodes to create */
+	GNodeList targets = LST_INIT;
 	bool outOfDate;		/* false if all targets up to date */
 
-	/*
-	 * Have now read the entire graph and need to make a list of
-	 * targets to create. If none was given on the command line,
-	 * we consult the parsing module to find the main target(s)
-	 * to create.
-	 */
 	if (Lst_IsEmpty(&opts.create))
-		Parse_MainName(&targs);
+		Parse_MainName(&targets);
 	else
-		Targ_FindList(&targs, &opts.create);
+		Targ_FindList(&targets, &opts.create);
 
 	if (!opts.compatMake) {
-		/*
-		 * Initialize job module before traversing the graph
-		 * now that any .BEGIN and .END targets have been read.
-		 * This is done only if the -q flag wasn't given
-		 * (to prevent the .BEGIN from being executed should
-		 * it exist).
-		 */
 		if (!opts.query) {
 			Job_Init();
 			jobsRunning = true;
 		}
 
-		/* Traverse the graph, checking on all the targets */
-		outOfDate = Make_Run(&targs);
+		outOfDate = Make_MakeParallel(&targets);
 	} else {
-		Compat_MakeAll(&targs);
+		Compat_MakeAll(&targets);
 		outOfDate = false;
 	}
-	Lst_Done(&targs);	/* Don't free the targets themselves. */
+	Lst_Done(&targets);	/* Don't free the targets themselves. */
 	return outOfDate;
 }
 
@@ -959,7 +951,7 @@ InitRandom(void)
 	struct timeval tv;
 
 	gettimeofday(&tv, NULL);
-	srandom((unsigned int)(tv.tv_sec + tv.tv_usec));
+	srandom((unsigned)(tv.tv_sec + tv.tv_usec));
 }
 
 static const char *
@@ -1000,9 +992,9 @@ InitVarMachineArch(void)
 		const int mib[2] = { CTL_HW, HW_MACHINE_ARCH };
 		size_t len = sizeof machine_arch_buf;
 
-		if (sysctl(mib, (unsigned int)__arraycount(mib),
+		if (sysctl(mib, (unsigned)__arraycount(mib),
 		    machine_arch_buf, &len, NULL, 0) < 0) {
-			(void)fprintf(stderr, "%s: sysctl failed (%s).\n",
+			(void)fprintf(stderr, "%s: sysctl: %s\n",
 			    progname, strerror(errno));
 			exit(2);
 		}
@@ -1050,7 +1042,7 @@ HandlePWD(const struct stat *curdir_st)
 	if (stat(pwd, &pwd_st) == 0 &&
 	    curdir_st->st_ino == pwd_st.st_ino &&
 	    curdir_st->st_dev == pwd_st.st_dev)
-		(void)strncpy(curdir, pwd, MAXPATHLEN);
+		snprintf(curdir, MAXPATHLEN, "%s", pwd);
 
 ignore_pwd:
 	FStr_Done(&makeobjdir);
@@ -1140,9 +1132,9 @@ static void
 InitVarMake(const char *argv0)
 {
 	const char *make = argv0;
+	char pathbuf[MAXPATHLEN];
 
 	if (argv0[0] != '/' && strchr(argv0, '/') != NULL) {
-		char pathbuf[MAXPATHLEN];
 		const char *abspath = cached_realpath(argv0, pathbuf);
 		struct stat st;
 		if (abspath != NULL && abspath[0] == '/' &&
@@ -1217,7 +1209,7 @@ ReadBuiltinRules(void)
 		Fatal("%s: cannot open %s.",
 		    progname, (const char *)sysMkFiles.first->datum);
 
-	Lst_DoneCall(&sysMkFiles, free);
+	Lst_DoneFree(&sysMkFiles);
 }
 
 static void
@@ -1226,11 +1218,20 @@ InitMaxJobs(void)
 	char *value;
 	int n;
 
+	if (bogusJflag && !opts.compatMake) {
+		opts.compatMake = true;
+		Parse_Error(PARSE_WARNING,
+		    "Invalid internal option \"-J\" in \"%s\"; "
+		    "see the manual page",
+		    curdir);
+		PrintStackTrace(true);
+		return;
+	}
 	if (forceJobs || opts.compatMake ||
 	    !Var_Exists(SCOPE_GLOBAL, ".MAKE.JOBS"))
 		return;
 
-	value = Var_Subst("${.MAKE.JOBS}", SCOPE_GLOBAL, VARE_WANTRES);
+	value = Var_Subst("${.MAKE.JOBS}", SCOPE_GLOBAL, VARE_EVAL);
 	/* TODO: handle errors */
 	n = (int)strtol(value, NULL, 0);
 	if (n < 1) {
@@ -1265,7 +1266,7 @@ InitVpath(void)
 	if (!Var_Exists(SCOPE_CMDLINE, "VPATH"))
 		return;
 
-	vpath = Var_Subst("${VPATH}", SCOPE_CMDLINE, VARE_WANTRES);
+	vpath = Var_Subst("${VPATH}", SCOPE_CMDLINE, VARE_EVAL);
 	/* TODO: handle errors */
 	path = vpath;
 	do {
@@ -1302,7 +1303,7 @@ ReadFirstDefaultMakefile(void)
 	StringList makefiles = LST_INIT;
 	StringListNode *ln;
 	char *prefs = Var_Subst("${.MAKE.MAKEFILE_PREFERENCE}",
-	    SCOPE_CMDLINE, VARE_WANTRES);
+	    SCOPE_CMDLINE, VARE_EVAL);
 	/* TODO: handle errors */
 
 	AppendWords(&makefiles, prefs);
@@ -1346,7 +1347,7 @@ main_Init(int argc, char **argv)
 	UnlimitFiles();
 
 	if (uname(&utsname) == -1) {
-		(void)fprintf(stderr, "%s: uname failed (%s).\n", progname,
+		(void)fprintf(stderr, "%s: uname: %s\n", progname,
 		    strerror(errno));
 		exit(2);
 	}
@@ -1354,12 +1355,15 @@ main_Init(int argc, char **argv)
 	machine = InitVarMachine(&utsname);
 	machine_arch = InitVarMachineArch();
 
-	myPid = getpid();	/* remember this for vFork() */
+	myPid = getpid();
 
 	/* Just in case MAKEOBJDIR wants us to do something tricky. */
 	Targ_Init();
-	Var_Init();
+#ifdef FORCE_MAKE_OS
+	Global_Set_ReadOnly(".MAKE.OS", FORCE_MAKE_OS);
+#else
 	Global_Set_ReadOnly(".MAKE.OS", utsname.sysname);
+#endif
 	Global_Set("MACHINE", machine);
 	Global_Set("MACHINE_ARCH", machine_arch);
 #ifdef MAKE_VERSION
@@ -1405,11 +1409,12 @@ main_Init(int argc, char **argv)
 	Global_Set(".MAKEOVERRIDES", "");
 	Global_Set("MFLAGS", "");
 	Global_Set(".ALLTARGETS", "");
-	Var_Set(SCOPE_CMDLINE, ".MAKE.LEVEL.ENV", MAKE_LEVEL_ENV);
+	Global_Set_ReadOnly(".MAKE.LEVEL.ENV", MAKE_LEVEL_ENV);
 
 	/* Set some other useful variables. */
 	{
-		char buf[64], *ep = getenv(MAKE_LEVEL_ENV);
+		char buf[64];
+		const char *ep = getenv(MAKE_LEVEL_ENV);
 
 		makelevel = ep != NULL && ep[0] != '\0' ? atoi(ep) : 0;
 		if (makelevel < 0)
@@ -1436,16 +1441,16 @@ main_Init(int argc, char **argv)
 #endif
 	Dir_Init();
 
+	if (getcwd(curdir, MAXPATHLEN) == NULL) {
+		(void)fprintf(stderr, "%s: getcwd: %s\n",
+		    progname, strerror(errno));
+		exit(2);
+	}
+
 	{
 		char *makeflags = explode(getenv("MAKEFLAGS"));
 		Main_ParseArgLine(makeflags);
 		free(makeflags);
-	}
-
-	if (getcwd(curdir, MAXPATHLEN) == NULL) {
-		(void)fprintf(stderr, "%s: getcwd: %s.\n",
-		    progname, strerror(errno));
-		exit(2);
 	}
 
 	MainParseArgs(argc, argv);
@@ -1454,7 +1459,7 @@ main_Init(int argc, char **argv)
 		printf("%s: Entering directory `%s'\n", progname, curdir);
 
 	if (stat(curdir, &sa) == -1) {
-		(void)fprintf(stderr, "%s: %s: %s.\n",
+		(void)fprintf(stderr, "%s: stat %s: %s\n",
 		    progname, curdir, strerror(errno));
 		exit(2);
 	}
@@ -1509,7 +1514,7 @@ main_PrepareMaking(void)
 	/* In particular suppress .depend for '-r -V .OBJDIR -f /dev/null' */
 	if (!opts.noBuiltins || opts.printVars == PVM_NONE) {
 		makeDependfile = Var_Subst("${.MAKE.DEPENDFILE}",
-		    SCOPE_CMDLINE, VARE_WANTRES);
+		    SCOPE_CMDLINE, VARE_EVAL);
 		if (makeDependfile[0] != '\0') {
 			/* TODO: handle errors */
 			doing_depend = true;
@@ -1535,9 +1540,10 @@ main_PrepareMaking(void)
 		opts.compatMake = true;
 
 	if (!opts.compatMake)
-		Job_ServerStart(maxJobTokens, jp_0, jp_1);
+		TokenPool_Init(maxJobTokens, tokenPoolReader, tokenPoolWriter);
 	DEBUG5(JOB, "job_pipe %d %d, maxjobs %d, tokens %d, compat %d\n",
-	    jp_0, jp_1, opts.maxJobs, maxJobTokens, opts.compatMake ? 1 : 0);
+	    tokenPoolReader, tokenPoolWriter, opts.maxJobs, maxJobTokens,
+	    opts.compatMake ? 1 : 0);
 
 	if (opts.printVars == PVM_NONE)
 		Main_ExportMAKEFLAGS(true);	/* initial export */
@@ -1561,20 +1567,17 @@ main_PrepareMaking(void)
 }
 
 /*
- * Make the targets.
- * If the -v or -V options are given, print variables instead.
+ * Make the targets, or print variables.
  * Return whether any of the targets is out-of-date.
  */
 static bool
 main_Run(void)
 {
 	if (opts.printVars != PVM_NONE) {
-		/* print the values of any variables requested by the user */
-		doPrintVars();
+		PrintVariables();
 		return false;
-	} else {
-		return runTargets();
-	}
+	} else
+		return MakeTargets();
 }
 
 /* Clean up after making the targets. */
@@ -1582,9 +1585,9 @@ static void
 main_CleanUp(void)
 {
 #ifdef CLEANUP
-	Lst_DoneCall(&opts.variables, free);
-	Lst_DoneCall(&opts.makefiles, free);
-	Lst_DoneCall(&opts.create, free);
+	Lst_DoneFree(&opts.variables);
+	Lst_DoneFree(&opts.makefiles);
+	Lst_DoneFree(&opts.create);
 #endif
 
 	if (DEBUG(GRAPH2))
@@ -1597,25 +1600,30 @@ main_CleanUp(void)
 	if (opts.enterFlag)
 		printf("%s: Leaving directory `%s'\n", progname, curdir);
 
+	Var_Stats();
+	Targ_Stats();
+
 #ifdef USE_META
 	meta_finish();
 #endif
+#ifdef CLEANUP
 	Suff_End();
 	Targ_End();
 	Arch_End();
-	Var_End();
 	Parse_End();
 	Dir_End();
 	Job_End();
+#endif
 	Trace_End();
+#ifdef CLEANUP
 	Str_Intern_End();
+#endif
 }
 
-/* Determine the exit code. */
 static int
-main_Exit(bool outOfDate)
+main_ExitCode(bool outOfDate)
 {
-	if (opts.strict && (main_errors > 0 || Parse_NumErrors() > 0))
+	if ((opts.strict && main_errors > 0) || parseErrors > 0)
 		return 2;	/* Not 1 so -q can distinguish error */
 	return outOfDate ? 1 : 0;
 }
@@ -1630,7 +1638,7 @@ main(int argc, char **argv)
 	main_PrepareMaking();
 	outOfDate = main_Run();
 	main_CleanUp();
-	return main_Exit(outOfDate);
+	return main_ExitCode(outOfDate);
 }
 
 /*
@@ -1647,6 +1655,20 @@ ReadMakefile(const char *fname)
 		Parse_File("(stdin)", -1);
 		Var_Set(SCOPE_INTERNAL, "MAKEFILE", "");
 	} else {
+		if (strncmp(fname, ".../", 4) == 0) {
+			name = Dir_FindHereOrAbove(curdir, fname + 4);
+			if (name != NULL) {
+				/* Dir_FindHereOrAbove returns dirname */
+				path = str_concat3(name, "/",
+				    str_basename(fname));
+				free(name);
+				fd = open(path, O_RDONLY);
+				if (fd != -1) {
+					fname = path;
+					goto found;
+				}
+			}
+		}
 		/* if we've chdir'd, rebuild the path name */
 		if (strcmp(curdir, objdir) != 0 && *fname != '/') {
 			path = str_concat3(curdir, "/", fname);
@@ -1687,13 +1709,58 @@ ReadMakefile(const char *fname)
 		 * placement of the setting here means it gets set to the last
 		 * makefile specified, as it is set by SysV make.
 		 */
-found:
+	found:
 		if (!doing_depend)
 			Var_Set(SCOPE_INTERNAL, "MAKEFILE", fname);
 		Parse_File(fname, fd);
 	}
 	free(path);
 	return true;
+}
+
+/* populate av for Cmd_Exec and Compat_RunCommand */
+void
+Cmd_Argv(const char *cmd, size_t cmd_len, const char *av[5],
+    char *cmd_file, size_t cmd_filesz, bool eflag, bool xflag)
+{
+	int cmd_fd = -1;
+
+	if (shellPath == NULL)
+		Shell_Init();
+
+	if (cmd_file != NULL) {
+		if (cmd_len == 0)
+			cmd_len = strlen(cmd);
+
+		if (cmd_len > MAKE_CMDLEN_LIMIT) {
+			cmd_fd = mkTempFile(NULL, cmd_file, cmd_filesz);
+			if (cmd_fd >= 0) {
+				ssize_t n;
+
+				n = write(cmd_fd, cmd, cmd_len);
+				close(cmd_fd);
+				if (n < (ssize_t)cmd_len) {
+					unlink(cmd_file);
+					cmd_fd = -1;
+				}
+			}
+		} else
+			cmd_file[0] = '\0';
+	}
+
+	/* The following works for any of the builtin shell specs. */
+	*av++ = shellPath;
+	if (eflag)
+		*av++ = shellErrFlag;
+	if (cmd_fd >= 0) {
+		if (xflag)
+			*av++ = "-x";
+		*av++ = cmd_file;
+	} else {
+		*av++ = xflag ? "-xc" : "-c";
+		*av++ = cmd;
+	}
+	*av = NULL;
 }
 
 /*
@@ -1703,50 +1770,21 @@ found:
 char *
 Cmd_Exec(const char *cmd, char **error)
 {
-	const char *args[4];	/* Arguments for invoking the shell */
+	const char *args[5];	/* Arguments for invoking the shell */
 	int pipefds[2];
 	int cpid;		/* Child PID */
 	int pid;		/* PID from wait() */
-	int status;		/* command exit status */
+	WAIT_T status;		/* command exit status */
 	Buffer buf;		/* buffer to store the result */
 	ssize_t bytes_read;
 	char *output;
 	char *p;
 	int saved_errno;
 	char cmd_file[MAXPATHLEN];
-	size_t cmd_len;
-	int cmd_fd = -1;
 
-	if (shellPath == NULL)
-		Shell_Init();
-
-	cmd_len = strlen(cmd);
-	if (cmd_len > 1000) {
-		cmd_fd = mkTempFile(NULL, cmd_file, sizeof(cmd_file));
-		if (cmd_fd >= 0) {
-			ssize_t n;
-
-			n = write(cmd_fd, cmd, cmd_len);
-			close(cmd_fd);
-			if (n < (ssize_t)cmd_len) {
-				unlink(cmd_file);
-				cmd_fd = -1;
-			}
-		}
-	}
-
-	args[0] = shellName;
-	if (cmd_fd >= 0) {
-		args[1] = cmd_file;
-		args[2] = NULL;
-	} else {
-		cmd_file[0] = '\0';
-		args[1] = "-c";
-		args[2] = cmd;
-		args[3] = NULL;
-	}
 	DEBUG1(VAR, "Capturing the output of command \"%s\"\n", cmd);
 
+	Cmd_Argv(cmd, 0, args, cmd_file, sizeof(cmd_file), false, false);
 	if (pipe(pipefds) == -1) {
 		*error = str_concat3(
 		    "Couldn't create pipe for \"", cmd, "\"");
@@ -1754,8 +1792,9 @@ Cmd_Exec(const char *cmd, char **error)
 	}
 
 	Var_ReexportVars(SCOPE_GLOBAL);
+	Var_ExportStackTrace(NULL, cmd);
 
-	switch (cpid = vfork()) {
+	switch (cpid = FORK_FUNCTION()) {
 	case 0:
 		(void)close(pipefds[0]);
 		(void)dup2(pipefds[1], STDOUT_FILENO);
@@ -1763,7 +1802,6 @@ Cmd_Exec(const char *cmd, char **error)
 
 		(void)execv(shellPath, UNCONST(args));
 		_exit(1);
-		/* NOTREACHED */
 
 	case -1:
 		*error = str_concat3("Couldn't exec \"", cmd, "\"");
@@ -1799,10 +1837,15 @@ Cmd_Exec(const char *cmd, char **error)
 
 	if (WIFSIGNALED(status))
 		*error = str_concat3("\"", cmd, "\" exited on a signal");
-	else if (WEXITSTATUS(status) != 0)
-		*error = str_concat3(
-		    "\"", cmd, "\" returned non-zero status");
-	else if (saved_errno != 0)
+	else if (WEXITSTATUS(status) != 0) {
+		Buffer errBuf;
+		Buf_Init(&errBuf);
+		Buf_AddStr(&errBuf, "Command \"");
+		Buf_AddStr(&errBuf, cmd);
+		Buf_AddStr(&errBuf, "\" exited with status ");
+		Buf_AddInt(&errBuf, WEXITSTATUS(status));
+		*error = Buf_DoneData(&errBuf);
+	} else if (saved_errno != 0)
 		*error = str_concat3(
 		    "Couldn't read shell's output for \"", cmd, "\"");
 	else
@@ -1910,19 +1953,6 @@ DieHorribly(void)
 	exit(2);		/* Not 1 so -q can distinguish error */
 }
 
-/*
- * Called when aborting due to errors in child shell to signal abnormal exit.
- * The program exits.
- * Errors is the number of errors encountered in Make_Make.
- */
-void
-Finish(int errs)
-{
-	if (shouldDieQuietly(NULL, -1))
-		exit(2);
-	Fatal("%d error%s", errs, errs == 1 ? "" : "s");
-}
-
 int
 unlink_file(const char *file)
 {
@@ -1961,45 +1991,33 @@ write_all(int fd, const void *data, size_t n)
 
 /* Print why exec failed, avoiding stdio. */
 void MAKE_ATTR_DEAD
-execDie(const char *af, const char *av)
+execDie(const char *func, const char *arg)
 {
-	Buffer buf;
+	char msg[1024];
+	int len;
 
-	Buf_Init(&buf);
-	Buf_AddStr(&buf, progname);
-	Buf_AddStr(&buf, ": ");
-	Buf_AddStr(&buf, af);
-	Buf_AddStr(&buf, "(");
-	Buf_AddStr(&buf, av);
-	Buf_AddStr(&buf, ") failed (");
-	Buf_AddStr(&buf, strerror(errno));
-	Buf_AddStr(&buf, ")\n");
-
-	write_all(STDERR_FILENO, buf.data, buf.len);
-
-	Buf_Done(&buf);
+	len = snprintf(msg, sizeof(msg), "%s: %s(%s): %s\n",
+	    progname, func, arg, strerror(errno));
+	write_all(STDERR_FILENO, msg, (size_t)len);
 	_exit(1);
 }
 
 static void
 purge_relative_cached_realpaths(void)
 {
-	HashEntry *he, *next;
 	HashIter hi;
+	bool more;
 
 	HashIter_Init(&hi, &cached_realpaths);
-	he = HashIter_Next(&hi);
-	while (he != NULL) {
-		next = HashIter_Next(&hi);
+	more = HashIter_Next(&hi);
+	while (more) {
+		HashEntry *he = hi.entry;
+		more = HashIter_Next(&hi);
 		if (he->key[0] != '/') {
 			DEBUG1(DIR, "cached_realpath: purging %s\n", he->key);
+			free(he->value);
 			HashTable_DeleteEntry(&cached_realpaths, he);
-			/*
-			 * XXX: What about the allocated he->value? Either
-			 * free them or document why they cannot be freed.
-			 */
 		}
-		he = next;
 	}
 }
 
@@ -2013,9 +2031,7 @@ cached_realpath(const char *pathname, char *resolved)
 
 	rp = HashTable_FindValue(&cached_realpaths, pathname);
 	if (rp != NULL) {
-		/* a hit */
-		strncpy(resolved, rp, MAXPATHLEN);
-		resolved[MAXPATHLEN - 1] = '\0';
+		snprintf(resolved, MAXPATHLEN, "%s", rp);
 		return resolved;
 	}
 
@@ -2046,7 +2062,7 @@ shouldDieQuietly(GNode *gn, int bf)
 		else if (bf >= 0)
 			quietly = bf;
 		else
-			quietly = (gn != NULL && (gn->type & OP_MAKE)) ? 1 : 0;
+			quietly = gn != NULL && gn->type & OP_MAKE ? 1 : 0;
 	}
 	return quietly != 0;
 }
@@ -2082,6 +2098,7 @@ void
 PrintOnError(GNode *gn, const char *msg)
 {
 	static GNode *errorNode = NULL;
+	StringListNode *ln;
 
 	if (DEBUG(HASH)) {
 		Targ_Stats();
@@ -2091,7 +2108,19 @@ PrintOnError(GNode *gn, const char *msg)
 	if (errorNode != NULL)
 		return;		/* we've been here! */
 
-	printf("%s%s: stopped in %s\n", msg, progname, curdir);
+	printf("%s%s: stopped", msg, progname);
+	ln = opts.create.first;
+	if (ln != NULL || mainNode != NULL) {
+		printf(" making \"");
+		if (ln != NULL) {
+			printf("%s", (const char *)ln->datum);
+			for (ln = ln->next; ln != NULL; ln = ln->next)
+				printf(" %s", (const char *)ln->datum);
+		} else
+			printf("%s", mainNode->name);
+		printf("\"");
+	}
+	printf(" in %s\n", curdir);
 
 	/* we generally want to keep quiet if a sub-make died */
 	if (shouldDieQuietly(gn, -1))
@@ -2101,12 +2130,17 @@ PrintOnError(GNode *gn, const char *msg)
 		SetErrorVars(gn);
 
 	{
-		char *errorVarsValues = Var_Subst(
+		char *errorVarsValues;
+		enum PosixState p_s = posix_state;
+
+		posix_state = PS_TOO_LATE;
+		errorVarsValues = Var_Subst(
 		    "${MAKE_PRINT_VAR_ON_ERROR:@v@$v='${$v}'\n@}",
-		    SCOPE_GLOBAL, VARE_WANTRES);
+		    SCOPE_GLOBAL, VARE_EVAL);
 		/* TODO: handle errors */
 		printf("%s", errorVarsValues);
 		free(errorVarsValues);
+		posix_state = p_s;
 	}
 
 	fflush(stdout);
@@ -2125,18 +2159,23 @@ void
 Main_ExportMAKEFLAGS(bool first)
 {
 	static bool once = true;
+	enum PosixState p_s;
 	char *flags;
 
 	if (once != first)
 		return;
 	once = false;
 
+	p_s = posix_state;
+	posix_state = PS_TOO_LATE;
 	flags = Var_Subst(
 	    "${.MAKEFLAGS} ${.MAKEOVERRIDES:O:u:@v@$v=${$v:Q}@}",
-	    SCOPE_CMDLINE, VARE_WANTRES);
+	    SCOPE_CMDLINE, VARE_EVAL);
 	/* TODO: handle errors */
 	if (flags[0] != '\0')
 		setenv("MAKEFLAGS", flags, 1);
+	free(flags);
+	posix_state = p_s;
 }
 
 char *
@@ -2150,7 +2189,7 @@ getTmpdir(void)
 
 	/* Honor $TMPDIR if it is valid, strip a trailing '/'. */
 	tmpdir = Var_Subst("${TMPDIR:tA:U" _PATH_TMP ":S,/$,,W}/",
-	    SCOPE_GLOBAL, VARE_WANTRES);
+	    SCOPE_GLOBAL, VARE_EVAL);
 	/* TODO: handle errors */
 
 	if (stat(tmpdir, &st) < 0 || !S_ISDIR(st.st_mode)) {
@@ -2173,7 +2212,7 @@ mkTempFile(const char *pattern, char *tfile, size_t tfile_sz)
 	int fd;
 
 	if (pattern == NULL)
-		pattern = TMPPAT;
+		pattern = "makeXXXXXX";
 	if (tmpdir == NULL)
 		tmpdir = getTmpdir();
 	if (tfile == NULL) {
@@ -2187,8 +2226,7 @@ mkTempFile(const char *pattern, char *tfile, size_t tfile_sz)
 		snprintf(tfile, tfile_sz, "%s%s", tmpdir, pattern);
 
 	if ((fd = mkstemp(tfile)) < 0)
-		Punt("Could not create temporary file %s: %s", tfile,
-		    strerror(errno));
+		Punt("mkstemp %s: %s", tfile, strerror(errno));
 	if (tfile == tbuf)
 		unlink(tfile);	/* we just want the descriptor */
 

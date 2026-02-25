@@ -82,6 +82,9 @@ struct zpool_handle
         zpool_handle_t *zpool_next;
         char zpool_name[ZFS_MAX_DATASET_NAME_LEN];
         int zpool_state;
+	unsigned int zpool_n_propnames;
+#define	ZHP_MAX_PROPNAMES 4
+	const char *zpool_propnames[ZHP_MAX_PROPNAMES];
         size_t zpool_config_size;
         nvlist_t *zpool_config;
         nvlist_t *zpool_old_config;
@@ -134,6 +137,7 @@ public:
 	MOCK_CONST_METHOD0(PoolGUID, Guid());
 	MOCK_CONST_METHOD0(State, vdev_state());
 	MOCK_CONST_METHOD0(PhysicalPath, string());
+	MOCK_CONST_METHOD2(Name, string(zpool_handle_t * zhp, bool verbose));
 };
 
 MockVdev::MockVdev(nvlist_t *vdevConfig)
@@ -431,6 +435,8 @@ protected:
 		m_vdev = new MockVdev(m_vdevConfig);
 		ON_CALL(*m_vdev, GUID())
 		    .WillByDefault(::testing::Return(Guid(123)));
+		ON_CALL(*m_vdev, Name(::testing::_, ::testing::_))
+		    .WillByDefault(::testing::Return(string("/dev/da999")));
 		ON_CALL(*m_vdev, PoolGUID())
 		    .WillByDefault(::testing::Return(Guid(456)));
 		ON_CALL(*m_vdev, State())

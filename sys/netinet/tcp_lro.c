@@ -32,7 +32,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
 #include "opt_inet.h"
 #include "opt_inet6.h"
 
@@ -83,6 +82,7 @@ static MALLOC_DEFINE(M_LRO, "LRO", "LRO control structures");
 static void	tcp_lro_rx_done(struct lro_ctrl *lc);
 static int	tcp_lro_rx_common(struct lro_ctrl *lc, struct mbuf *m,
 		    uint32_t csum, bool use_hash);
+static void	tcp_lro_flush(struct lro_ctrl *lc, struct lro_entry *le);
 
 SYSCTL_NODE(_net_inet_tcp, OID_AUTO, lro,  CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "TCP LRO");
@@ -175,7 +175,7 @@ tcp_lro_init_args(struct lro_ctrl *lc, struct ifnet *ifp,
 {
 	struct lro_entry *le;
 	size_t size;
-	unsigned i, elements;
+	unsigned i;
 
 	lc->lro_bad_csum = 0;
 	lc->lro_queued = 0;
@@ -190,11 +190,7 @@ tcp_lro_init_args(struct lro_ctrl *lc, struct ifnet *ifp,
 	LIST_INIT(&lc->lro_active);
 
 	/* create hash table to accelerate entry lookup */
-	if (lro_entries > lro_mbufs)
-		elements = lro_entries;
-	else
-		elements = lro_mbufs;
-	lc->lro_hash = phashinit_flags(elements, M_LRO, &lc->lro_hashsz,
+	lc->lro_hash = phashinit_flags(lro_entries, M_LRO, &lc->lro_hashsz,
 	    HASH_NOWAIT);
 	if (lc->lro_hash == NULL) {
 		memset(lc, 0, sizeof(*lc));
@@ -599,7 +595,7 @@ tcp_lro_rx_done(struct lro_ctrl *lc)
 static void
 tcp_lro_flush_active(struct lro_ctrl *lc)
 {
-	struct lro_entry *le;
+	struct lro_entry *le, *le_tmp;
 
 	/*
 	 * Walk through the list of le entries, and
@@ -611,7 +607,7 @@ tcp_lro_flush_active(struct lro_ctrl *lc)
 	 * is being freed. This is ok it will just get
 	 * reallocated again like it was new.
 	 */
-	LIST_FOREACH(le, &lc->lro_active, next) {
+	LIST_FOREACH_SAFE(le, &lc->lro_active, next, le_tmp) {
 		if (le->m_head != NULL) {
 			tcp_lro_active_remove(le);
 			tcp_lro_flush(lc, le);
@@ -1108,7 +1104,7 @@ again:
 	}
 }
 
-void
+static void
 tcp_lro_flush(struct lro_ctrl *lc, struct lro_entry *le)
 {
 
@@ -1304,9 +1300,9 @@ tcp_lro_rx_common(struct lro_ctrl *lc, struct mbuf *m, uint32_t csum, bool use_h
 		return (TCP_LRO_CANNOT);
 #endif
 	if (((m->m_pkthdr.csum_flags & (CSUM_DATA_VALID | CSUM_PSEUDO_HDR)) !=
-	     ((CSUM_DATA_VALID | CSUM_PSEUDO_HDR))) || 
+	     ((CSUM_DATA_VALID | CSUM_PSEUDO_HDR))) ||
 	    (m->m_pkthdr.csum_data != 0xffff)) {
-		/* 
+		/*
 		 * The checksum either did not have hardware offload
 		 * or it was a bad checksum. We can't LRO such
 		 * a packet.
@@ -1337,7 +1333,7 @@ tcp_lro_rx_common(struct lro_ctrl *lc, struct mbuf *m, uint32_t csum, bool use_h
 #endif
 	/* If no hardware or arrival stamp on the packet add timestamp */
 	if ((m->m_flags & (M_TSTMP_LRO | M_TSTMP)) == 0) {
-		m->m_pkthdr.rcv_tstmp = bintime2ns(&lc->lro_last_queue_time); 
+		m->m_pkthdr.rcv_tstmp = bintime2ns(&lc->lro_last_queue_time);
 		m->m_flags |= M_TSTMP_LRO;
 	}
 
@@ -1431,17 +1427,6 @@ tcp_lro_rx(struct lro_ctrl *lc, struct mbuf *m, uint32_t csum)
 {
 	int error;
 
-	if (((m->m_pkthdr.csum_flags & (CSUM_DATA_VALID | CSUM_PSEUDO_HDR)) !=
-	     ((CSUM_DATA_VALID | CSUM_PSEUDO_HDR))) || 
-	    (m->m_pkthdr.csum_data != 0xffff)) {
-		/* 
-		 * The checksum either did not have hardware offload
-		 * or it was a bad checksum. We can't LRO such
-		 * a packet.
-		 */
-		counter_u64_add(tcp_bad_csums, 1);
-		return (TCP_LRO_CANNOT);
-	}
 	/* get current time */
 	binuptime(&lc->lro_last_queue_time);
 	CURVNET_SET(lc->ifp->if_vnet);
@@ -1484,15 +1469,16 @@ tcp_lro_queue_mbuf(struct lro_ctrl *lc, struct mbuf *mb)
  	    ((mb->m_flags & M_TSTMP) == 0)) {
  		/* Add in an LRO time since no hardware */
  		binuptime(&lc->lro_last_queue_time);
- 		mb->m_pkthdr.rcv_tstmp = bintime2ns(&lc->lro_last_queue_time); 
+ 		mb->m_pkthdr.rcv_tstmp = bintime2ns(&lc->lro_last_queue_time);
  		mb->m_flags |= M_TSTMP_LRO;
  	}
 
 	/* create sequence number */
-	lc->lro_mbuf_data[lc->lro_mbuf_count].seq =
-	    (((uint64_t)M_HASHTYPE_GET(mb)) << 56) |
-	    (((uint64_t)mb->m_pkthdr.flowid) << 24) |
-	    ((uint64_t)lc->lro_mbuf_count);
+	lc->lro_mbuf_data[lc->lro_mbuf_count].seq = lc->lro_mbuf_count;
+	if (M_HASHTYPE_ISHASH(mb))
+		lc->lro_mbuf_data[lc->lro_mbuf_count].seq |=
+		    (((uint64_t)M_HASHTYPE_GET(mb)) << 56) |
+		    (((uint64_t)mb->m_pkthdr.flowid) << 24);
 
 	/* enter mbuf */
 	lc->lro_mbuf_data[lc->lro_mbuf_count].mb = mb;

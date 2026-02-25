@@ -971,6 +971,12 @@ ath_legacy_xmit_handoff(struct ath_softc *sc, struct ath_txq *txq,
 		ath_tx_handoff_hw(sc, txq, bf);
 }
 
+/*
+ * Setup a frame for encryption.
+ *
+ * If this fails, then an non-zero error is returned.  The mbuf
+ * must be freed by the caller.
+ */
 static int
 ath_tx_tag_crypto(struct ath_softc *sc, struct ieee80211_node *ni,
     struct mbuf *m0, int iswep, int isfrag, int *hdrlen, int *pktlen,
@@ -1133,8 +1139,7 @@ ath_tx_calc_duration(struct ath_softc *sc, struct ath_buf *bf)
 	 * Calculate duration.  This logically belongs in the 802.11
 	 * layer but it lacks sufficient information to calculate it.
 	 */
-	if ((flags & HAL_TXDESC_NOACK) == 0 &&
-	    (wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) != IEEE80211_FC0_TYPE_CTL) {
+	if ((flags & HAL_TXDESC_NOACK) == 0 && !IEEE80211_IS_CTL(wh)) {
 		u_int16_t dur;
 		if (shortPreamble)
 			dur = rt->info[rix].spAckDuration;
@@ -1548,6 +1553,10 @@ ath_tx_xmit_normal(struct ath_softc *sc, struct ath_txq *txq,
  *
  * Note that this may cause the mbuf to be reallocated, so
  * m0 may not be valid.
+ *
+ * If there's a problem then the mbuf is freed and an error
+ * is returned.  The ath_buf then needs to be freed by the
+ * caller.
  */
 static int
 ath_tx_normal_setup(struct ath_softc *sc, struct ieee80211_node *ni,
@@ -1588,6 +1597,10 @@ ath_tx_normal_setup(struct ath_softc *sc, struct ieee80211_node *ni,
 	 * pad bytes; deduct them here.
 	 */
 	pktlen = m0->m_pkthdr.len - (hdrlen & 3);
+
+	/* seqno allocate, only if AMPDU isn't running */
+	if ((m0->m_flags & M_AMPDU_MPDU) == 0)
+		ieee80211_output_seqno_assign(ni, -1, m0);
 
 	/* Handle encryption twiddling if needed */
 	if (! ath_tx_tag_crypto(sc, ni, m0, iswep, isfrag, &hdrlen,
@@ -2051,7 +2064,7 @@ ath_tx_start(struct ath_softc *sc, struct ieee80211_node *ni,
 		 */
 		if (IEEE80211_QOS_HAS_SEQ(wh) &&
 		    (! IEEE80211_IS_MULTICAST(wh->i_addr1)) &&
-		    (subtype != IEEE80211_FC0_SUBTYPE_QOS_NULL)) {
+		    (! IEEE80211_IS_QOS_NULL(wh))) {
 			bf->bf_state.bfs_dobaw = 1;
 		}
 	}
@@ -2070,9 +2083,8 @@ ath_tx_start(struct ath_softc *sc, struct ieee80211_node *ni,
 
 	/* This also sets up the DMA map; crypto; frame parameters, etc */
 	r = ath_tx_normal_setup(sc, ni, bf, m0, txq);
-
 	if (r != 0)
-		goto done;
+		return (r);
 
 	/* At this point m0 could have changed! */
 	m0 = bf->bf_m;
@@ -2129,7 +2141,6 @@ ath_tx_start(struct ath_softc *sc, struct ieee80211_node *ni,
 	ath_tx_leak_count_update(sc, tid, bf);
 	ath_tx_xmit_normal(sc, txq, bf);
 #endif
-done:
 	return 0;
 }
 
@@ -2201,6 +2212,10 @@ ath_tx_raw_start(struct ath_softc *sc, struct ieee80211_node *ni,
 	 * what needs to be "fixed" here so we just use the TID
 	 * for QoS frames.
 	 */
+
+	/* seqno allocate, only if AMPDU isn't running */
+	if ((m0->m_flags & M_AMPDU_MPDU) == 0)
+		ieee80211_output_seqno_assign(ni, -1, m0);
 
 	/* Handle encryption twiddling if needed */
 	if (! ath_tx_tag_crypto(sc, ni,
@@ -2578,25 +2593,6 @@ badbad:
  */
 
 /*
- * XXX doesn't belong here!
- */
-static int
-ieee80211_is_action(struct ieee80211_frame *wh)
-{
-	/* Type: Management frame? */
-	if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) !=
-	    IEEE80211_FC0_TYPE_MGT)
-		return 0;
-
-	/* Subtype: Action frame? */
-	if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) !=
-	    IEEE80211_FC0_SUBTYPE_ACTION)
-		return 0;
-
-	return 1;
-}
-
-/*
  * Return an alternate TID for ADDBA request frames.
  *
  * Yes, this likely should be done in the net80211 layer.
@@ -2612,7 +2608,7 @@ ath_tx_action_frame_override_queue(struct ath_softc *sc,
 	uint16_t baparamset;
 
 	/* Not action frame? Bail */
-	if (! ieee80211_is_action(wh))
+	if (! IEEE80211_IS_MGMT_ACTION(wh))
 		return 0;
 
 	/* XXX Not needed for frames we send? */
@@ -3001,6 +2997,8 @@ ath_tx_tid_seqno_assign(struct ath_softc *sc, struct ieee80211_node *ni,
 
 	ATH_TX_LOCK_ASSERT(sc);
 
+	/* TODO: can this use ieee80211_output_seqno_assign() now? */
+
 	/*
 	 * Is it a QOS NULL Data frame? Give it a sequence number from
 	 * the default TID (IEEE80211_NONQOS_TID.)
@@ -3011,7 +3009,7 @@ ath_tx_tid_seqno_assign(struct ath_softc *sc, struct ieee80211_node *ni,
 	 * RX side.
 	 */
 	subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
-	if (subtype == IEEE80211_FC0_SUBTYPE_QOS_NULL) {
+	if (IEEE80211_IS_QOS_NULL(wh)) {
 		/* XXX no locking for this TID? This is a bit of a problem. */
 		seqno = ni->ni_txseqs[IEEE80211_NONQOS_TID];
 		INCR(ni->ni_txseqs[IEEE80211_NONQOS_TID], IEEE80211_SEQ_RANGE);

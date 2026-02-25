@@ -34,7 +34,7 @@
 # Functions and variable definitions used by the legacy nanobsd
 # image building system.
 
-calculate_partitioning ( ) (
+calculate_partitioning() {
 	echo $NANO_MEDIASIZE $NANO_IMAGES \
 		$NANO_SECTS $NANO_HEADS \
 		$NANO_CODESIZE $NANO_CONFSIZE $NANO_DATASIZE |
@@ -64,36 +64,46 @@ calculate_partitioning ( ) (
 		}
 
 		# First image partition start at second track
-		print $3, isl * cs - $3
+		print $3, isl * cs - $3, 1
 		c = isl * cs;
 
 		# Second image partition (if any) also starts offset one
 		# track to keep them identical.
 		if ($2 > 1) {
-			print $3 + c, isl * cs - $3
+			print $3 + c, isl * cs - $3, 2
 			c += isl * cs;
 		}
 
 		# Config partition starts at cylinder boundary.
-		print c, csl * cs
+		print c, csl * cs, 3
 		c += csl * cs
 
 		# Data partition (if any) starts at cylinder boundary.
 		if ($7 > 0) {
-			print c, dsl * cs
+			print c, dsl * cs, 4
 		} else if ($7 < 0 && $1 > c) {
-			print c, $1 - c
+			print c, $1 - c, 4
 		} else if ($1 < c) {
 			print "Disk space overcommitted by", \
 			    c - $1, "sectors" > "/dev/stderr"
 			exit 2
 		}
-
 	}
 	' > ${NANO_LOG}/_.partitioning
-)
+}
 
-create_code_slice ( ) (
+_xxx_adjust_code_size()
+{
+	# XXX adjust the CODE_SIZE value by rounding it up to
+	# a bsize of 32768 (DFL_BLKSIZE).
+	# Otherwise makefs -s will fail because of the guard
+	# introduced in 5ad283b3c60d.
+	codesize=$1
+	bsize=32768
+	echo $(( ((codesize + (bsize - 1)) / bsize) * bsize ))
+}
+
+create_code_slice() {
 	pprint 2 "build code slice"
 	pprint 3 "log: ${NANO_OBJ}/_.cs"
 
@@ -114,16 +124,17 @@ create_code_slice ( ) (
 			-y ${NANO_HEADS}`
 	fi
 
-	trap "echo 'Running exit trap code' ; df -i ${MNT} ; umount ${MNT} || true ; mdconfig -d -u $MD" 1 2 15 EXIT
+	trap "echo 'Running exit trap code' ; df -i ${MNT} ; nano_umount ${MNT} || true ; mdconfig -d -u $MD" 1 2 15 EXIT
 
-	bsdlabel -w ${MD}
+	gpart create -s bsd "${MD}"
+	gpart add -t freebsd-ufs -b 16 "${MD}"
 	if [ -f ${NANO_WORLDDIR}/boot/boot ]; then
 	    echo "Making bootable partition"
 	    gpart bootcode -b ${NANO_WORLDDIR}/boot/boot ${MD}
 	else
 	    echo "Partition will not be bootable"
 	fi
-	bsdlabel ${MD}
+	gpart list ${MD}
 
 	# Create first image
 	populate_slice /dev/${MD}${NANO_PARTITION_ROOT} ${NANO_WORLDDIR} ${MNT} "${NANO_ROOT}"
@@ -142,10 +153,37 @@ create_code_slice ( ) (
 	trap - 1 2 15 EXIT
 
 	) > ${NANO_OBJ}/_.cs 2>&1
-)
+}
 
+_create_code_slice() {
+	pprint 2 "build code slice"
+	pprint 3 "log: ${NANO_OBJ}/_.cs"
 
-create_diskimage ( ) (
+	(
+	IMG=${NANO_DISKIMGDIR}/_.disk.image
+	CODE_SIZE=$(head -n 1 "${NANO_LOG}/_.partitioning" | awk '{ print $2 }')
+	CODE_SIZE=$(_xxx_adjust_code_size "$CODE_SIZE")
+
+	echo "Writing code image..."
+	if [ -f "${NANO_WORLDDIR}/boot/boot" ]; then
+		echo "Making bootable partition"
+		bootcode="-b ${NANO_WORLDDIR}/boot/boot"
+	else
+		echo "Partition will not be bootable"
+	fi
+	nano_makefs "-DxZ ${NANO_MAKEFS} -o minfree=0,optimization=space" \
+	    "${NANO_METALOG}" "${CODE_SIZE}" "${NANO_OBJ}/_.disk.part" \
+	    "${NANO_WORLDDIR}"
+	mkimg -s bsd \
+	    ${bootcode} \
+	    -p freebsd-ufs:="${NANO_OBJ}/_.disk.part" \
+	    -o "${NANO_DISKIMGDIR}/_.disk.image"
+	rm -f "${NANO_OBJ}/_.disk.part"
+
+	) > ${NANO_OBJ}/_.cs 2>&1
+}
+
+create_diskimage() {
 	pprint 2 "build diskimage"
 	pprint 3 "log: ${NANO_OBJ}/_.di"
 
@@ -173,7 +211,7 @@ create_diskimage ( ) (
 	}
 	{
 		# Make partition
-		print "gpart add -t freebsd -b ", $1, " -s ", $2, " $1"
+		print "gpart add -t freebsd -b ", $1, " -s ", $2, " -i ", $3, " $1"
 	}
 	END {
 		# Force slice 1 to be marked active. This is necessary
@@ -243,4 +281,77 @@ create_diskimage ( ) (
 	trap - 1 2 15 EXIT
 
 	) > ${NANO_LOG}/_.di 2>&1
-)
+}
+
+_create_diskimage() {
+	pprint 2 "build diskimage"
+	pprint 3 "log: ${NANO_OBJ}/_.di"
+
+	(
+	local altroot bootloader cfgimage dataimage diskimage
+
+	CODE_SIZE=$(head -n 1 "${NANO_LOG}/_.partitioning" | awk '{ print $2 }')
+	CODE_SIZE=$(_xxx_adjust_code_size "$CODE_SIZE")
+	IMG=${NANO_DISKIMGDIR}/${NANO_IMGNAME}
+
+	if [ -f "${NANO_WORLDDIR}/${NANO_BOOTLOADER}" ]; then
+		bootloader="-b ${NANO_WORLDDIR}/${NANO_BOOTLOADER}"
+	else
+		echo "Image will not be bootable"
+	fi
+
+	diskimage="-p freebsd:=${NANO_DISKIMGDIR}/_.disk.image"
+
+	if [ "$NANO_IMAGES" -gt 1 ] && [ "$NANO_INIT_IMG2" -gt 0 ] ; then
+		echo "Duplicating to second image..."
+		tgt_switch_root_fstab "${NANO_SLICE_ROOT}" "${NANO_SLICE_ALTROOT}"
+		nano_makefs "-DxZ ${NANO_MAKEFS} -o minfree=0,optimization=space" \
+		    "${NANO_METALOG}" "${CODE_SIZE}" "${NANO_OBJ}/_.altroot.part" \
+		    "${NANO_WORLDDIR}"
+		tgt_switch_root_fstab "${NANO_SLICE_ALTROOT}" "${NANO_SLICE_ROOT}"
+		if [ -f "${NANO_WORLDDIR}/boot/boot" ]; then
+			bootcode="-b ${NANO_WORLDDIR}/boot/boot"
+		fi
+		mkimg -s bsd \
+		    ${bootcode} \
+		    -p freebsd-ufs:="${NANO_OBJ}/_.altroot.part" \
+		    -o "${NANO_OBJ}/_.altroot.image"
+		altroot="-p freebsd:=${NANO_OBJ}/_.altroot.image"
+		rm -f "${NANO_OBJ}/_.altroot.part"
+	else
+		altroot="-p-"
+	fi
+	if [ "${NANO_INIT_IMG2}" -eq 0 ]; then
+		altroot="-p freebsd::${CODE_SIZE}b"
+	fi
+
+	# Create Config slice
+	_populate_cfg_part "${NANO_OBJ}/_.cfg.part" "${NANO_CFGDIR}" \
+	    "${NANO_SLICE_CFG}" "${NANO_CONFSIZE}" "${NANO_METALOG_CFG}"
+	cfgimage="-p freebsd:=${NANO_OBJ}/_.cfg.part"
+
+	# Create Data slice, if any.
+	if [ -n "${NANO_SLICE_DATA}" ] &&
+	    [ "${NANO_SLICE_CFG}" = "${NANO_SLICE_DATA}" ] &&
+	    [ "${NANO_DATASIZE}" -ne 0 ]; then
+		pprint 2 "NANO_SLICE_DATA is the same as NANO_SLICE_CFG, fix."
+		exit 2
+	fi
+	if [ "${NANO_DATASIZE}" -ne 0 ] && [ -n "${NANO_SLICE_DATA}" ] ; then
+		_populate_data_part "${NANO_OBJ}/_.data.part" "${NANO_DATADIR}" \
+		    "${NANO_SLICE_DATA}" "${NANO_DATASIZE}" "${NANO_METALOG_DATA}"
+		dataimage="-p freebsd:=${NANO_OBJ}/_.data.part"
+	fi
+
+	echo "Writing out ${NANO_IMGNAME}..."
+	mkimg -s mbr \
+	    ${bootloader} \
+	    ${diskimage} \
+	    ${altroot} \
+	    ${cfgimage} \
+	    ${dataimage} \
+	    -o ${IMG}
+	exit
+
+	) > ${NANO_LOG}/_.di 2>&1
+}

@@ -72,7 +72,7 @@ static device_method_t isci_pci_methods[] = {
 	 DEVMETHOD(device_probe,  isci_probe),
 	 DEVMETHOD(device_attach, isci_attach),
 	 DEVMETHOD(device_detach, isci_detach),
-	 { 0, 0 }
+	 DEVMETHOD_END
 };
 
 static driver_t isci_pci_driver = {
@@ -235,7 +235,7 @@ isci_detach(device_t device)
 			sci_pool_get(controller->unmap_buffer_pool, unmap_buffer);
 			if (unmap_buffer == NULL)
 				break;
-			contigfree(unmap_buffer, PAGE_SIZE, M_ISCI);
+			free(unmap_buffer, M_ISCI);
 		}
 	}
 

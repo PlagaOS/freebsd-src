@@ -38,6 +38,7 @@
 
 /*
  * System stack frames.
+ * struct trapframe is known to and used by kernel debuggers.
  */
 
 #ifdef __i386__
@@ -152,6 +153,7 @@ struct trapframe {
 #define	TF_HASSEGS	0x1
 #define	TF_HASBASES	0x2
 #define	TF_HASFPXSTATE	0x4
+#define	TF_RESERV0	0x8 /* no tlsbase in the trapframe */
 #endif /* __amd64__ */
 
 #endif /* _MACHINE_FRAME_H_ */

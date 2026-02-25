@@ -789,7 +789,7 @@ ng_btsocket_l2cap_process_l2ca_cfg_req_rsp(struct ng_mesg *msg,
 	if (op->result == NG_L2CAP_SUCCESS) {
 		/*
 		 * XXX FIXME Actually set flush and link timeout.
-		 * Set QoS here if required. Resolve conficts (flush_timo). 
+		 * Set QoS here if required. Resolve conflicts (flush_timo). 
 		 * Save incoming MTU (peer's outgoing MTU) and outgoing flow 
 		 * spec.
 		 */
@@ -991,7 +991,7 @@ ng_btsocket_l2cap_process_l2ca_cfg_ind(struct ng_mesg *msg,
 
 	/*
 	 * XXX FIXME Actually set flush and link timeout. Set QoS here if
-	 * required. Resolve conficts (flush_timo). Note outgoing MTU (peer's 
+	 * required. Resolve conflicts (flush_timo). Note outgoing MTU (peer's 
 	 * incoming MTU) and incoming flow spec.
 	 */
 
@@ -1984,7 +1984,7 @@ ng_btsocket_l2cap_attach(struct socket *so, int proto, struct thread *td)
 	if (so->so_type != SOCK_SEQPACKET)
 		return (ESOCKTNOSUPPORT);
 
-#if 0 /* XXX sonewconn() calls "pru_attach" with proto == 0 */
+#if 0 /* XXX sonewconn() calls pr_attach() with proto == 0 */
 	if (proto != 0) 
 		if (proto != BLUETOOTH_PROTO_L2CAP)
 			return (EPROTONOSUPPORT);
@@ -2055,7 +2055,7 @@ ng_btsocket_l2cap_attach(struct socket *so, int proto, struct thread *td)
 	 * In the second case we hold ng_btsocket_l2cap_sockets_mtx already.
 	 * So we now need to distinguish between these cases. From reading
 	 * /sys/kern/uipc_socket.c we can find out that sonewconn() calls
-	 * pru_attach with proto == 0 and td == NULL. For now use this fact
+	 * pr_attach() with proto == 0 and td == NULL. For now use this fact
 	 * to figure out if we were called from socket() or from sonewconn().
 	 */
 

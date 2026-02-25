@@ -625,7 +625,7 @@ jme_attach(device_t dev)
 	struct mii_data *mii;
 	uint32_t reg;
 	uint16_t burst;
-	int error, i, mii_flags, msic, msixc, pmc;
+	int error, i, mii_flags, msic, msixc;
 
 	error = 0;
 	sc = device_get_softc(dev);
@@ -804,12 +804,6 @@ jme_attach(device_t dev)
 		goto fail;
 
 	ifp = sc->jme_ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		device_printf(dev, "cannot allocate ifnet structure.\n");
-		error = ENXIO;
-		goto fail;
-	}
-
 	if_setsoftc(ifp, sc);
 	if_initname(ifp, device_get_name(dev), device_get_unit(dev));
 	if_setflags(ifp, IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
@@ -821,8 +815,7 @@ jme_attach(device_t dev)
 	/* JMC250 supports Tx/Rx checksum offload as well as TSO. */
 	if_setcapabilities(ifp, IFCAP_HWCSUM | IFCAP_TSO4);
 	if_sethwassist(ifp, JME_CSUM_FEATURES | CSUM_TSO);
-	if (pci_find_cap(dev, PCIY_PMG, &pmc) == 0) {
-		sc->jme_flags |= JME_FLAG_PMCAP;
+	if (pci_has_pm(dev)) {
 		if_setcapabilitiesbit(ifp, IFCAP_WOL_MAGIC, 0);
 	}
 	if_setcapenable(ifp, if_getcapabilities(ifp));
@@ -878,12 +871,6 @@ jme_attach(device_t dev)
 	/* Create local taskq. */
 	sc->jme_tq = taskqueue_create_fast("jme_taskq", M_WAITOK,
 	    taskqueue_thread_enqueue, &sc->jme_tq);
-	if (sc->jme_tq == NULL) {
-		device_printf(dev, "could not create taskqueue.\n");
-		ether_ifdetach(ifp);
-		error = ENXIO;
-		goto fail;
-	}
 	taskqueue_start_threads(&sc->jme_tq, 1, PI_NET, "%s taskq",
 	    device_get_nameunit(sc->jme_dev));
 
@@ -940,10 +927,6 @@ jme_detach(device_t dev)
 		sc->jme_tq = NULL;
 	}
 
-	if (sc->jme_miibus != NULL) {
-		device_delete_child(dev, sc->jme_miibus);
-		sc->jme_miibus = NULL;
-	}
 	bus_generic_detach(dev);
 	jme_dma_free(sc);
 
@@ -988,23 +971,23 @@ jme_sysctl_node(struct jme_softc *sc)
 	child = SYSCTL_CHILDREN(device_get_sysctl_tree(sc->jme_dev));
 
 	SYSCTL_ADD_PROC(ctx, child, OID_AUTO, "tx_coal_to",
-	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, &sc->jme_tx_coal_to,
+	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, &sc->jme_tx_coal_to,
 	    0, sysctl_hw_jme_tx_coal_to, "I", "jme tx coalescing timeout");
 
 	SYSCTL_ADD_PROC(ctx, child, OID_AUTO, "tx_coal_pkt",
-	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, &sc->jme_tx_coal_pkt,
+	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, &sc->jme_tx_coal_pkt,
 	    0, sysctl_hw_jme_tx_coal_pkt, "I", "jme tx coalescing packet");
 
 	SYSCTL_ADD_PROC(ctx, child, OID_AUTO, "rx_coal_to",
-	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, &sc->jme_rx_coal_to,
+	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, &sc->jme_rx_coal_to,
 	    0, sysctl_hw_jme_rx_coal_to, "I", "jme rx coalescing timeout");
 
 	SYSCTL_ADD_PROC(ctx, child, OID_AUTO, "rx_coal_pkt",
-	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, &sc->jme_rx_coal_pkt,
+	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, &sc->jme_rx_coal_pkt,
 	    0, sysctl_hw_jme_rx_coal_pkt, "I", "jme rx coalescing packet");
 
 	SYSCTL_ADD_PROC(ctx, child, OID_AUTO, "process_limit",
-	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
 	    &sc->jme_process_limit, 0, sysctl_hw_jme_proc_limit, "I",
 	    "max number of Rx events to process");
 
@@ -1578,12 +1561,10 @@ jme_setwol(struct jme_softc *sc)
 {
 	if_t ifp;
 	uint32_t gpr, pmcs;
-	uint16_t pmstat;
-	int pmc;
 
 	JME_LOCK_ASSERT(sc);
 
-	if (pci_find_cap(sc->jme_dev, PCIY_PMG, &pmc) != 0) {
+	if (!pci_has_pm(sc->jme_dev)) {
 		/* Remove Tx MAC/offload clock to save more power. */
 		if ((sc->jme_flags & JME_FLAG_TXCLK) != 0)
 			CSR_WRITE_4(sc, JME_GHC, CSR_READ_4(sc, JME_GHC) &
@@ -1618,11 +1599,8 @@ jme_setwol(struct jme_softc *sc)
 		    ~(GHC_TX_OFFLD_CLK_100 | GHC_TX_MAC_CLK_100 |
 		    GHC_TX_OFFLD_CLK_1000 | GHC_TX_MAC_CLK_1000));
 	/* Request PME. */
-	pmstat = pci_read_config(sc->jme_dev, pmc + PCIR_POWER_STATUS, 2);
-	pmstat &= ~(PCIM_PSTAT_PME | PCIM_PSTAT_PMEENABLE);
 	if ((if_getcapenable(ifp) & IFCAP_WOL) != 0)
-		pmstat |= PCIM_PSTAT_PME | PCIM_PSTAT_PMEENABLE;
-	pci_write_config(sc->jme_dev, pmc + PCIR_POWER_STATUS, pmstat, 2);
+		pci_enable_pme(sc->jme_dev);
 	if ((if_getcapenable(ifp) & IFCAP_WOL) == 0) {
 		/* No WOL, PHY power down. */
 		jme_phy_down(sc);
@@ -1649,21 +1627,11 @@ jme_resume(device_t dev)
 {
 	struct jme_softc *sc;
 	if_t ifp;
-	uint16_t pmstat;
-	int pmc;
 
 	sc = device_get_softc(dev);
 
-	JME_LOCK(sc);
-	if (pci_find_cap(sc->jme_dev, PCIY_PMG, &pmc) == 0) {
-		pmstat = pci_read_config(sc->jme_dev,
-		    pmc + PCIR_POWER_STATUS, 2);
-		/* Disable PME clear PME status. */
-		pmstat &= ~PCIM_PSTAT_PMEENABLE;
-		pci_write_config(sc->jme_dev,
-		    pmc + PCIR_POWER_STATUS, pmstat, 2);
-	}
 	/* Wakeup PHY. */
+	JME_LOCK(sc);
 	jme_phy_up(sc);
 	ifp = sc->jme_ifp;
 	if ((if_getflags(ifp) & IFF_UP) != 0) {

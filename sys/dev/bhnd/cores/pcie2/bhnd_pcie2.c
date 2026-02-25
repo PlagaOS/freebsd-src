@@ -89,7 +89,6 @@ int
 bhnd_pcie2_generic_attach(device_t dev)
 {
 	struct bhnd_pcie2_softc	*sc;
-	int			 error;
 
 	sc = device_get_softc(dev);
 	sc->dev = dev;
@@ -97,7 +96,7 @@ bhnd_pcie2_generic_attach(device_t dev)
 	    sizeof(bhnd_pcie2_devs[0]));
 
 	/* Allocate bus resources */
-	sc->mem_res = bhnd_alloc_resource_any(dev, SYS_RES_MEMORY, &sc->mem_rid,
+	sc->mem_res = bhnd_alloc_resource_any(dev, SYS_RES_MEMORY, 0,
 	    RF_ACTIVE);
 	if (sc->mem_res == NULL)
 		return (ENXIO);
@@ -105,16 +104,9 @@ bhnd_pcie2_generic_attach(device_t dev)
 	BHND_PCIE2_LOCK_INIT(sc);
 
 	/* Probe and attach children */
-	if ((error = bus_generic_attach(dev)))
-		goto cleanup;
+	bus_attach_children(dev);
 
 	return (0);
-
-cleanup:
-	bhnd_release_resource(dev, SYS_RES_MEMORY, sc->mem_rid, sc->mem_res);
-	BHND_PCIE2_LOCK_DESTROY(sc);
-
-	return (error);
 }
 
 int
@@ -128,7 +120,7 @@ bhnd_pcie2_generic_detach(device_t dev)
 	if ((error = bus_generic_detach(dev)))
 		return (error);
 
-	bhnd_release_resource(dev, SYS_RES_MEMORY, sc->mem_rid, sc->mem_res);
+	bhnd_release_resource(dev, sc->mem_res);
 
 	BHND_PCIE2_LOCK_DESTROY(sc);
 

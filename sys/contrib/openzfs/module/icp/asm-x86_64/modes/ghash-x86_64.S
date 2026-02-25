@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 # Copyright 2010-2016 The OpenSSL Project Authors. All Rights Reserved.
 #
 # Licensed under the Apache License 2.0 (the "License").  You may not use
@@ -713,7 +714,7 @@ SET_OBJ(.Lrem_8bit)
 .balign	64
 
 /* Mark the stack non-executable. */
-#if defined(__linux__) && defined(__ELF__)
+#ifdef __ELF__
 .section .note.GNU-stack,"",%progbits
 #endif
 
