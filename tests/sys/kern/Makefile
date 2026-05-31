@@ -17,14 +17,17 @@ ATF_TESTS_C+=	kern_copyin
 ATF_TESTS_C+=	kern_descrip_test
 # One test modifies the maxfiles limit, which can cause spurious test failures.
 TEST_METADATA.kern_descrip_test+= is_exclusive="true"
+PLAIN_TESTS_C+=	execve_overflow
 ATF_TESTS_C+=	exterr_test
 ATF_TESTS_C+=	fdgrowtable_test
 ATF_TESTS_C+=	getdirentries_test
 ATF_TESTS_C+=	jail_lookup_root
+ATF_TESTS_C+=	jaildesc
 ATF_TESTS_C+=	inotify_test
 ATF_TESTS_C+=	kill_zombie
 .if ${MK_OPENSSL} != "no"
 ATF_TESTS_C+=	ktls_test
+ATF_TESTS_C+=	ssl_sendfile
 .endif
 ATF_TESTS_C+=	ktrace_test
 ATF_TESTS_C+=	listener_wakeup
@@ -50,9 +53,12 @@ TEST_METADATA.sigwait+=	is_exclusive="true"
 ATF_TESTS_C+=	subr_physmem_test
 .endif
 PLAIN_TESTS_C+=	subr_unit_test
-ATF_TESTS_C+=	ssl_sendfile
 ATF_TESTS_C+=	sysctl_kern_proc
 ATF_TESTS_C+=	sys_getrandom
+ATF_TESTS_C+=	timerfd
+LIBADD.timerfd+=	pthread
+# One test modifies the system time.
+TEST_METADATA.timerfd+=	is_exclusive="true"
 ATF_TESTS_C+=	tty_pts
 ATF_TESTS_C+=	unix_dgram
 ATF_TESTS_C+=	unix_passfd_dgram
@@ -87,6 +93,7 @@ PROGS+=		sendfile_helper
 
 LIBADD.copy_file_range+=		md
 LIBADD.jail_lookup_root+=		jail util
+LIBADD.jaildesc+=			pthread
 LIBADD.ssl_sendfile+=			pthread crypto ssl
 CFLAGS.sys_getrandom+=			-I${SRCTOP}/sys/contrib/zstd/lib
 LIBADD.sys_getrandom+=			zstd
@@ -99,6 +106,7 @@ LIBADD.kcov+=				pthread
 CFLAGS.ktls_test+=			-DOPENSSL_API_COMPAT=0x10100000L
 LIBADD.ktls_test+=			crypto util
 LIBADD.listener_wakeup+=		pthread
+LIBADD.procdesc+=			kvm pthread
 LIBADD.shutdown_dgram+=			pthread
 LIBADD.socket_msg_waitall+=		pthread
 LIBADD.socket_splice+=			pthread

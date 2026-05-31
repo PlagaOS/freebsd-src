@@ -279,9 +279,9 @@ extern int	acpi_override_isa_irq_polarity;
  */
 enum {
 	ACPI_IVAR_PRIVATE = 20,
-	ACPI_IVAR_FLAGS,
 	ACPI_IVAR_DOMAIN,
-	ACPI_IVAR_HANDLE = BUS_IVARS_ACPI
+	ACPI_IVAR_HANDLE = BUS_IVARS_ACPI,
+	ACPI_IVAR_FLAGS
 };
 
 /*
@@ -507,6 +507,8 @@ acpi_d_state_to_str(int state)
     const char *strs[ACPI_D_STATE_COUNT] = {"D0", "D1", "D2", "D3hot",
 	"D3cold"};
 
+    if (state == ACPI_STATE_UNKNOWN)
+	return ("unknown D-state");
     MPASS(state >= ACPI_STATE_D0 && state <= ACPI_D_STATES_MAX);
     return (strs[state]);
 }
@@ -609,6 +611,19 @@ int		acpi_pxm_parse(device_t dev);
  */
 int		acpi_map_pxm_to_vm_domainid(int pxm);
 bus_get_cpus_t		acpi_get_cpus;
+
+/*
+ * Hook for ACPI sleep routine.
+ */
+extern int (*acpi_prepare_sleep)(uint8_t state, uint32_t a, uint32_t b,
+    bool ext);
+
+static inline void
+acpi_set_prepare_sleep(
+    int (*hook)(uint8_t state, uint32_t a, uint32_t b, bool ext))
+{
+	acpi_prepare_sleep = hook;
+}
 
 #ifdef __aarch64__
 /*
